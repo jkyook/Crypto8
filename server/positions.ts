@@ -141,38 +141,40 @@ export async function listWithdrawalLedger(username: string): Promise<Omit<Withd
 export async function withdrawDepositAmount(username: string, amountUsd: number): Promise<number> {
   assertValidWithdrawAmount(amountUsd);
   const db = getDb();
-  let remaining = amountUsd;
-  const rows = await db.depositPosition.findMany({
-    where: { username },
-    orderBy: { createdAt: "desc" }
-  });
-  for (const row of rows) {
-    if (remaining <= 0) {
-      break;
-    }
-    if (row.amountUsd <= remaining) {
-      await db.depositPosition.delete({ where: { id: row.id } });
-      remaining -= row.amountUsd;
-    } else {
-      await db.depositPosition.update({
-        where: { id: row.id },
-        data: { amountUsd: row.amountUsd - remaining }
-      });
-      remaining = 0;
-    }
-  }
-  const actual = amountUsd - remaining;
-  if (actual > 0) {
-    const id = `wd_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-    const createdAt = new Date().toISOString();
-    await db.withdrawalLedger.create({
-      data: {
-        id,
-        username,
-        amountUsd: actual,
-        createdAt
-      }
+  return db.$transaction(async (tx) => {
+    let remaining = amountUsd;
+    const rows = await tx.depositPosition.findMany({
+      where: { username },
+      orderBy: { createdAt: "desc" }
     });
-  }
-  return actual;
+    for (const row of rows) {
+      if (remaining <= 0) {
+        break;
+      }
+      if (row.amountUsd <= remaining) {
+        await tx.depositPosition.delete({ where: { id: row.id } });
+        remaining -= row.amountUsd;
+      } else {
+        await tx.depositPosition.update({
+          where: { id: row.id },
+          data: { amountUsd: row.amountUsd - remaining }
+        });
+        remaining = 0;
+      }
+    }
+    const actual = amountUsd - remaining;
+    if (actual > 0) {
+      const id = `wd_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+      const createdAt = new Date().toISOString();
+      await tx.withdrawalLedger.create({
+        data: {
+          id,
+          username,
+          amountUsd: actual,
+          createdAt
+        }
+      });
+    }
+    return actual;
+  });
 }

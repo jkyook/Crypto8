@@ -4,6 +4,7 @@ import { AuthPanel } from "./components/AuthPanel";
 import { SignupRegistrationsPanel } from "./components/SignupRegistrationsPanel";
 import { DepositPlanner } from "./components/DepositPlanner";
 import { MarketAprTimeSeriesChart } from "./components/MarketAprTimeSeriesChart";
+import { PortfolioCommandCenter } from "./components/PortfolioCommandCenter";
 import { ProductPoolYieldChart } from "./components/ProductPoolYieldChart";
 import { ExecutionEventsDashboard } from "./components/ExecutionEventsDashboard";
 import { UnifiedOperationsSearch } from "./components/UnifiedOperationsSearch";
@@ -1155,6 +1156,7 @@ export default function App() {
       case "portfolio":
         return (
           <>
+            <PortfolioCommandCenter positions={positions} onOpenExecution={() => onSelectMenu("execution")} />
             <PortfolioOverviewPanel positions={positions} />
             <PortfolioPanel positions={positions} />
           </>
