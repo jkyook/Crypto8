@@ -469,7 +469,7 @@ app.get("/api/orchestrator/jobs/:jobId", requireAuth(["orchestrator", "security"
   res.json({ ok: true, job });
 });
 
-app.post("/api/security/approve", requireAuth(["security"]), async (req, res) => {
+app.post("/api/security/approve", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
   const body = req.body as {
     jobId?: string;
     approver?: string;
@@ -477,7 +477,7 @@ app.post("/api/security/approve", requireAuth(["security"]), async (req, res) =>
     decision?: ApprovalLog["decision"];
     reason?: string;
   };
-  if (!body.jobId || !body.approver || !body.ttlHours || !body.decision || !body.reason) {
+  if (!body.jobId || !body.ttlHours || !body.decision || !body.reason) {
     res.status(400).json({ ok: false, message: "missing required fields" });
     return;
   }
@@ -486,10 +486,16 @@ app.post("/api/security/approve", requireAuth(["security"]), async (req, res) =>
     res.status(404).json({ ok: false, message: "job not found" });
     return;
   }
+  const username = res.locals.user.username as string;
+  const role = res.locals.user.role as string;
+  if (!jobReadableByUser(job, username, role)) {
+    res.status(404).json({ ok: false, message: "job not found" });
+    return;
+  }
 
   const approval = await approveJob({
     jobId: body.jobId,
-    approver: body.approver,
+    approver: username,
     ttlHours: body.ttlHours,
     decision: body.decision,
     reason: body.reason

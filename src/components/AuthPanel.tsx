@@ -52,8 +52,8 @@ export function AuthPanel({ onSessionChange }: Props) {
     <section className="card">
       <h2>로그인 · 회원가입</h2>
       <p className="product-session-hint">
-        <strong>데모:</strong> orchestrator_admin / orchestrator123 · security_admin / security123 · viewer_admin / viewer123 — 예치·실행 API는 세
-        역할 모두 동일하게 사용할 수 있습니다.
+        <strong>데모:</strong> orchestrator_admin / orchestrator123 · security_admin / security123 · viewer_admin / viewer123 — 예치·승인·실행 API는 세
+        역할 모두 사용할 수 있습니다.
       </p>
       <p className="product-session-hint">
         <strong>개별 이용자:</strong> 아래에서 가입하면 <code>viewer</code> 계정으로 예치·인출·예치 실행(Job)이 계정별로 분리됩니다.

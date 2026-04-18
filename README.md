@@ -66,12 +66,15 @@ npm run prisma:seed
 - 공개 엔드포인트 `GET /api/runtime/info`로 현재 표시용 실행 모드(dry-run/live)를 조회할 수 있습니다.
 - 공개 `GET /api/health`로 DB 연결·실효 실행 모드·버전·가동 시간을 점검할 수 있습니다. 엔드포인트·멱등 키 요약은 `agents/API-OVERVIEW.md`를 참고하세요.
 
-### 예치 포지션 API(RBAC)
+### 예치·실행 API(RBAC)
 
 - `GET /api/portfolio/positions`: `orchestrator`, `security`, `viewer` (본인 `username` 기준)
 - `GET /api/portfolio/withdrawals`: `orchestrator`, `security`, `viewer` — 서버에 기록된 출금 장부(본인 기준, `id`·`amountUsd`·`createdAt`)
-- `POST /api/portfolio/positions`: **`orchestrator`만** (예치 포지션 생성)
-- `POST /api/portfolio/withdraw`: **`orchestrator`만** — LIFO로 예치를 차감하고, 실제 차감된 USD 합계를 `withdrawnUsd`로 응답합니다. `withdrawnUsd`가 0보다 크면 `withdrawal_ledger`에 한 줄이 추가됩니다.
+- `POST /api/portfolio/positions`: `orchestrator`, `security`, `viewer` — 본인 계정 기준 예치 포지션 생성
+- `POST /api/portfolio/withdraw`: `orchestrator`, `security`, `viewer` — LIFO로 본인 예치를 차감하고, 실제 차감된 USD 합계를 `withdrawnUsd`로 응답합니다. `withdrawnUsd`가 0보다 크면 `withdrawal_ledger`에 한 줄이 추가됩니다.
+- `POST /api/orchestrator/jobs`: `orchestrator`, `security`, `viewer` — 본인 계정 기준 실행 Job 생성
+- `POST /api/security/approve`: `orchestrator`, `security`, `viewer` — `security`는 전체 Job, 그 외 역할은 본인 Job 승인
+- `POST /api/orchestrator/execute/:jobId`: `orchestrator`, `security`, `viewer` — `security`는 전체 Job, 그 외 역할은 본인 Job 실행
 - 단일 요청 한도: 예치/인출 금액 `amountUsd` ≤ 1억 USD(코드 상한), `protocolMix` 최대 24행, 상품명·풀 라벨 길이 제한
 
 ## 포함 기능
@@ -93,9 +96,9 @@ npm run prisma:seed
 - 실행 실패 시 지수형 백오프(단순) 재시도 후 실패 이벤트 기록
 - 보안 승인 로그 조회 API (`/api/security/approvals`)
 - JWT + RBAC 기반 권한 분리
-  - orchestrator: 작업 생성/실행, **서버 예치 포지션 저장·인출 반영**
-  - security: 보안 승인
-  - viewer: 조회 전용
+  - orchestrator/security/viewer: 예치 포지션 생성·인출·Job 생성·승인·실행 쓰기 API 사용 가능
+  - security: 운영 검토 목적의 전체 Job/실행 이벤트 조회 가능
+  - orchestrator/viewer: 본인 `username` 기준 Job/포지션/실행 이벤트로 격리
 - SQLite DB(`server/data/crypto8.db`) 기반 영속 저장
 - 사용자/작업/승인/리프레시 세션을 SQLite 테이블로 관리
 - bcrypt 해시 검증 + Refresh Token 수명주기 지원 (`/api/auth/refresh`, `/api/auth/logout`)

@@ -19,14 +19,14 @@
 | POST | `/api/auth/logout` | 공개 |
 | GET | `/api/portfolio/positions` | orchestrator, security, viewer |
 | GET | `/api/portfolio/withdrawals` | orchestrator, security, viewer |
-| POST | `/api/portfolio/positions` | orchestrator |
-| POST | `/api/portfolio/withdraw` | orchestrator |
-| POST | `/api/orchestrator/jobs` | orchestrator |
+| POST | `/api/portfolio/positions` | orchestrator, security, viewer |
+| POST | `/api/portfolio/withdraw` | orchestrator, security, viewer |
+| POST | `/api/orchestrator/jobs` | orchestrator, security, viewer |
 | GET | `/api/orchestrator/jobs` | orchestrator, security, viewer |
 | GET | `/api/orchestrator/jobs/:jobId` | orchestrator, security, viewer |
-| POST | `/api/orchestrator/execute/:jobId` | orchestrator |
+| POST | `/api/orchestrator/execute/:jobId` | orchestrator, security, viewer |
 | GET | `/api/orchestrator/execution-events?jobId=` | orchestrator, security, viewer |
-| POST | `/api/security/approve` | security |
+| POST | `/api/security/approve` | orchestrator, security, viewer |
 
 ## 실행 멱등·상관
 
