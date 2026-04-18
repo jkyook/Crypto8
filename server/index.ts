@@ -342,6 +342,56 @@ function stripUsername<T extends { username: string }>(row: T): Omit<T, "usernam
   return rest;
 }
 
+function buildProtocolMixFromExecutionPayload(
+  payload: Awaited<ReturnType<typeof executeJob>>["payload"],
+  depositUsd: number
+): { name: string; weight: number; pool?: string }[] {
+  const rows = payload?.adapterResults?.filter((item) => item.allocationUsd > 0) ?? [];
+  if (rows.length === 0 || depositUsd <= 0) {
+    return [
+      { name: "Aave", weight: 0.35, pool: "Aave v3 USDC" },
+      { name: "Uniswap", weight: 0.4, pool: "Uniswap LP route" },
+      { name: "Orca", weight: 0.2, pool: "Orca Whirlpool" },
+      { name: "Cash", weight: 0.05, pool: "USDC buffer" }
+    ];
+  }
+  const byProtocol = new Map<string, { amountUsd: number; pools: Set<string> }>();
+  for (const row of rows) {
+    const current = byProtocol.get(row.protocol) ?? { amountUsd: 0, pools: new Set<string>() };
+    current.amountUsd += row.allocationUsd;
+    current.pools.add(`${row.chain} · ${row.action}`);
+    byProtocol.set(row.protocol, current);
+  }
+  return Array.from(byProtocol.entries()).map(([name, item]) => ({
+    name,
+    weight: Math.min(1, item.amountUsd / depositUsd),
+    pool: Array.from(item.pools).slice(0, 2).join(" / ")
+  }));
+}
+
+async function recordExecutionPositionIfNeeded(args: {
+  username: string;
+  job: Awaited<ReturnType<typeof getJob>>;
+  result: Awaited<ReturnType<typeof executeJob>>;
+  positionId?: string;
+}): Promise<void> {
+  if (!args.job || args.positionId || args.result.message !== "execution accepted") {
+    return;
+  }
+  const depositUsd = args.job.input.depositUsd;
+  if (!Number.isFinite(depositUsd) || depositUsd <= 0) {
+    return;
+  }
+  const mode = args.result.payload?.mode ?? "dry-run";
+  const protocolMix = buildProtocolMixFromExecutionPayload(args.result.payload, depositUsd);
+  await createDepositPosition(args.username, {
+    productName: `${mode === "live" ? "Server execution" : "Dry-run execution"} ${args.job.id.slice(-6)}`,
+    amountUsd: depositUsd,
+    expectedApr: 0.08,
+    protocolMix
+  });
+}
+
 app.get("/api/portfolio/positions", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {
   const username = res.locals.user.username as string;
   const rows = await listDepositPositions(username);
@@ -538,6 +588,11 @@ app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orche
     const forbidden = typeof result.message === "string" && result.message.startsWith("forbidden:");
     res.status(forbidden ? 403 : 400).json({ ...result, requestId });
     return;
+  }
+  try {
+    await recordExecutionPositionIfNeeded({ username, job: result.job, result, positionId });
+  } catch (error) {
+    console.warn(JSON.stringify({ level: "warn", msg: "execution_position_record_failed", jobId, error: String(error) }));
   }
   res.json({ ...result, requestId });
 });

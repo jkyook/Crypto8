@@ -26,6 +26,7 @@ type OrchestratorBoardProps = {
   linkedPositionId?: string;
   onActionNotice?: (notice: { variant: "error" | "info"; text: string }) => void;
   onOpenOperationsWithJob?: (jobId: string) => void;
+  onExecutionComplete?: () => void | Promise<void>;
 };
 
 export function OrchestratorBoard({
@@ -36,7 +37,8 @@ export function OrchestratorBoard({
   allowJobExecution: allowJobExecutionProp,
   linkedPositionId,
   onActionNotice,
-  onOpenOperationsWithJob
+  onOpenOperationsWithJob,
+  onExecutionComplete
 }: OrchestratorBoardProps) {
   const { isConnected } = usePhantom();
   const accounts = useAccounts();
@@ -84,8 +86,10 @@ export function OrchestratorBoard({
   const hasWallet = Boolean(isConnected && solanaAccount?.address);
   const jwtAccess = useSyncExternalStore(subscribeLocalAuth, readAccessTokenSnapshot, () => "");
   const canUseServerJobs = jwtAccess.length > 0 && allowJobExecutionProp !== false;
-  const canExecute = Boolean(job) && hasWallet && isExecutionConfirmed && canUseServerJobs;
-  const quoteRows = useMemo(() => {
+  const isLiveExecution = runtime?.executionMode === "live";
+  const canExecute = Boolean(job) && isExecutionConfirmed && canUseServerJobs && (!isLiveExecution || hasWallet);
+  const [customAllocationPercents, setCustomAllocationPercents] = useState<number[] | null>(null);
+  const baseQuoteRows = useMemo(() => {
     const ar = lastExecution?.payload?.adapterResults;
     if (ar && ar.length > 0) {
       const positive = ar.filter((r) => r.allocationUsd > 0);
@@ -101,10 +105,30 @@ export function OrchestratorBoard({
     const usd = job?.input.depositUsd ?? depositUsd;
     return buildExecutionPreviewRows(usd);
   }, [lastExecution, job, depositUsd]);
+  const quoteRows = useMemo(() => {
+    if (lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0)) {
+      return baseQuoteRows;
+    }
+    const total = job?.input.depositUsd ?? depositUsd;
+    if (!customAllocationPercents || total <= 0) {
+      return baseQuoteRows;
+    }
+    return baseQuoteRows.map((row, idx) => ({
+      ...row,
+      allocationUsd: Number(((total * (customAllocationPercents[idx] ?? 0)) / 100).toFixed(2))
+    }));
+  }, [baseQuoteRows, customAllocationPercents, depositUsd, job, lastExecution]);
+  const defaultAllocationPercents = useMemo(() => {
+    const total = job?.input.depositUsd ?? depositUsd;
+    if (total <= 0) return [];
+    return baseQuoteRows.map((row) => Number(((row.allocationUsd / total) * 100).toFixed(2)));
+  }, [baseQuoteRows, depositUsd, job]);
+  const isResultQuote = Boolean(lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0));
+  const adjustedAllocationTotal = quoteRows.reduce((acc, row) => acc + row.allocationUsd, 0);
   const quoteTitle = lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0)
     ? "실행 결과 배분"
     : "시뮬 견적 (어댑터 분배)";
-  const stepIndex = !hasWallet ? 0 : !job ? 1 : !isExecutionConfirmed ? 2 : !isExecutionDone ? 3 : 4;
+  const stepIndex = isLiveExecution && !hasWallet ? 0 : !job ? 1 : !isExecutionConfirmed ? 2 : !isExecutionDone ? 3 : 4;
   const stepLabels = ["지갑", "작업", "확인", "실행", "완료"] as const;
   const autoChecks = [
     { key: "wallet", label: "지갑 연결", ok: hasWallet, detail: hasWallet ? "연결됨" : "연결 필요" },
@@ -128,6 +152,7 @@ export function OrchestratorBoard({
       setIsExecutionDone(false);
       setIsExecutionConfirmed(false);
       setLastExecution(null);
+      setCustomAllocationPercents(null);
       setApiMessage(
         hasWallet
           ? `작업 생성 완료: ${created.id}`
@@ -150,12 +175,15 @@ export function OrchestratorBoard({
     try {
       const walletProvider = (window as { phantom?: { solana?: { isPhantom?: boolean; signMessage?: (message: Uint8Array) => Promise<unknown> } } }).phantom
         ?.solana;
-      if (!walletProvider?.isPhantom || typeof walletProvider.signMessage !== "function") {
-        setApiMessage("지갑 승인 실패: Phantom 지갑 서명 기능을 사용할 수 없습니다.");
+      const signMessage = walletProvider?.signMessage;
+      const canSignWithPhantom = Boolean(walletProvider?.isPhantom && typeof signMessage === "function");
+      if (canSignWithPhantom) {
+        const approveMessage = new TextEncoder().encode(`Crypto8 execution approval for ${job.id}`);
+        await signMessage?.(approveMessage);
+      } else if (isLiveExecution) {
+        setApiMessage("라이브 실행은 Phantom 지갑 서명이 필요합니다. 지갑 연결 상태를 확인하세요.");
         return;
       }
-      const approveMessage = new TextEncoder().encode(`Crypto8 execution approval for ${job.id}`);
-      await walletProvider.signMessage(approveMessage);
 
       const idemKey = `exec-${job.id}`;
       const result = await executeJob(job.id, {
@@ -166,7 +194,9 @@ export function OrchestratorBoard({
       setIsExecutionDone(true);
       setLastExecution(result);
       const rid = result.requestId ? ` · requestId=${result.requestId}` : "";
-      setApiMessage(`실행 결과: ${result.message}${rid}`);
+      const signNote = canSignWithPhantom ? "" : " · dry-run 지갑 서명 생략";
+      setApiMessage(`실행 결과: ${result.message}${rid}${signNote}`);
+      await onExecutionComplete?.();
     } catch (error) {
       const msg = error instanceof Error ? error.message : "실행 실패";
       setApiMessage(msg);
@@ -197,7 +227,7 @@ export function OrchestratorBoard({
           {runtime?.serverExecutionNote ? <p className="runtime-scope-sub">{runtime.serverExecutionNote}</p> : null}
           {!canUseServerJobs ? (
             <p className="runtime-scope-sub" role="status">
-              1~3단계는 <strong>로그인 · 계정</strong> 메뉴에서 아이디·비밀번호(JWT)로 로그인(또는 이용자 가입)한 뒤에 사용할 수 있습니다. Phantom 지갑만으로는 서버 예치 실행이 열리지 않습니다.
+          1~3단계는 <strong>로그인 · 계정</strong> 메뉴에서 아이디·비밀번호(JWT)로 로그인(또는 이용자 가입)한 뒤에 사용할 수 있습니다. dry-run은 Phantom 서명 없이도 서버 실행을 기록할 수 있습니다.
             </p>
           ) : (
             <p className="runtime-scope-sub" role="status">
@@ -228,7 +258,14 @@ export function OrchestratorBoard({
       <div className="quote-card" role="region" aria-label={quoteTitle}>
         <div className="quote-card-head">
           <h3 className="quote-card-title">{quoteTitle}</h3>
-          <span className="quote-card-mode">{runtime?.executionMode ? runtime.executionMode.toUpperCase() : "—"}</span>
+          <div className="quote-card-head-actions">
+            {!isResultQuote ? (
+              <button type="button" className="quote-default-btn" onClick={() => setCustomAllocationPercents(null)}>
+                Default
+              </button>
+            ) : null}
+            <span className="quote-card-mode">{runtime?.executionMode ? runtime.executionMode.toUpperCase() : "—"}</span>
+          </div>
         </div>
         {quoteRows.length > 0 ? (
           <div className="quote-card-grid">
@@ -238,13 +275,33 @@ export function OrchestratorBoard({
                 <span className="quote-card-cell quote-card-chain">{row.chain}</span>
                 <span className="quote-card-cell quote-card-action">{row.action}</span>
                 <span className="quote-card-cell quote-card-usd">${row.allocationUsd.toFixed(2)}</span>
+                {!isResultQuote ? (
+                  <label className="quote-card-slider" aria-label={`${row.protocol} 배분 조율`}>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={(customAllocationPercents ?? defaultAllocationPercents)[idx] ?? 0}
+                      onChange={(event) => {
+                        const next = [...(customAllocationPercents ?? defaultAllocationPercents)];
+                        next[idx] = Number(event.target.value);
+                        setCustomAllocationPercents(next);
+                      }}
+                    />
+                    <span>{((customAllocationPercents ?? defaultAllocationPercents)[idx] ?? 0).toFixed(0)}%</span>
+                  </label>
+                ) : null}
               </div>
             ))}
           </div>
         ) : (
           <p className="quote-card-empty">금액을 입력하면 어댑터별 시뮬 배분이 표시됩니다.</p>
         )}
-        <p className="quote-card-foot">실행 전·후 동일한 표 형식으로 시뮬과 서버 응답을 비교합니다.</p>
+        <p className="quote-card-foot">
+          실행 전·후 동일한 표 형식으로 시뮬과 서버 응답을 비교합니다.
+          {!isResultQuote ? ` 조율 합계 $${adjustedAllocationTotal.toFixed(2)}` : ""}
+        </p>
       </div>
 
       {job ? (
@@ -293,8 +350,8 @@ export function OrchestratorBoard({
       ) : null}
 
       <div className="orchestrator-flow-steps" aria-label="예치 실행 절차">
-        <button className={hasWallet ? "flow-step-btn done" : "flow-step-btn waiting"} disabled={!hasWallet}>
-          0. 지갑 연결 {hasWallet ? "완료" : "필요"}
+        <button className={hasWallet ? "flow-step-btn done" : isLiveExecution ? "flow-step-btn waiting" : "flow-step-btn optional"} disabled={!hasWallet}>
+          0. 지갑 연결 {hasWallet ? "완료" : isLiveExecution ? "필요" : "선택"}
         </button>
         <button
           className={job ? "flow-step-btn done" : "flow-step-btn waiting"}

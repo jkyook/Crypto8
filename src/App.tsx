@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ApprovalsDashboard } from "./components/ApprovalsDashboard";
 import { AuthPanel } from "./components/AuthPanel";
 import { SignupRegistrationsPanel } from "./components/SignupRegistrationsPanel";
@@ -71,11 +71,13 @@ type DepositPosition = DepositPositionPayload;
 
 const GUEST_WITHDRAW_LEDGER_KEY = "crypto8_withdraw___guest__";
 
-const PRIMARY_NAV_ORDER: MenuKey[] = ["products", "trade", "portfolio"];
+const PRIMARY_NAV_ORDER: MenuKey[] = ["my", "products", "portfolio", "execution"];
 const PRIMARY_NAV_LABEL: Partial<Record<MenuKey, string>> = {
-  products: "예치",
-  trade: "트레이드",
-  portfolio: "포트폴리오"
+  my: "Dashboard",
+  products: "Pools",
+  portfolio: "Positions",
+  execution: "Execution",
+  trade: "Swap"
 };
 
 const MENU_ITEMS: MenuItem[] = [
@@ -364,84 +366,39 @@ function OperationsHistoryPanel({ focusJobId }: { focusJobId?: string }) {
   );
 }
 
-function MyOverviewPanel({
-  recentJobs,
-  recentEvents,
-  onGo
+function TradeControls({
+  onDeposit,
+  onWithdraw,
+  disabled,
+  size = "compact"
 }: {
-  recentJobs: Job[];
-  recentEvents: ExecutionEvent[];
-  onGo: (menu: MenuKey) => void;
+  onDeposit: () => void;
+  onWithdraw: () => void;
+  disabled?: boolean;
+  size?: "compact" | "large";
 }) {
-  const [tab, setTab] = useState<"asset" | "deposit" | "yield" | "withdraw">("asset");
-  const executed = recentJobs.filter((job) => job.status === "executed").length;
-  const pending = recentJobs.filter((job) => job.status !== "executed").length;
-  const failed = recentEvents.filter((event) => event.status === "failed").length;
-
   return (
-    <section className="card">
-      <h2>내 현황</h2>
-      <div className="my-tabs">
-        <button className={tab === "asset" ? "nav-item active" : "nav-item"} onClick={() => setTab("asset")}>
-          내 자산
-        </button>
-        <button className={tab === "deposit" ? "nav-item active" : "nav-item"} onClick={() => setTab("deposit")}>
-          내 예치
-        </button>
-        <button className={tab === "yield" ? "nav-item active" : "nav-item"} onClick={() => setTab("yield")}>
-          내 수익
-        </button>
-        <button className={tab === "withdraw" ? "nav-item active" : "nav-item"} onClick={() => setTab("withdraw")}>
-          내 인출
-        </button>
-      </div>
-      {tab === "asset" ? (
-        <div className="kpi-grid">
-          <div className="kpi-item">
-            <p className="kpi-label">연결 자산 개요</p>
-            <p className="kpi-value">지갑 위젯에서 SOL/USDC 확인</p>
-            <button onClick={() => onGo("wallet")}>지갑/자산 보기</button>
-          </div>
-          <div className="kpi-item">
-            <p className="kpi-label">내 작업 상태</p>
-            <p className="kpi-value">완료 {executed} / 대기 {pending} / 실패 {failed}</p>
-          </div>
-        </div>
-      ) : null}
-      {tab === "deposit" ? (
-        <div className="kpi-grid">
-          <div className="kpi-item">
-            <p className="kpi-label">예치 전 점검</p>
-            <p className="kpi-value">예상 수익/수수료/배분 확인</p>
-            <button onClick={() => onGo("products")}>예치상품에서 확인</button>
-          </div>
-          <div className="kpi-item">
-            <p className="kpi-label">예치 실행</p>
-            <p className="kpi-value">승인 후 예치 실행 진행</p>
-            <button onClick={() => onGo("execution")}>예치 실행으로 이동</button>
-          </div>
-        </div>
-      ) : null}
-      {tab === "yield" ? (
-        <div className="kpi-grid">
-          <div className="kpi-item">
-            <p className="kpi-label">수익/운영 이력</p>
-            <p className="kpi-value">승인 로그 + 실행 이벤트 통합</p>
-            <button onClick={() => onGo("operationsLog")}>수익/운영 이력 보기</button>
-          </div>
-        </div>
-      ) : null}
-      {tab === "withdraw" ? (
-        <div className="kpi-grid">
-          <div className="kpi-item">
-            <p className="kpi-label">인출 준비</p>
-            <p className="kpi-value">인출 수수료/수령액 시뮬레이션</p>
-            <button onClick={() => onGo("execution")}>인출 시뮬레이션으로 이동</button>
-          </div>
-        </div>
-      ) : null}
-    </section>
+    <div className={`inline-trade-controls inline-trade-controls--${size}`} aria-label="입금 인출">
+      <button type="button" className="inline-trade-btn inline-trade-btn-plus" onClick={onDeposit} disabled={disabled} aria-label="입금">
+        +
+      </button>
+      <button type="button" className="inline-trade-btn inline-trade-btn-minus" onClick={onWithdraw} disabled={disabled} aria-label="인출">
+        -
+      </button>
+    </div>
   );
+}
+
+function promptTradeAmount(defaultAmount: number, label: string): number | null {
+  const fallback = Number.isFinite(defaultAmount) && defaultAmount > 0 ? defaultAmount : 100;
+  const raw = window.prompt(`${label} 금액(USD)을 입력하세요.`, String(Math.round(fallback)));
+  if (raw === null) return null;
+  const parsed = Number(raw.replace(/,/g, "").trim());
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    window.alert("0보다 큰 숫자를 입력해 주세요.");
+    return null;
+  }
+  return parsed;
 }
 
 function applyLifoWithdraw(positions: DepositPosition[], amountUsd: number): DepositPosition[] {
@@ -526,6 +483,8 @@ function ProductsPanel({
   const [products, setProducts] = useState<YieldProduct[]>(DEFAULT_PRODUCTS);
   const [selectedId, setSelectedId] = useState<string>(DEFAULT_PRODUCTS[0].id);
   const [depositAmount, setDepositAmount] = useState(1000);
+  const [openDepositProductId, setOpenDepositProductId] = useState<string | null>(null);
+  const [cardDepositAmount, setCardDepositAmount] = useState(1000);
   const [newName, setNewName] = useState("");
   const [newApr, setNewApr] = useState("0.07");
   const [isAddFormOpen, setIsAddFormOpen] = useState(false);
@@ -615,6 +574,45 @@ function ProductsPanel({
     };
   }, [historyCsvDays]);
 
+  const recordProductDeposit = (product: YieldProduct, amountUsd = depositAmount) => {
+    setSelectedId(product.id);
+    void (async () => {
+      const draft: DepositPosition = {
+        id: `dep_${Date.now()}`,
+        productName: product.name,
+        amountUsd,
+        expectedApr: product.targetApr,
+        protocolMix: product.protocolMix,
+        createdAt: new Date().toISOString()
+      };
+      try {
+        const recorded = await onDepositRecorded(draft);
+        setLinkedPositionId(recorded.id);
+        setIsExecutionOpen(true);
+      } catch {
+        /* onDepositRecorded에서 알림 처리 */
+      }
+    })();
+  };
+
+  const withdrawProductAmount = (product: YieldProduct) => {
+    setSelectedId(product.id);
+    const amount = promptTradeAmount(depositAmount, `${product.name} 인출`);
+    if (amount === null) return;
+    setDepositAmount(amount);
+    void onWithdraw(amount);
+  };
+
+  const onQuickDepositProduct = (product: YieldProduct, amount: number) => {
+    if (!Number.isFinite(amount) || amount <= 0) {
+      window.alert("0보다 큰 금액을 입력해 주세요.");
+      return;
+    }
+    setDepositAmount(amount);
+    recordProductDeposit(product, amount);
+    setOpenDepositProductId(null);
+  };
+
   return (
     <section className="card">
       {!hasSession ? (
@@ -683,6 +681,37 @@ function ProductsPanel({
             key={product.id}
             className={selectedId === product.id ? "kpi-item product-card product-card--selected" : "kpi-item product-card"}
           >
+            <div className="pool-card-action-cluster">
+              <button
+                type="button"
+                className="pool-card-plus-btn"
+                aria-label={`${product.name} 입금 금액 입력 열기`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setSelectedId(product.id);
+                  setCardDepositAmount(depositAmount);
+                  setOpenDepositProductId((prev) => (prev === product.id ? null : product.id));
+                }}
+              >
+                +
+              </button>
+              {openDepositProductId === product.id ? (
+                <div className="pool-card-deposit-panel">
+                  <span className="pool-card-deposit-label">USD</span>
+                  <input
+                    type="number"
+                    min={1}
+                    step={100}
+                    value={cardDepositAmount}
+                    onChange={(event) => setCardDepositAmount(Number(event.target.value))}
+                    aria-label={`${product.name} 입금 금액`}
+                  />
+                  <button type="button" onClick={() => onQuickDepositProduct(product, cardDepositAmount)}>
+                    Deposit
+                  </button>
+                </div>
+              ) : null}
+            </div>
             <button className={selectedId === product.id ? "nav-item active" : "nav-item"} onClick={() => setSelectedId(product.id)}>
               <p className="kpi-label">{product.name}</p>
               <p className="kpi-value">목표 연수익 {(product.targetApr * 100).toFixed(1)}%</p>
@@ -707,28 +736,15 @@ function ProductsPanel({
               type="button"
               className="product-action-btn btn-primary"
               onClick={() => {
-                void (async () => {
-                  const draft: DepositPosition = {
-                    id: `dep_${Date.now()}`,
-                    productName: selected.name,
-                    amountUsd: depositAmount,
-                    expectedApr: selected.targetApr,
-                    protocolMix: selected.protocolMix,
-                    createdAt: new Date().toISOString()
-                  };
-                  try {
-                    const recorded = await onDepositRecorded(draft);
-                    setLinkedPositionId(recorded.id);
-                    setIsExecutionOpen(true);
-                  } catch {
-                    /* onDepositRecorded에서 알림 처리 */
-                  }
-                })();
+                const amount = promptTradeAmount(depositAmount, `${selected.name} 입금`);
+                if (amount === null) return;
+                setDepositAmount(amount);
+                recordProductDeposit(selected, amount);
               }}
             >
               입금
             </button>
-            <button type="button" className="product-action-btn" onClick={() => void onWithdraw(depositAmount)}>
+            <button type="button" className="product-action-btn" onClick={() => withdrawProductAmount(selected)}>
               인출
             </button>
           </div>
@@ -872,7 +888,15 @@ function TradePanel() {
   );
 }
 
-function PortfolioPanel({ positions }: { positions: DepositPosition[] }) {
+function PortfolioPanel({
+  positions,
+  onProtocolDeposit,
+  onProtocolWithdraw
+}: {
+  positions: DepositPosition[];
+  onProtocolDeposit?: (protocolName: string, amountUsd: number) => void | Promise<void>;
+  onProtocolWithdraw?: (protocolName: string, amountUsd: number) => void | Promise<void>;
+}) {
   const totalDeposited = positions.reduce((acc, item) => acc + item.amountUsd, 0);
   const protocolTotals = positions.reduce<Record<string, number>>((acc, item) => {
     item.protocolMix.forEach((mix) => {
@@ -904,6 +928,7 @@ function PortfolioPanel({ positions }: { positions: DepositPosition[] }) {
             <th>프로토콜</th>
             <th>예치 금액 (USD)</th>
             <th>비중</th>
+            <th>입출금</th>
           </tr>
         </thead>
         <tbody>
@@ -911,12 +936,28 @@ function PortfolioPanel({ positions }: { positions: DepositPosition[] }) {
             <tr key={name}>
               <td>{name}</td>
               <td>${amount.toFixed(2)}</td>
-              <td>{totalDeposited > 0 ? ((amount / totalDeposited) * 100).toFixed(1) : "0.0"}%</td>
+              <td>
+                <span className="protocol-weight-cell">{totalDeposited > 0 ? ((amount / totalDeposited) * 100).toFixed(1) : "0.0"}%</span>
+              </td>
+              <td>
+                <TradeControls
+                  onDeposit={() => {
+                    const input = promptTradeAmount(Math.max(100, Math.round(amount || 100)), `${name} 입금`);
+                    if (input === null) return;
+                    void onProtocolDeposit?.(name, input);
+                  }}
+                  onWithdraw={() => {
+                    const input = promptTradeAmount(Math.max(100, Math.round(amount || 100)), `${name} 인출`);
+                    if (input === null) return;
+                    void onProtocolWithdraw?.(name, input);
+                  }}
+                />
+              </td>
             </tr>
           ))}
           {Object.keys(protocolTotals).length === 0 ? (
             <tr>
-              <td colSpan={3}>아직 예치 내역이 없습니다.</td>
+              <td colSpan={4}>아직 예치 내역이 없습니다.</td>
             </tr>
           ) : null}
         </tbody>
@@ -950,6 +991,177 @@ function PortfolioPanel({ positions }: { positions: DepositPosition[] }) {
         </tbody>
       </table>
     </section>
+  );
+}
+
+function CommandCenterPage({
+  positions,
+  recentJobs,
+  recentEvents,
+  onGo,
+  onOpenJob,
+  onOpenEvent
+}: {
+  positions: DepositPosition[];
+  recentJobs: Job[];
+  recentEvents: ExecutionEvent[];
+  onGo: (menu: MenuKey) => void;
+  onOpenJob: (jobId: string) => void;
+  onOpenEvent: (jobId: string) => void;
+}) {
+  const pendingJobs = recentJobs.filter((job) => job.status !== "executed").length;
+  const failedEvents = recentEvents.filter((event) => event.status === "failed").length;
+  const executedJobs = recentJobs.filter((job) => job.status === "executed").length;
+
+  return (
+    <div className="page-shell command-page-shell">
+      <section className="mission-hero card">
+        <div>
+          <p className="section-eyebrow">Dashboard</p>
+          <h1>DeFi 자금 운용 상황판</h1>
+          <p>
+            예치, 리스크, 실행, 운영 로그를 한 화면에서 판단합니다. 상품 탐색보다 먼저 현재 포트폴리오가 안전한지와 오늘 조치할 항목을 보여줍니다.
+          </p>
+        </div>
+        <div className="mission-action-stack">
+          <button onClick={() => onGo("products")}>전략 검토</button>
+          <button className="ghost-btn" onClick={() => onGo("execution")}>실행 보드</button>
+        </div>
+      </section>
+      <div className="ops-status-rail">
+        <button type="button" onClick={() => onGo("portfolio")}>
+          <span>Positions</span>
+          <strong>{positions.length}</strong>
+        </button>
+        <button type="button" onClick={() => onGo("execution")}>
+          <span>Pending Jobs</span>
+          <strong>{pendingJobs}</strong>
+        </button>
+        <button type="button" onClick={() => onGo("operationsLog")}>
+          <span>Failures</span>
+          <strong>{failedEvents}</strong>
+        </button>
+        <button type="button" onClick={() => onGo("activity")}>
+          <span>Executed</span>
+          <strong>{executedJobs}</strong>
+        </button>
+      </div>
+      <PortfolioCommandCenter positions={positions} onOpenExecution={() => onGo("execution")} />
+      <div className="page-grid-two">
+        <PortfolioOverviewPanel positions={positions} />
+        <RecentActivityPanel recentJobs={recentJobs} recentEvents={recentEvents} onOpenJob={onOpenJob} onOpenEvent={onOpenEvent} />
+      </div>
+    </div>
+  );
+}
+
+function StrategiesPage({
+  children,
+  onOpenTrade,
+  onOpenPortfolio
+}: {
+  children: ReactNode;
+  onOpenTrade: () => void;
+  onOpenPortfolio: () => void;
+}) {
+  return (
+    <div className="page-shell strategy-page-shell">
+      <section className="mission-hero mission-hero--strategy card">
+        <div>
+          <p className="section-eyebrow">Pools</p>
+          <h1>수익 풀을 고르고, 실행 전 리스크를 비교합니다</h1>
+          <p>
+            Aave, Uniswap, Orca 배분을 상품 단위로 비교하고 APR, 수수료, 기간 수익, 표준 L2 배분안을 함께 검토합니다.
+          </p>
+        </div>
+        <div className="mission-action-stack">
+          <button onClick={onOpenPortfolio}>포지션 관제</button>
+          <button className="ghost-btn" onClick={onOpenTrade}>외부 Swap</button>
+        </div>
+      </section>
+      {children}
+    </div>
+  );
+}
+
+function PositionsPage({
+  positions,
+  withdrawLedger,
+  portfolioTotalUsd,
+  onGo,
+  onProtocolDeposit,
+  onProtocolWithdraw
+}: {
+  positions: DepositPosition[];
+  withdrawLedger: WalletWithdrawLedgerLine[];
+  portfolioTotalUsd: number;
+  onGo: (menu: MenuKey) => void;
+  onProtocolDeposit?: (protocolName: string, amountUsd: number) => void | Promise<void>;
+  onProtocolWithdraw?: (protocolName: string, amountUsd: number) => void | Promise<void>;
+}) {
+  return (
+    <div className="page-shell positions-page-shell">
+      <section className="mission-hero mission-hero--positions card">
+        <div>
+          <p className="section-eyebrow">Positions</p>
+          <h1>포지션, 노출, 출금 흐름을 관리합니다</h1>
+          <p>
+            체인·프로토콜별 노출과 예치 건별 상세를 확인하고, 지갑/출금 장부까지 같은 문맥에서 점검합니다.
+          </p>
+        </div>
+        <div className="mission-action-stack">
+          <button onClick={() => onGo("products")}>추가 예치</button>
+          <button className="ghost-btn" onClick={() => onGo("execution")}>리밸런싱 실행</button>
+        </div>
+      </section>
+      <PortfolioOverviewPanel positions={positions} />
+      <PortfolioPanel positions={positions} onProtocolDeposit={onProtocolDeposit} onProtocolWithdraw={onProtocolWithdraw} />
+      <WalletPanel
+        positions={positions}
+        withdrawLedger={withdrawLedger}
+        portfolioUsd={portfolioTotalUsd}
+        onOpenMyOverview={() => onGo("my")}
+        onOpenPortfolio={() => onGo("portfolio")}
+        onOpenActivity={() => onGo("activity")}
+      />
+    </div>
+  );
+}
+
+function ExecutionPage({
+  hasSession,
+  recentJobs,
+  recentEvents,
+  focusJobId,
+  onOpenJob,
+  onOpenEvent,
+  onExecutionComplete
+}: {
+  hasSession: boolean;
+  recentJobs: Job[];
+  recentEvents: ExecutionEvent[];
+  focusJobId?: string;
+  onOpenJob: (jobId: string) => void;
+  onOpenEvent: (jobId: string) => void;
+  onExecutionComplete?: () => void | Promise<void>;
+}) {
+  return (
+    <div className="page-shell execution-page-shell">
+      <section className="mission-hero mission-hero--execution card">
+        <div>
+          <p className="section-eyebrow">Execution</p>
+          <h1>승인, 서명, dry-run, 감사 로그를 한 흐름으로 추적합니다</h1>
+          <p>
+            실행은 단순 버튼이 아니라 계획, 승인, 서명, 제출, 확인, 기록으로 나뉩니다. 실패와 재실행은 운영 이력에서 추적합니다.
+          </p>
+        </div>
+      </section>
+      <div className="page-grid-two page-grid-two--execution">
+        <OrchestratorBoard allowJobExecution={hasSession} onExecutionComplete={onExecutionComplete} />
+        <RecentActivityPanel recentJobs={recentJobs} recentEvents={recentEvents} onOpenJob={onOpenJob} onOpenEvent={onOpenEvent} />
+      </div>
+      <OperationsHistoryPanel focusJobId={focusJobId} />
+    </div>
   );
 }
 
@@ -1054,6 +1266,30 @@ export default function App() {
     }
   };
 
+  const handleProtocolDeposit = async (protocolName: string, amountUsd: number) => {
+    const amount = Math.max(100, amountUsd);
+    const draft: DepositPosition = {
+      id: `dep_${Date.now()}`,
+      productName: `${protocolName} direct pool`,
+      amountUsd: amount,
+      expectedApr: 0.08,
+      protocolMix: [{ name: protocolName, weight: 1, pool: `${protocolName} direct allocation` }],
+      createdAt: new Date().toISOString()
+    };
+    try {
+      await handleDepositPosition(draft);
+      setPortfolioNotice({ variant: "info", text: `${protocolName}에 $${amount.toFixed(2)} 입금 반영` });
+    } catch {
+      /* handleDepositPosition에서 오류 알림 처리 */
+    }
+  };
+
+  const handleProtocolWithdraw = async (protocolName: string, amountUsd: number) => {
+    const amount = Math.max(100, amountUsd);
+    await handleWithdrawPosition(amount);
+    setPortfolioNotice({ variant: "info", text: `${protocolName} 기준 $${amount.toFixed(2)} 인출 요청 반영` });
+  };
+
   /** 비로그인(GitHub Pages 등)에서도 예치·트레이드·포트폴리오 등 뷰어 권한 메뉴를 노출 (API는 로그인 후) */
   const availableMenus = useMemo(
     () =>
@@ -1133,33 +1369,53 @@ export default function App() {
       case "auth":
         return <AuthPanel onSessionChange={setSession} />;
       case "my":
-        return <MyOverviewPanel recentJobs={recentJobs} recentEvents={recentEvents} onGo={onSelectMenu} />;
-      case "products":
         return (
-          <ProductsPanel
+          <CommandCenterPage
             positions={positions}
-            hasSession={Boolean(session)}
-            canPersistToServer={canPersistPortfolio}
-            onDepositRecorded={handleDepositPosition}
-            onWithdraw={handleWithdrawPosition}
-            onActionNotice={setPortfolioNotice}
-            onOpenOperationsWithJob={(jobId) => {
+            recentJobs={recentJobs}
+            recentEvents={recentEvents}
+            onGo={onSelectMenu}
+            onOpenJob={(jobId) => {
               setFocusJobId(jobId);
-              setActiveMenu("operationsLog");
-              setOpenTopMenu(null);
-              window.scrollTo({ top: 0, behavior: "smooth" });
+              setActiveMenu("execution");
+            }}
+            onOpenEvent={(jobId) => {
+              setFocusJobId(jobId);
+              setActiveMenu("execution");
             }}
           />
+        );
+      case "products":
+        return (
+          <StrategiesPage onOpenTrade={() => onSelectMenu("trade")} onOpenPortfolio={() => onSelectMenu("portfolio")}>
+            <ProductsPanel
+              positions={positions}
+              hasSession={Boolean(session)}
+              canPersistToServer={canPersistPortfolio}
+              onDepositRecorded={handleDepositPosition}
+              onWithdraw={handleWithdrawPosition}
+              onActionNotice={setPortfolioNotice}
+              onOpenOperationsWithJob={(jobId) => {
+                setFocusJobId(jobId);
+                setActiveMenu("execution");
+                setOpenTopMenu(null);
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+            />
+          </StrategiesPage>
         );
       case "trade":
         return <TradePanel />;
       case "portfolio":
         return (
-          <>
-            <PortfolioCommandCenter positions={positions} onOpenExecution={() => onSelectMenu("execution")} />
-            <PortfolioOverviewPanel positions={positions} />
-            <PortfolioPanel positions={positions} />
-          </>
+          <PositionsPage
+            positions={positions}
+            withdrawLedger={withdrawLedger}
+            portfolioTotalUsd={portfolioTotalUsd}
+            onGo={onSelectMenu}
+            onProtocolDeposit={handleProtocolDeposit}
+            onProtocolWithdraw={handleProtocolWithdraw}
+          />
         );
       case "wallet":
         return (
@@ -1173,7 +1429,24 @@ export default function App() {
           />
         );
       case "execution":
-        return <OrchestratorBoard allowJobExecution={Boolean(session)} />;
+        return (
+          <ExecutionPage
+            hasSession={Boolean(session)}
+            recentJobs={recentJobs}
+            recentEvents={recentEvents}
+            focusJobId={focusJobId}
+            onOpenJob={(jobId) => {
+              setFocusJobId(jobId);
+            }}
+            onOpenEvent={(jobId) => {
+              setFocusJobId(jobId);
+            }}
+            onExecutionComplete={async () => {
+              await refreshPositions();
+              await refreshWithdrawLedgerFromServer();
+            }}
+          />
+        );
       case "operationsLog":
         return <OperationsHistoryPanel focusJobId={focusJobId} />;
       case "activity":
@@ -1196,7 +1469,16 @@ export default function App() {
       case "consultant":
         return <ConsultantInsightsPanel />;
       default:
-        return <MyOverviewPanel recentJobs={recentJobs} recentEvents={recentEvents} onGo={onSelectMenu} />;
+        return (
+          <CommandCenterPage
+            positions={positions}
+            recentJobs={recentJobs}
+            recentEvents={recentEvents}
+            onGo={onSelectMenu}
+            onOpenJob={(jobId) => setFocusJobId(jobId)}
+            onOpenEvent={(jobId) => setFocusJobId(jobId)}
+          />
+        );
     }
   };
 
@@ -1206,12 +1488,12 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  /** 상단 주요 메뉴: 예치 · 트레이드 · 포트폴리오 (역할에 없는 항목은 숨김) */
+  /** 상단 주요 메뉴: Dashboard · Pools · Positions · Execution (역할에 없는 항목은 숨김) */
   const mainMenuKeys: MenuKey[] = [...PRIMARY_NAV_ORDER];
   const operatorMenuKeys: MenuKey[] = ["signupHistory", "auth", "consultant", "consensus"];
-  const historyMenuKeys: MenuKey[] = ["activity"];
-  /** More에 넣지 않음: 지갑·내 현황·예치 실행·운영 이력은 다른 진입점(헤더/검색/딥링크)으로만 이동 */
-  const hiddenFromMoreKeys: MenuKey[] = ["wallet", "my", "execution", "operationsLog"];
+  const historyMenuKeys: MenuKey[] = ["activity", "trade"];
+  /** More에 넣지 않음: 지갑·운영 이력은 다른 진입점(헤더/검색/딥링크)으로도 이동 가능 */
+  const hiddenFromMoreKeys: MenuKey[] = ["wallet", "operationsLog"];
   const operatorMenus = availableMenus.filter((item) => operatorMenuKeys.includes(item.key));
   const moreMenus = availableMenus.filter(
     (item) =>
