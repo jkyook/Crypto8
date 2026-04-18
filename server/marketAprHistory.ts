@@ -82,12 +82,18 @@ export async function listMarketRatesHistory(opts: {
   return { granularity, points };
 }
 
-/* ---- apy_history.csv (일별 역사 APY) — 별도 파일로 두면 배포 누락 시 모듈 로드 실패할 수 있어 본 모듈에 포함 ---- */
+/* ---- apy_history.csv (일별 역사 APY) — MG_HanTo 수집본 또는 번들 CSV ---- */
+
+/** 로컬에서 MG_HanTo 수집 CSV가 있으면 우선 사용(Render 등에는 없으므로 번들로 폴백). */
+const MG_HAN_APY_HISTORY_CSV = "/Users/yugjingwan/PycharmProjects/MG_HanTo/data/defi_yield/apy_history.csv";
 
 function defaultApyCsvPath(): string {
   const fromEnv = process.env.APY_HISTORY_CSV_PATH;
   if (typeof fromEnv === "string" && fromEnv.trim().length > 0) {
     return fromEnv.trim();
+  }
+  if (existsSync(MG_HAN_APY_HISTORY_CSV)) {
+    return MG_HAN_APY_HISTORY_CSV;
   }
   return join(__marketHistoryDir, "data", "apy_history.csv");
 }
