@@ -926,7 +926,15 @@ export default function App() {
     }
   };
 
-  const availableMenus = MENU_ITEMS.filter((item) => (role ? item.roles.includes(role) : item.key === "auth"));
+  /** 비로그인(GitHub Pages 등)에서도 예치·트레이드·포트폴리오 등 뷰어 권한 메뉴를 노출 (API는 로그인 후) */
+  const availableMenus = useMemo(
+    () =>
+      MENU_ITEMS.filter((item) => {
+        if (role) return item.roles.includes(role);
+        return item.roles.includes("viewer");
+      }),
+    [role]
+  );
 
   useEffect(() => {
     document.body.setAttribute("data-theme", theme);
@@ -976,15 +984,11 @@ export default function App() {
   }, [session]);
 
   useEffect(() => {
-    if (!role) {
-      setActiveMenu("auth");
-      return;
-    }
     const allowed = availableMenus.some((item) => item.key === activeMenu);
     if (!allowed) {
-      setActiveMenu("my");
+      setActiveMenu(role ? "my" : "products");
     }
-  }, [role, activeMenu]);
+  }, [role, activeMenu, availableMenus]);
 
   const renderContent = () => {
     switch (activeMenu) {
