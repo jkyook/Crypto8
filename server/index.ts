@@ -19,8 +19,7 @@ import { getDb, initDb } from "./db";
 import { ensureDemoUsersIfEmpty } from "./ensureDemoUsers";
 import rateLimit from "express-rate-limit";
 import { gatherProtocolInsightsNews } from "./protocolNews";
-import { getDailyApySeriesFromCsv } from "./apyHistoryCsv";
-import { listMarketRatesHistory, maybeAppendMarketRatesSnapshot } from "./marketAprHistory";
+import { getDailyApySeriesFromCsv, listMarketRatesHistory, maybeAppendMarketRatesSnapshot } from "./marketAprHistory";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
