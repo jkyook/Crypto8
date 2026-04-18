@@ -5,6 +5,7 @@
 # 배포 후 URL 예시(서비스 이름을 바꾸면 아래 VITE_API_BASE_URL도 같이 수정):
 #   API:   https://crypto8-api.onrender.com
 #   웹:   https://crypto8-web.onrender.com
+# 정적 사이트(runtime: static)는 Blueprint에서 region을 지정할 수 없음(Render 제한).
 
 services:
   - type: web
@@ -32,7 +33,6 @@ services:
     name: crypto8-web
     runtime: static
     plan: free
-    region: oregon
     buildCommand: npm ci && npm run build
     staticPublishPath: ./dist
     routes:
