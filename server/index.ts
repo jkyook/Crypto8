@@ -1,0 +1,413 @@
+import "dotenv/config";
+import { randomUUID } from "crypto";
+import { readFileSync } from "fs";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
+import cors from "cors";
+import express from "express";
+import {
+  assertValidWithdrawAmount,
+  createDepositPosition,
+  listDepositPositions,
+  listWithdrawalLedger,
+  withdrawDepositAmount
+} from "./positions";
+import { approveJob, createJob, executeJob, getJob, listApprovals, listExecutionEvents, listJobs } from "./store";
+import type { ApprovalLog, JobInput } from "./types";
+import { authenticate, refreshAccessToken, revokeRefreshToken, type UserRole, verifyToken } from "./auth";
+import { getDb, initDb } from "./db";
+import rateLimit from "express-rate-limit";
+import { gatherProtocolInsightsNews } from "./protocolNews";
+
+const app = express();
+const port = Number(process.env.PORT ?? 8787);
+
+const __serverDir = dirname(fileURLToPath(import.meta.url));
+function readPackageVersion(): string {
+  try {
+    const raw = readFileSync(join(__serverDir, "../package.json"), "utf8");
+    const pkg = JSON.parse(raw) as { version?: string };
+    return pkg.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+const APP_VERSION = readPackageVersion();
+
+app.use(
+  cors({
+    exposedHeaders: ["X-Request-Id"]
+  })
+);
+app.use(express.json());
+
+app.use((req, res, next) => {
+  const incoming = req.headers["x-request-id"];
+  const rid = typeof incoming === "string" && incoming.trim().length > 0 ? incoming.trim() : randomUUID();
+  res.setHeader("X-Request-Id", rid);
+  (res.locals as Record<string, string>).requestId = rid;
+  (req as express.Request & { requestId: string }).requestId = rid;
+  const started = Date.now();
+  res.on("finish", () => {
+    console.log(
+      JSON.stringify({
+        level: "info",
+        msg: "http",
+        requestId: rid,
+        method: req.method,
+        path: req.path,
+        status: res.statusCode,
+        ms: Date.now() - started
+      })
+    );
+  });
+  next();
+});
+
+const authLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+const executeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+async function fetchCurrentAprs(): Promise<{ aave: number; uniswap: number; orca: number; updatedAt: string }> {
+  const fallback = { aave: 0.045, uniswap: 0.085, orca: 0.072, updatedAt: new Date().toISOString() };
+  try {
+    const response = await fetch("https://yields.llama.fi/pools");
+    if (!response.ok) {
+      return fallback;
+    }
+    const data = (await response.json()) as {
+      data?: Array<{
+        project?: string;
+        chain?: string;
+        apy?: number | null;
+      }>;
+    };
+    const pools = data.data ?? [];
+    const avgApy = (projectNames: string[], chainNames: string[]): number => {
+      const matched = pools.filter((pool) => {
+        const project = (pool.project ?? "").toLowerCase();
+        const chain = (pool.chain ?? "").toLowerCase();
+        return (
+          projectNames.some((name) => project.includes(name)) &&
+          chainNames.some((name) => chain.includes(name)) &&
+          typeof pool.apy === "number" &&
+          Number.isFinite(pool.apy)
+        );
+      });
+      if (matched.length === 0) {
+        return 0;
+      }
+      const sum = matched.reduce((acc, pool) => acc + (pool.apy ?? 0), 0);
+      return sum / matched.length / 100;
+    };
+
+    const aave = avgApy(["aave"], ["arbitrum", "base"]) || fallback.aave;
+    const uniswap = avgApy(["uniswap"], ["arbitrum"]) || fallback.uniswap;
+    const orca = avgApy(["orca"], ["solana"]) || fallback.orca;
+
+    return { aave, uniswap, orca, updatedAt: new Date().toISOString() };
+  } catch {
+    return fallback;
+  }
+}
+
+function requireAuth(allowedRoles: UserRole[]) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const authHeader = req.header("Authorization");
+    if (!authHeader?.startsWith("Bearer ")) {
+      res.status(401).json({ ok: false, message: "unauthorized: missing bearer token" });
+      return;
+    }
+    const token = authHeader.replace("Bearer ", "");
+    const verified = verifyToken(token);
+    if (!verified.ok || !verified.role || !verified.subject) {
+      res.status(401).json({ ok: false, message: "unauthorized: invalid token" });
+      return;
+    }
+    if (!allowedRoles.includes(verified.role)) {
+      res.status(403).json({ ok: false, message: "forbidden: insufficient role" });
+      return;
+    }
+    res.locals.user = { username: verified.subject, role: verified.role };
+    next();
+  };
+}
+
+app.post("/api/auth/login", authLimiter, async (req, res) => {
+  const body = req.body as { username?: string; password?: string };
+  if (!body.username || !body.password) {
+    res.status(400).json({ ok: false, message: "username/password required" });
+    return;
+  }
+  const auth = await authenticate(body.username, body.password);
+  if (!auth.ok || !auth.accessToken || !auth.refreshToken || !auth.role) {
+    res.status(401).json({ ok: false, message: "invalid credentials" });
+    return;
+  }
+  res.json({ ok: true, accessToken: auth.accessToken, refreshToken: auth.refreshToken, role: auth.role });
+});
+
+app.post("/api/auth/refresh", async (req, res) => {
+  const body = req.body as { refreshToken?: string };
+  if (!body.refreshToken) {
+    res.status(400).json({ ok: false, message: "refreshToken required" });
+    return;
+  }
+  const refreshed = await refreshAccessToken(body.refreshToken);
+  if (!refreshed.ok || !refreshed.accessToken || !refreshed.role || !refreshed.username) {
+    res.status(401).json({ ok: false, message: "invalid refresh token" });
+    return;
+  }
+  res.json({
+    ok: true,
+    accessToken: refreshed.accessToken,
+    role: refreshed.role,
+    username: refreshed.username
+  });
+});
+
+app.post("/api/auth/logout", async (req, res) => {
+  const body = req.body as { refreshToken?: string };
+  if (!body.refreshToken) {
+    res.status(400).json({ ok: false, message: "refreshToken required" });
+    return;
+  }
+  await revokeRefreshToken(body.refreshToken);
+  res.json({ ok: true });
+});
+
+app.get("/api/health", async (_req, res) => {
+  let database: "ok" | "error" = "error";
+  try {
+    const db = getDb();
+    await db.$queryRaw`SELECT 1`;
+    database = "ok";
+  } catch {
+    database = "error";
+  }
+  const requested = process.env.EXECUTION_MODE === "live" ? "live" : "dry-run";
+  const liveConfirmed = process.env.LIVE_EXECUTION_CONFIRM === "YES";
+  const executionMode = requested === "live" && liveConfirmed ? "live" : "dry-run";
+  res.json({
+    ok: database === "ok",
+    service: "crypto8-orchestrator-api",
+    version: APP_VERSION,
+    database,
+    executionMode,
+    uptimeSec: Math.floor(process.uptime())
+  });
+});
+
+app.get("/api/market/rates", async (_req, res) => {
+  const rates = await fetchCurrentAprs();
+  res.json({ ok: true, rates });
+});
+
+app.get("/api/runtime/info", (_req, res) => {
+  const requested = process.env.EXECUTION_MODE === "live" ? "live" : "dry-run";
+  const liveConfirmed = process.env.LIVE_EXECUTION_CONFIRM === "YES";
+  const executionMode = requested === "live" && liveConfirmed ? "live" : "dry-run";
+  res.json({
+    ok: true,
+    executionMode,
+    executionModeRequested: requested,
+    liveExecutionConfirmed: liveConfirmed,
+    walletUiPolicy: "phantom-solana",
+    serverExecutionNote:
+      "Phantom signMessage in the browser records user intent only. Protocol movements are performed by server-side adapters according to EXECUTION_MODE."
+  });
+});
+
+function stripUsername<T extends { username: string }>(row: T): Omit<T, "username"> {
+  const { username: _u, ...rest } = row;
+  return rest;
+}
+
+app.get("/api/portfolio/positions", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {
+  const username = res.locals.user.username as string;
+  const rows = await listDepositPositions(username);
+  res.json({
+    ok: true,
+    positions: rows.map((row) => stripUsername(row))
+  });
+});
+
+app.get("/api/portfolio/withdrawals", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {
+  const username = res.locals.user.username as string;
+  const withdrawals = await listWithdrawalLedger(username);
+  res.json({ ok: true, withdrawals });
+});
+
+app.post("/api/portfolio/positions", requireAuth(["orchestrator"]), async (req, res) => {
+  const body = req.body as {
+    productName?: string;
+    amountUsd?: unknown;
+    expectedApr?: unknown;
+    protocolMix?: unknown;
+  };
+  const username = res.locals.user.username as string;
+  if (typeof body.productName !== "string" || typeof body.amountUsd !== "number" || typeof body.expectedApr !== "number") {
+    res.status(400).json({ ok: false, message: "productName, amountUsd, expectedApr required" });
+    return;
+  }
+  if (!Array.isArray(body.protocolMix)) {
+    res.status(400).json({ ok: false, message: "protocolMix must be an array" });
+    return;
+  }
+  try {
+    const created = await createDepositPosition(username, {
+      productName: body.productName,
+      amountUsd: body.amountUsd,
+      expectedApr: body.expectedApr,
+      protocolMix: body.protocolMix as { name: string; weight: number; pool?: string }[]
+    });
+    res.json({ ok: true, position: stripUsername(created) });
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "create failed" });
+  }
+});
+
+app.post("/api/portfolio/withdraw", requireAuth(["orchestrator"]), async (req, res) => {
+  const body = req.body as { amountUsd?: unknown };
+  const username = res.locals.user.username as string;
+  if (typeof body.amountUsd !== "number") {
+    res.status(400).json({ ok: false, message: "amountUsd required" });
+    return;
+  }
+  try {
+    assertValidWithdrawAmount(body.amountUsd);
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "invalid amount" });
+    return;
+  }
+  const withdrawnUsd = await withdrawDepositAmount(username, body.amountUsd);
+  res.json({ ok: true, withdrawnUsd });
+});
+
+app.get("/api/insights/news", async (req, res) => {
+  const protocolParam = req.query.protocol;
+  const protocol =
+    typeof protocolParam === "string" ? protocolParam : Array.isArray(protocolParam) ? String(protocolParam[0] ?? "") : "";
+  if (!protocol) {
+    res.status(400).json({ ok: false, message: "protocol query is required" });
+    return;
+  }
+  const bundle = await gatherProtocolInsightsNews(protocol);
+  res.json({ ok: true, items: bundle.items, digest: bundle.digest, scannedSources: bundle.scannedSources });
+});
+
+app.post("/api/orchestrator/jobs", requireAuth(["orchestrator"]), async (req, res) => {
+  const body = req.body as Partial<JobInput>;
+  if (
+    typeof body.depositUsd !== "number" ||
+    typeof body.isRangeOut !== "boolean" ||
+    typeof body.isDepegAlert !== "boolean" ||
+    typeof body.hasPendingRelease !== "boolean"
+  ) {
+    res.status(400).json({ ok: false, message: "invalid input" });
+    return;
+  }
+
+  try {
+    const job = await createJob(body as JobInput);
+    res.json({ ok: true, job });
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "job create failed" });
+  }
+});
+
+app.get("/api/orchestrator/jobs", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {
+  res.json({ ok: true, jobs: await listJobs() });
+});
+
+app.get("/api/orchestrator/jobs/:jobId", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+  const jobIdParam = req.params.jobId;
+  const jobId = Array.isArray(jobIdParam) ? jobIdParam[0] : jobIdParam;
+  const job = await getJob(jobId);
+  if (!job) {
+    res.status(404).json({ ok: false, message: "job not found" });
+    return;
+  }
+  res.json({ ok: true, job });
+});
+
+app.post("/api/security/approve", requireAuth(["security"]), async (req, res) => {
+  const body = req.body as {
+    jobId?: string;
+    approver?: string;
+    ttlHours?: number;
+    decision?: ApprovalLog["decision"];
+    reason?: string;
+  };
+  if (!body.jobId || !body.approver || !body.ttlHours || !body.decision || !body.reason) {
+    res.status(400).json({ ok: false, message: "missing required fields" });
+    return;
+  }
+  const job = await getJob(body.jobId);
+  if (!job) {
+    res.status(404).json({ ok: false, message: "job not found" });
+    return;
+  }
+
+  const approval = await approveJob({
+    jobId: body.jobId,
+    approver: body.approver,
+    ttlHours: body.ttlHours,
+    decision: body.decision,
+    reason: body.reason
+  });
+  res.json({ ok: true, approval });
+});
+
+app.get("/api/security/approvals", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {
+  res.json({ ok: true, approvals: await listApprovals() });
+});
+
+app.get("/api/orchestrator/execution-events", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+  const jobId = typeof req.query.jobId === "string" ? req.query.jobId : undefined;
+  res.json({ ok: true, events: await listExecutionEvents(jobId) });
+});
+
+app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orchestrator"]), async (req, res) => {
+  const jobIdParam = req.params.jobId;
+  const jobId = Array.isArray(jobIdParam) ? jobIdParam[0] : jobIdParam;
+  const idempotencyKey = req.header("Idempotency-Key") ?? undefined;
+  const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as {
+    correlationId?: unknown;
+    positionId?: unknown;
+  };
+  const headerCorr = req.headers["x-correlation-id"];
+  const correlationId =
+    typeof body.correlationId === "string"
+      ? body.correlationId
+      : typeof headerCorr === "string"
+        ? headerCorr
+        : undefined;
+  const positionId = typeof body.positionId === "string" ? body.positionId : undefined;
+  const result = await executeJob(jobId, idempotencyKey, { correlationId, positionId });
+  const requestId = typeof (res.locals as Record<string, unknown>).requestId === "string" ? (res.locals as Record<string, string>).requestId : undefined;
+  if (!result.ok) {
+    res.status(400).json({ ...result, requestId });
+    return;
+  }
+  res.json({ ...result, requestId });
+});
+
+async function bootstrap(): Promise<void> {
+  await initDb();
+  app.listen(port, () => {
+    console.log(`Crypto8 API listening on http://localhost:${port}`);
+  });
+}
+
+void bootstrap();

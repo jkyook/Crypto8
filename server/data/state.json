@@ -1,0 +1,48 @@
+{
+  "jobs": [
+    {
+      "id": "job_1776425857930",
+      "createdAt": "2026-04-17T11:37:37.930Z",
+      "status": "executed",
+      "input": {
+        "depositUsd": 15000,
+        "isRangeOut": false,
+        "isDepegAlert": false,
+        "hasPendingRelease": true
+      },
+      "riskLevel": "Medium"
+    },
+    {
+      "id": "job_1776425699490",
+      "createdAt": "2026-04-17T11:34:59.490Z",
+      "status": "executed",
+      "input": {
+        "depositUsd": 10000,
+        "isRangeOut": false,
+        "isDepegAlert": false,
+        "hasPendingRelease": true
+      },
+      "riskLevel": "Medium"
+    }
+  ],
+  "approvals": [
+    {
+      "id": "approval_1776425857977",
+      "jobId": "job_1776425857930",
+      "approver": "security_admin",
+      "approvedAt": "2026-04-17T11:37:37.977Z",
+      "expiresAt": "2026-04-18T11:37:37.977Z",
+      "decision": "Go",
+      "reason": "jwt smoke"
+    },
+    {
+      "id": "approval_1776425710347",
+      "jobId": "job_1776425699490",
+      "approver": "Security-Guardian",
+      "approvedAt": "2026-04-17T11:35:10.347Z",
+      "expiresAt": "2026-04-18T11:35:10.347Z",
+      "decision": "Go",
+      "reason": "smoke"
+    }
+  ]
+}

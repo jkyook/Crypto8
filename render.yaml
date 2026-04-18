@@ -1,0 +1,24 @@
+# Render 무료 웹 서비스용 블루프린트 (https://render.com)
+# 주의: 무료 플랜은 디스크가 비영속이라 SQLite 데이터가 재시작·재배포 시 초기화될 수 있습니다.
+# 데모·검증용으로 적합하고, 장기 운영은 외부 DB(Turso/Neon 등) 권장.
+
+services:
+  - type: web
+    name: crypto8-api
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm ci && npm run prisma:generate && npx prisma migrate deploy
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22.12.0"
+      - key: DATABASE_URL
+        value: file:../server/data/crypto8.db
+      - key: JWT_SECRET
+        generateValue: true
+      - key: EXECUTION_MODE
+        value: dry-run
+      - key: LIVE_EXECUTION_CONFIRM
+        value: "NO"

@@ -1,0 +1,70 @@
+# GitHub 무료 Pages: 정적 프런트(dist) 배포
+# 사용법:
+# 1) GitHub 저장소 → Settings → Pages → Source: GitHub Actions
+# 2) Settings → Secrets → Actions 에서 VITE_API_BASE_URL 추가 (예: https://crypto8-api.onrender.com)
+# 3) Render 등에 API 배포 후 위 URL을 시크릿에 맞춤
+# 4) main 푸시 또는 Actions 탭에서 "Deploy to GitHub Pages" 수동 실행
+
+name: Deploy to GitHub Pages
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Prisma client
+        run: npm run prisma:generate
+
+      - name: Check API base URL secret
+        run: |
+          if [ -z "${{ secrets.VITE_API_BASE_URL }}" ]; then
+            echo "::error::GitHub 저장소 Secrets에 VITE_API_BASE_URL(HTTPS API 주소)를 추가한 뒤 다시 실행하세요."
+            exit 1
+          fi
+
+      - name: Build static site
+        env:
+          VITE_BASE_PATH: /${{ github.event.repository.name }}/
+          VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
+          VITE_PHANTOM_APP_ID: ${{ secrets.VITE_PHANTOM_APP_ID }}
+        run: npm run build
+
+      - name: SPA fallback (client-side routes refresh)
+        run: cp dist/index.html dist/404.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,105 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  username     String @id
+  passwordHash String @map("password_hash")
+  role         String
+
+  depositPositions  DepositPosition[]
+  withdrawalLedgers WithdrawalLedger[]
+
+  @@map("users")
+}
+
+model DepositPosition {
+  id          String @id
+  username    String
+  productName String @map("product_name")
+  amountUsd   Float  @map("amount_usd")
+  expectedApr Float  @map("expected_apr")
+  protocolMix String @map("protocol_mix")
+  createdAt   String @map("created_at")
+
+  user User @relation(fields: [username], references: [username], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([username, createdAt])
+  @@map("deposit_positions")
+}
+
+model WithdrawalLedger {
+  id        String @id
+  username  String
+  amountUsd Float  @map("amount_usd")
+  createdAt String @map("created_at")
+
+  user User @relation(fields: [username], references: [username], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([username, createdAt])
+  @@map("withdrawal_ledger")
+}
+
+model Job {
+  id                String  @id
+  createdAt         String  @map("created_at")
+  status            String
+  depositUsd        Float   @map("deposit_usd")
+  isRangeOut        Int     @map("is_range_out")
+  isDepegAlert      Int     @map("is_depeg_alert")
+  hasPendingRelease Int     @map("has_pending_release")
+  riskLevel         String  @map("risk_level")
+
+  approvals Approval[]
+  executionEvents ExecutionEvent[]
+
+  @@map("jobs")
+}
+
+model Approval {
+  id         String @id
+  jobId      String @map("job_id")
+  approver   String
+  approvedAt String @map("approved_at")
+  expiresAt  String @map("expires_at")
+  decision   String
+  reason     String
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("approvals")
+}
+
+model RefreshSession {
+  id        String @id
+  username  String
+  tokenHash String @unique @map("token_hash")
+  expiresAt String @map("expires_at")
+  revoked   Int
+
+  @@map("refresh_sessions")
+}
+
+model ExecutionEvent {
+  id             String @id
+  jobId          String @map("job_id")
+  requestedAt    String @map("requested_at")
+  status         String
+  message        String
+  idempotencyKey String? @map("idempotency_key")
+  txId           String? @map("tx_id")
+  summary        String?
+  /** JSON: 어댑터 견적/모드/상관 id 등 (P1 구조화 페이로드) */
+  payloadJson    String? @map("payload_json")
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([jobId, requestedAt])
+  @@unique([jobId, idempotencyKey])
+  @@map("execution_events")
+}

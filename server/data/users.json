@@ -1,0 +1,17 @@
+[
+  {
+    "username": "orchestrator_admin",
+    "role": "orchestrator",
+    "passwordHash": "$2b$10$bVAuPS9Fi6gEpinLBZZXk.yrDHb34/RuBf.3mD9jcpDJgN6T8tJE2"
+  },
+  {
+    "username": "security_admin",
+    "role": "security",
+    "passwordHash": "$2b$10$PuRznditqnJ8/xCK8CEdoeGaciwBCP4rxqLK4u48lvZVKW9GVTFMO"
+  },
+  {
+    "username": "viewer_admin",
+    "role": "viewer",
+    "passwordHash": "$2b$10$0qUZrl03GX/YH0m4FeSlmevI1vZa7UzMKaSrnvZvT.R0PMlNN5VbW"
+  }
+]
