@@ -3,6 +3,8 @@ import { ApprovalsDashboard } from "./components/ApprovalsDashboard";
 import { AuthPanel } from "./components/AuthPanel";
 import { SignupRegistrationsPanel } from "./components/SignupRegistrationsPanel";
 import { DepositPlanner } from "./components/DepositPlanner";
+import { MarketAprTimeSeriesChart } from "./components/MarketAprTimeSeriesChart";
+import { ProductPoolYieldChart } from "./components/ProductPoolYieldChart";
 import { ExecutionEventsDashboard } from "./components/ExecutionEventsDashboard";
 import { UnifiedOperationsSearch } from "./components/UnifiedOperationsSearch";
 import { OrchestratorBoard } from "./components/OrchestratorBoard";
@@ -10,10 +12,12 @@ import { WalletPanel, type WalletWithdrawLedgerLine } from "./components/WalletP
 import {
   AUTH_CLEARED_EVENT,
   createDepositPositionRemote,
+  fetchDailyApyHistoryFromCsv,
   fetchMarketAprSnapshot,
   fetchProtocolNews,
   type ProtocolNewsBundle,
   getSession,
+  getWhitepaperPdfUrl,
   listDepositPositions,
   listExecutionEvents,
   listJobs,
@@ -23,6 +27,7 @@ import {
   type DepositPositionPayload,
   type ExecutionEvent,
   type Job,
+  type MarketAprHistoryPoint,
   type MarketAprSnapshot
 } from "./lib/api";
 import { aggregateChainUsdFromPositions, estimateAnnualYieldUsd } from "./lib/portfolioMetrics";
@@ -457,6 +462,20 @@ function applyLifoWithdraw(positions: DepositPosition[], amountUsd: number): Dep
   return kept;
 }
 
+const APR_DAYS_PER_YEAR = 365;
+
+function mixItemAnnualAprDecimal(name: string, snapshot: MarketAprSnapshot): number {
+  const key = name.toLowerCase();
+  if (key.includes("aave")) return snapshot.aave;
+  if (key.includes("uniswap")) return snapshot.uniswap;
+  return snapshot.orca;
+}
+
+/** 연 APR(소수) → 단순 선형 근사 7일 수익률(퍼센트 포인트, 예 0.12 → 0.12%) */
+function aprDecimalToSimpleWeekYieldPercentPoints(annualAprDecimal: number): number {
+  return annualAprDecimal * (7 / APR_DAYS_PER_YEAR) * 100;
+}
+
 const DEFAULT_PRODUCTS: YieldProduct[] = [
   {
     id: "p-8",
@@ -515,6 +534,10 @@ function ProductsPanel({
   const [marketApr, setMarketApr] = useState<MarketAprSnapshot | null>(null);
   const [aprError, setAprError] = useState("");
   const [linkedPositionId, setLinkedPositionId] = useState<string | null>(null);
+  const [showStandardL2Allocation, setShowStandardL2Allocation] = useState(false);
+  const [marketHistoryPoints, setMarketHistoryPoints] = useState<MarketAprHistoryPoint[]>([]);
+  const [historyCsvDays, setHistoryCsvDays] = useState(90);
+  const historyGranularity: "day" = "day";
   const resolvePoolLabel = (name: string, pool?: string) => {
     if (pool && pool.trim().length > 0) return pool;
     const key = name.toLowerCase();
@@ -537,18 +560,59 @@ function ProductsPanel({
     : selected.targetApr / 365;
   const periodYield = depositAmount * dailyRate * simulationDays;
 
+  const blendedAnnualAprDecimal = useMemo(() => {
+    if (!marketApr) return null;
+    const sel = products.find((item) => item.id === selectedId) ?? products[0];
+    return sel.protocolMix.reduce((acc, item) => acc + mixItemAnnualAprDecimal(item.name, marketApr) * item.weight, 0);
+  }, [marketApr, products, selectedId]);
+
+  const blendedWeekYieldPercentPoints =
+    blendedAnnualAprDecimal != null ? aprDecimalToSimpleWeekYieldPercentPoints(blendedAnnualAprDecimal) : null;
+  const blendedWeekUsdEstimate =
+    blendedWeekYieldPercentPoints != null ? (depositAmount * blendedWeekYieldPercentPoints) / 100 : null;
+
+  const poolChartRows = useMemo(
+    () =>
+      selected.protocolMix.map((item, mixIdx) => ({
+        key: `${item.name}-${mixIdx}`,
+        label: item.name,
+        weekYieldPercentPoints:
+          marketApr != null
+            ? aprDecimalToSimpleWeekYieldPercentPoints(mixItemAnnualAprDecimal(item.name, marketApr))
+            : null
+      })),
+    [marketApr, selected.protocolMix]
+  );
+
   useEffect(() => {
-    const loadApr = async () => {
+    let cancelled = false;
+    const loadAprAndHistory = async () => {
       try {
         setAprError("");
         const snapshot = await fetchMarketAprSnapshot();
-        setMarketApr(snapshot);
+        if (!cancelled) setMarketApr(snapshot);
       } catch (error) {
-        setAprError(error instanceof Error ? error.message : "실시간 이율 조회 실패");
+        if (!cancelled) {
+          setAprError(error instanceof Error ? error.message : "실시간 이율 조회 실패");
+          setMarketApr(null);
+        }
+      }
+      try {
+        const hist = await fetchDailyApyHistoryFromCsv({ days: historyCsvDays });
+        if (!cancelled) {
+          setMarketHistoryPoints(hist.points);
+        }
+      } catch {
+        if (!cancelled) setMarketHistoryPoints([]);
       }
     };
-    void loadApr();
-  }, []);
+    void loadAprAndHistory();
+    const timer = window.setInterval(() => void loadAprAndHistory(), 10 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [historyCsvDays]);
 
   return (
     <section className="card">
@@ -674,18 +738,58 @@ function ProductsPanel({
         <div className="product-pool-panel">
           <p className="product-pool-title">프로토콜 예치풀 세부내역</p>
           <div className="product-pool-list">
-            {selected.protocolMix.map((item) => {
+            <div className="product-pool-item product-pool-item--header">
+              <span>프로토콜</span>
+              <span>풀</span>
+              <span>비중</span>
+              <span>배분(USD)</span>
+              <span>1주 이율</span>
+            </div>
+            {selected.protocolMix.map((item, mixIdx) => {
               const poolAmount = depositAmount * item.weight;
+              const rowAprDec = marketApr ? mixItemAnnualAprDecimal(item.name, marketApr) : null;
+              const weekPct = rowAprDec != null ? aprDecimalToSimpleWeekYieldPercentPoints(rowAprDec) : null;
               return (
-                <div key={item.name} className="product-pool-item">
+                <div key={`${item.name}-${mixIdx}`} className="product-pool-item">
                   <span>{item.name}</span>
-                  <span>{resolvePoolLabel(item.name, item.pool)}</span>
+                  <span className="product-pool-pool-label">{resolvePoolLabel(item.name, item.pool)}</span>
                   <span>{(item.weight * 100).toFixed(0)}%</span>
                   <span>${poolAmount.toFixed(2)}</span>
+                  <span className="product-pool-week-cell">{weekPct != null ? `${weekPct.toFixed(3)}%` : "—"}</span>
                 </div>
               );
             })}
           </div>
+          <ProductPoolYieldChart rows={poolChartRows} blendedWeekPercentPoints={blendedWeekYieldPercentPoints} />
+          {blendedWeekYieldPercentPoints != null ? (
+            <p className="product-pool-weighted-weekly">
+              배분 가중 합계 1주 이율{" "}
+              <strong>
+                {blendedWeekYieldPercentPoints.toFixed(3)}%{blendedWeekUsdEstimate != null ? ` (≈ $${blendedWeekUsdEstimate.toFixed(2)})` : ""}
+              </strong>
+            </p>
+          ) : !aprError ? (
+            <p className="product-pool-weighted-weekly product-pool-weighted-weekly--pending">시장 이율을 불러오는 중입니다…</p>
+          ) : null}
+          <div className="market-apr-ts-toolbar">
+            <span className="market-apr-ts-toolbar-label">일별 구간</span>
+            <select
+              className="market-apr-ts-toolbar-select"
+              value={historyCsvDays}
+              onChange={(e) => setHistoryCsvDays(Number(e.target.value))}
+              aria-label="apy_history CSV 일수"
+            >
+              <option value={14}>14일</option>
+              <option value={30}>30일</option>
+              <option value={90}>90일</option>
+              <option value={180}>180일</option>
+            </select>
+          </div>
+          <MarketAprTimeSeriesChart
+            points={marketHistoryPoints}
+            granularity={historyGranularity}
+            protocolMix={selected.protocolMix}
+          />
           <p>
             기간{" "}
             <select value={simulationDays} onChange={(event) => setSimulationDays(Number(event.target.value))}>
@@ -704,8 +808,27 @@ function ProductsPanel({
           </p>
           {aprError ? <p>{aprError}</p> : null}
         </div>
+        <div className="standard-l2-toggle-row">
+          <button
+            type="button"
+            className="standard-l2-chip"
+            onClick={() => setShowStandardL2Allocation((prev) => !prev)}
+            aria-expanded={showStandardL2Allocation}
+          >
+            표준배분안{showStandardL2Allocation ? " · 접기" : ""}
+          </button>
+        </div>
       </div>
-      <DepositPlanner variant="embedded" depositUsd={depositAmount} onDepositUsdChange={setDepositAmount} />
+      {showStandardL2Allocation ? (
+        <div className="deposit-l2-collapsible-footer">
+          <DepositPlanner
+            variant="embedded"
+            embeddedCompact
+            depositUsd={depositAmount}
+            onDepositUsdChange={setDepositAmount}
+          />
+        </div>
+      ) : null}
       {isExecutionOpen ? (
         <div className="modal-backdrop modal-backdrop--execution" role="dialog" aria-modal="true">
           <div className="modal-card execution-modal-card">
@@ -1136,6 +1259,16 @@ export default function App() {
                     <span>{item.icon}</span> {item.label}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  className="nav-item"
+                  onClick={() => {
+                    setOpenTopMenu(null);
+                    window.open(getWhitepaperPdfUrl(), "_blank", "noopener,noreferrer");
+                  }}
+                >
+                  <span aria-hidden>📄</span> 백서
+                </button>
               </div>
             ) : null}
           </div>

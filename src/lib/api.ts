@@ -28,6 +28,11 @@ function buildApiUrl(base: string, path: string): string {
   return `${base}${p}`;
 }
 
+/** 백서 PDF — API 서버가 `/api/whitepaper.pdf`로 제공(정적 호스트가 아님). */
+export function getWhitepaperPdfUrl(): string {
+  return buildApiUrl(API_BASE, "/api/whitepaper.pdf");
+}
+
 /** Vite dev·localhost preview 등에서 /api 프록시가 깨져도 8787 직접 호출을 시도합니다. */
 function shouldUseLocal8787Fallback(): boolean {
   if (import.meta.env.DEV) {
@@ -136,6 +141,13 @@ export type MarketAprSnapshot = {
   uniswap: number;
   orca: number;
   updatedAt: string;
+};
+
+export type MarketAprHistoryPoint = {
+  t: string;
+  aave: number;
+  uniswap: number;
+  orca: number;
 };
 export type ProtocolNewsItem = {
   title: string;
@@ -807,6 +819,79 @@ export async function fetchMarketAprSnapshot(): Promise<MarketAprSnapshot> {
     }
   }
   throw new Error("시장 이율 조회 실패");
+}
+
+export async function fetchMarketAprHistory(opts?: {
+  hours?: number;
+  bucket?: "auto" | "hour" | "day";
+}): Promise<{ granularity: "hour" | "day"; points: MarketAprHistoryPoint[] }> {
+  const hours = opts?.hours ?? 168;
+  const bucket = opts?.bucket ?? "auto";
+  const qs = new URLSearchParams({ hours: String(hours), bucket });
+  const path = `/api/market/rates/history?${qs.toString()}`;
+  const candidates = [buildApiUrl(API_BASE, path), `http://localhost:8787${path}`];
+  for (const url of candidates) {
+    try {
+      const response = await fetch(url);
+      const contentType = response.headers.get("content-type") ?? "";
+      if (!contentType.includes("application/json")) {
+        continue;
+      }
+      const data = (await response.json()) as {
+        ok?: boolean;
+        granularity?: "hour" | "day";
+        points?: MarketAprHistoryPoint[];
+      };
+      if (response.ok && data.points && data.granularity) {
+        return { granularity: data.granularity, points: data.points };
+      }
+    } catch {
+      // try next
+    }
+  }
+  const h = opts?.hours ?? 168;
+  return { granularity: h <= 72 ? "hour" : "day", points: [] };
+}
+
+/** `apy_history.csv` 기반 일별 APY (Aave Arb+Base / Uniswap Arb / Orca Sol 평균). */
+export async function fetchDailyApyHistoryFromCsv(opts?: { days?: number }): Promise<{
+  ok: boolean;
+  source?: string;
+  granularity: "day";
+  points: MarketAprHistoryPoint[];
+  message?: string;
+}> {
+  const days = opts?.days ?? 90;
+  const path = `/api/market/apy-history-csv?days=${days}`;
+  const candidates = [buildApiUrl(API_BASE, path), `http://localhost:8787${path}`];
+  for (const url of candidates) {
+    try {
+      const response = await fetch(url);
+      const contentType = response.headers.get("content-type") ?? "";
+      if (!contentType.includes("application/json")) {
+        continue;
+      }
+      const data = (await response.json()) as {
+        ok?: boolean;
+        source?: string;
+        granularity?: "day";
+        points?: MarketAprHistoryPoint[];
+        message?: string;
+      };
+      if (response.ok && data.points && data.granularity === "day") {
+        return {
+          ok: Boolean(data.ok),
+          source: data.source,
+          granularity: "day",
+          points: data.points,
+          message: data.message
+        };
+      }
+    } catch {
+      // try next
+    }
+  }
+  return { ok: false, granularity: "day", points: [], message: "CSV 이력 API에 연결하지 못했습니다." };
 }
 
 export async function fetchProtocolNews(protocol: string): Promise<ProtocolNewsBundle> {

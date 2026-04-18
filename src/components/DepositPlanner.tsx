@@ -7,9 +7,16 @@ export type DepositPlannerProps = {
   onDepositUsdChange?: (value: number) => void;
   /** `embedded`: 예치상품 등 부모 카드 안에서 표시(금액 입력은 부모에 위임). */
   variant?: "standalone" | "embedded";
+  /** `embedded` 전용: 하단 보조 영역용 작은 타이포·여백. */
+  embeddedCompact?: boolean;
 };
 
-export function DepositPlanner({ depositUsd: controlledUsd, onDepositUsdChange, variant = "standalone" }: DepositPlannerProps) {
+export function DepositPlanner({
+  depositUsd: controlledUsd,
+  onDepositUsdChange,
+  variant = "standalone",
+  embeddedCompact = false
+}: DepositPlannerProps) {
   const [internalUsd, setInternalUsd] = useState(1000);
   const isControlled = controlledUsd !== undefined && onDepositUsdChange !== undefined;
   const depositUsd = isControlled ? controlledUsd : internalUsd;
@@ -59,8 +66,8 @@ export function DepositPlanner({ depositUsd: controlledUsd, onDepositUsdChange, 
 
   if (variant === "embedded") {
     return (
-      <div className="deposit-planner-embedded">
-        <p className="product-pool-title">Option L2* 전략 배분 (자산·체인)</p>
+      <div className={embeddedCompact ? "deposit-planner-embedded deposit-planner-embedded--compact" : "deposit-planner-embedded"}>
+        <p className={embeddedCompact ? "deposit-l2-foot-title" : "product-pool-title"}>Option L2* 전략 배분 (자산·체인)</p>
         {kpiAndTable}
       </div>
     );

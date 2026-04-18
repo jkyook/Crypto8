@@ -19,6 +19,8 @@ import { getDb, initDb } from "./db";
 import { ensureDemoUsersIfEmpty } from "./ensureDemoUsers";
 import rateLimit from "express-rate-limit";
 import { gatherProtocolInsightsNews } from "./protocolNews";
+import { getDailyApySeriesFromCsv } from "./apyHistoryCsv";
+import { listMarketRatesHistory, maybeAppendMarketRatesSnapshot } from "./marketAprHistory";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
@@ -245,6 +247,21 @@ app.post("/api/auth/logout", async (req, res) => {
   res.json({ ok: true });
 });
 
+const WHITEPAPER_PDF_PATH = join(__serverDir, "assets/whitepaper-option-l2.pdf");
+
+app.get("/api/whitepaper.pdf", (_req, res) => {
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", 'inline; filename="defi-yield-portfolio-report.pdf"');
+  res.sendFile(WHITEPAPER_PDF_PATH, (err) => {
+    if (err) {
+      console.error(JSON.stringify({ level: "error", msg: "whitepaper_send", error: String(err) }));
+      if (!res.headersSent) {
+        res.status(404).type("application/json").json({ ok: false, error: "whitepaper_not_found" });
+      }
+    }
+  });
+});
+
 app.get("/api/health", async (_req, res) => {
   let database: "ok" | "error" = "error";
   try {
@@ -269,7 +286,41 @@ app.get("/api/health", async (_req, res) => {
 
 app.get("/api/market/rates", async (_req, res) => {
   const rates = await fetchCurrentAprs();
+  try {
+    await maybeAppendMarketRatesSnapshot(rates, false);
+  } catch (err) {
+    console.warn(JSON.stringify({ level: "warn", msg: "market_rates_snapshot_append_failed", error: String(err) }));
+  }
   res.json({ ok: true, rates });
+});
+
+app.get("/api/market/rates/history", async (req, res) => {
+  const hoursRaw = Number(req.query.hours);
+  const hours = Number.isFinite(hoursRaw) && hoursRaw > 0 ? Math.min(Math.floor(hoursRaw), 45 * 24) : 168;
+  const b = typeof req.query.bucket === "string" ? req.query.bucket : "auto";
+  const bucket = b === "hour" || b === "day" || b === "auto" ? b : "auto";
+  try {
+    const { granularity, points } = await listMarketRatesHistory({ hours, bucket });
+    res.json({ ok: true, hours, granularity, points });
+  } catch (err) {
+    console.error(JSON.stringify({ level: "error", msg: "market_rates_history_failed", error: String(err) }));
+    res.status(500).json({ ok: false, message: "history query failed" });
+  }
+});
+
+/** MG_HanTo `apy_history.csv` 동일 스키마: 일자별 Aave(Arb+Base)·Uniswap(Arb)·Orca(Sol) 평균 APY. */
+app.get("/api/market/apy-history-csv", (req, res) => {
+  const daysRaw = Number(req.query.days);
+  const days = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.floor(daysRaw) : 90;
+  const out = getDailyApySeriesFromCsv(days);
+  res.json({
+    ok: out.ok,
+    source: out.source,
+    granularity: "day" as const,
+    days,
+    message: out.message,
+    points: out.points
+  });
 });
 
 app.get("/api/runtime/info", (_req, res) => {
@@ -519,6 +570,13 @@ async function bootstrap(): Promise<void> {
   } catch (err) {
     console.error("[bootstrap] 데모 사용자 시드 실패:", err);
     process.exit(1);
+  }
+
+  try {
+    const seedRates = await fetchCurrentAprs();
+    await maybeAppendMarketRatesSnapshot(seedRates, true);
+  } catch (err) {
+    console.warn("[bootstrap] 초기 시장 APR 스냅샷 저장 생략:", err);
   }
 
   app.listen(port, "0.0.0.0", () => {

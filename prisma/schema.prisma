@@ -109,3 +109,15 @@ model ExecutionEvent {
   @@unique([jobId, idempotencyKey])
   @@map("execution_events")
 }
+
+/** DefiLlama 기반 시장 APR 스냅샷(시간 경과 그래프용). */
+model MarketRatesSnapshot {
+  id        String @id
+  sampledAt String @map("sampled_at")
+  aave      Float
+  uniswap   Float
+  orca      Float
+
+  @@index([sampledAt])
+  @@map("market_rates_snapshots")
+}
