@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import cors from "cors";
-import express from "express";
+import express, { Router } from "express";
 import {
   assertValidWithdrawAmount,
   createDepositPosition,
@@ -14,8 +14,9 @@ import {
 } from "./positions";
 import { approveJob, createJob, executeJob, getJob, listApprovals, listExecutionEvents, listJobs } from "./store";
 import type { ApprovalLog, JobInput } from "./types";
-import { authenticate, refreshAccessToken, revokeRefreshToken, type UserRole, verifyToken } from "./auth";
+import { authenticate, refreshAccessToken, registerUser, revokeRefreshToken, type UserRole, verifyToken } from "./auth";
 import { getDb, initDb } from "./db";
+import { ensureDemoUsersIfEmpty } from "./ensureDemoUsers";
 import rateLimit from "express-rate-limit";
 import { gatherProtocolInsightsNews } from "./protocolNews";
 
@@ -90,6 +91,13 @@ const executeLimiter = rateLimit({
   legacyHeaders: false
 });
 
+const registerLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 12,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 async function fetchCurrentAprs(): Promise<{ aave: number; uniswap: number; orca: number; updatedAt: string }> {
   const fallback = { aave: 0.045, uniswap: 0.085, orca: 0.072, updatedAt: new Date().toISOString() };
   try {
@@ -154,6 +162,45 @@ function requireAuth(allowedRoles: UserRole[]) {
     next();
   };
 }
+
+const adminRouter = Router();
+adminRouter.get("/self-registrations", requireAuth(["orchestrator"]), async (_req, res) => {
+  const db = getDb();
+  const rows = await db.user.findMany({
+    where: { registeredAt: { not: null } },
+    select: { username: true, role: true, registeredAt: true },
+    orderBy: { registeredAt: "desc" }
+  });
+  res.json({ ok: true, registrations: rows });
+});
+app.use("/api/admin", adminRouter);
+
+app.post("/api/auth/register", registerLimiter, async (req, res) => {
+  const body = req.body as { username?: string; password?: string };
+  if (!body.username || !body.password) {
+    res.status(400).json({ ok: false, message: "username/password required" });
+    return;
+  }
+  const trimmed = body.username.trim();
+  const reg = await registerUser(trimmed, body.password);
+  if (!reg.ok) {
+    const code = reg.message;
+    const status =
+      code === "username taken"
+        ? 409
+        : code === "username length invalid" || code === "username format invalid" || code === "password length invalid"
+          ? 400
+          : 400;
+    res.status(status).json({ ok: false, message: reg.message ?? "register failed" });
+    return;
+  }
+  const auth = await authenticate(trimmed, body.password);
+  if (!auth.ok || !auth.accessToken || !auth.refreshToken || !auth.role) {
+    res.status(500).json({ ok: false, message: "register succeeded but login failed" });
+    return;
+  }
+  res.json({ ok: true, accessToken: auth.accessToken, refreshToken: auth.refreshToken, role: auth.role });
+});
 
 app.post("/api/auth/login", authLimiter, async (req, res) => {
   const body = req.body as { username?: string; password?: string };
@@ -260,7 +307,7 @@ app.get("/api/portfolio/withdrawals", requireAuth(["orchestrator", "security", "
   res.json({ ok: true, withdrawals });
 });
 
-app.post("/api/portfolio/positions", requireAuth(["orchestrator"]), async (req, res) => {
+app.post("/api/portfolio/positions", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
   const body = req.body as {
     productName?: string;
     amountUsd?: unknown;
@@ -289,7 +336,7 @@ app.post("/api/portfolio/positions", requireAuth(["orchestrator"]), async (req, 
   }
 });
 
-app.post("/api/portfolio/withdraw", requireAuth(["orchestrator"]), async (req, res) => {
+app.post("/api/portfolio/withdraw", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
   const body = req.body as { amountUsd?: unknown };
   const username = res.locals.user.username as string;
   if (typeof body.amountUsd !== "number") {
@@ -318,7 +365,7 @@ app.get("/api/insights/news", async (req, res) => {
   res.json({ ok: true, items: bundle.items, digest: bundle.digest, scannedSources: bundle.scannedSources });
 });
 
-app.post("/api/orchestrator/jobs", requireAuth(["orchestrator"]), async (req, res) => {
+app.post("/api/orchestrator/jobs", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
   const body = req.body as Partial<JobInput>;
   if (
     typeof body.depositUsd !== "number" ||
@@ -331,7 +378,8 @@ app.post("/api/orchestrator/jobs", requireAuth(["orchestrator"]), async (req, re
   }
 
   try {
-    const job = await createJob(body as JobInput);
+    const username = res.locals.user.username as string;
+    const job = await createJob(body as JobInput, username);
     res.json({ ok: true, job });
   } catch (error) {
     res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "job create failed" });
@@ -339,14 +387,32 @@ app.post("/api/orchestrator/jobs", requireAuth(["orchestrator"]), async (req, re
 });
 
 app.get("/api/orchestrator/jobs", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {
-  res.json({ ok: true, jobs: await listJobs() });
+  const username = res.locals.user.username as string;
+  const role = res.locals.user.role as string;
+  res.json({ ok: true, jobs: await listJobs({ username, role }) });
 });
+
+function jobReadableByUser(job: { requestedBy?: string | null }, username: string, role: string): boolean {
+  if (role === "security") {
+    return true;
+  }
+  if (job.requestedBy) {
+    return job.requestedBy === username;
+  }
+  return false;
+}
 
 app.get("/api/orchestrator/jobs/:jobId", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
   const jobIdParam = req.params.jobId;
   const jobId = Array.isArray(jobIdParam) ? jobIdParam[0] : jobIdParam;
   const job = await getJob(jobId);
   if (!job) {
+    res.status(404).json({ ok: false, message: "job not found" });
+    return;
+  }
+  const username = res.locals.user.username as string;
+  const role = res.locals.user.role as string;
+  if (!jobReadableByUser(job, username, role)) {
     res.status(404).json({ ok: false, message: "job not found" });
     return;
   }
@@ -387,10 +453,12 @@ app.get("/api/security/approvals", requireAuth(["orchestrator", "security", "vie
 
 app.get("/api/orchestrator/execution-events", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
   const jobId = typeof req.query.jobId === "string" ? req.query.jobId : undefined;
-  res.json({ ok: true, events: await listExecutionEvents(jobId) });
+  const username = res.locals.user.username as string;
+  const role = res.locals.user.role as string;
+  res.json({ ok: true, events: await listExecutionEvents(jobId, { username, role }) });
 });
 
-app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orchestrator"]), async (req, res) => {
+app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
   const jobIdParam = req.params.jobId;
   const jobId = Array.isArray(jobIdParam) ? jobIdParam[0] : jobIdParam;
   const idempotencyKey = req.header("Idempotency-Key") ?? undefined;
@@ -406,13 +474,21 @@ app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orche
         ? headerCorr
         : undefined;
   const positionId = typeof body.positionId === "string" ? body.positionId : undefined;
-  const result = await executeJob(jobId, idempotencyKey, { correlationId, positionId });
+  const username = res.locals.user.username as string;
+  const role = res.locals.user.role as string;
+  const result = await executeJob(jobId, idempotencyKey, { correlationId, positionId }, { username, role });
   const requestId = typeof (res.locals as Record<string, unknown>).requestId === "string" ? (res.locals as Record<string, string>).requestId : undefined;
   if (!result.ok) {
-    res.status(400).json({ ...result, requestId });
+    const forbidden = typeof result.message === "string" && result.message.startsWith("forbidden:");
+    res.status(forbidden ? 403 : 400).json({ ...result, requestId });
     return;
   }
   res.json({ ...result, requestId });
+});
+
+/** 모든 라우트 등록 직후(부트스트랩·listen 전)에 두어 경로 누락을 방지합니다. */
+app.use((req, res) => {
+  res.status(404).json({ ok: false, message: `not found: ${req.method} ${req.path}` });
 });
 
 const DB_INIT_TIMEOUT_MS = 25_000;
@@ -435,6 +511,13 @@ async function bootstrap(): Promise<void> {
     ]);
   } catch (err) {
     console.error("[bootstrap] DB 초기화 실패:", err);
+    process.exit(1);
+  }
+
+  try {
+    await ensureDemoUsersIfEmpty();
+  } catch (err) {
+    console.error("[bootstrap] 데모 사용자 시드 실패:", err);
     process.exit(1);
   }
 

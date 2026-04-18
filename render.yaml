@@ -13,7 +13,7 @@ services:
     plan: free
     region: oregon
     # 기존에 커밋됐던 DB 잔여물·비영속 디스크 상 충돌 방지 후 마이그레이션
-    buildCommand: rm -f server/data/crypto8.db prisma/server/data/crypto8.db 2>/dev/null; npm ci && npm run prisma:generate && npx prisma migrate deploy
+    buildCommand: rm -f server/data/crypto8.db prisma/server/data/crypto8.db 2>/dev/null; npm ci && npm run prisma:generate && npx prisma migrate deploy && npx prisma db seed
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:

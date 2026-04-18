@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { AddressType } from "@phantom/browser-sdk";
 import { useAccounts, usePhantom } from "@phantom/react-sdk";
 import {
   createOrchestratorJob,
   executeJob,
   fetchRuntimeInfo,
-  getSession,
+  readAccessTokenSnapshot,
+  subscribeLocalAuth,
   type ExecuteJobResponse,
   type Job,
   type RuntimeInfo
@@ -19,8 +20,8 @@ type OrchestratorBoardProps = {
   initialProductName?: string;
   initialEstYieldUsd?: number;
   initialEstFeeUsd?: number;
-  /** 부모(App)에서 세션과 동기화할 때 전달. 생략 시 `getSession()`으로 판별. */
-  isOrchestratorApiSession?: boolean;
+  /** `false`이면 서버 예치 실행 단계를 막습니다(비로그인 상품 체험 등). JWT는 `localStorage` 구독으로 판별합니다. */
+  allowJobExecution?: boolean;
   /** 직전 예치 저장으로 생성된 포지션 id(실행 이벤트 페이로드에 연결). */
   linkedPositionId?: string;
   onActionNotice?: (notice: { variant: "error" | "info"; text: string }) => void;
@@ -32,7 +33,7 @@ export function OrchestratorBoard({
   initialProductName = "기본 상품",
   initialEstYieldUsd = 0,
   initialEstFeeUsd = 0,
-  isOrchestratorApiSession,
+  allowJobExecution: allowJobExecutionProp,
   linkedPositionId,
   onActionNotice,
   onOpenOperationsWithJob
@@ -81,10 +82,9 @@ export function OrchestratorBoard({
   );
   const riskClass = `badge badge-${risk.toLowerCase()}`;
   const hasWallet = Boolean(isConnected && solanaAccount?.address);
-  const session = getSession();
-  const isOrchestratorApi =
-    typeof isOrchestratorApiSession === "boolean" ? isOrchestratorApiSession : session?.role === "orchestrator";
-  const canExecute = Boolean(job) && hasWallet && isExecutionConfirmed && isOrchestratorApi;
+  const jwtAccess = useSyncExternalStore(subscribeLocalAuth, readAccessTokenSnapshot, () => "");
+  const canUseServerJobs = jwtAccess.length > 0 && allowJobExecutionProp !== false;
+  const canExecute = Boolean(job) && hasWallet && isExecutionConfirmed && canUseServerJobs;
   const quoteRows = useMemo(() => {
     const ar = lastExecution?.payload?.adapterResults;
     if (ar && ar.length > 0) {
@@ -113,12 +113,8 @@ export function OrchestratorBoard({
     { key: "depeg", label: "스테이블 디페그", ok: !isDepegAlert, detail: "실시간 피드 연동 전 기본 정상값" }
   ] as const;
   const onCreateJob = async () => {
-    if (!isOrchestratorApi) {
-      setApiMessage("예치 요청은 운영 전용 계정으로 로그인한 경우에만 생성할 수 있습니다.");
-      return;
-    }
-    if (!hasWallet) {
-      setApiMessage("지갑 연결 후 예치 요청을 생성할 수 있습니다.");
+    if (!canUseServerJobs) {
+      setApiMessage("예치 요청을 서버에 남기려면 먼저 로그인하세요.");
       return;
     }
     try {
@@ -132,15 +128,19 @@ export function OrchestratorBoard({
       setIsExecutionDone(false);
       setIsExecutionConfirmed(false);
       setLastExecution(null);
-      setApiMessage(`작업 생성 완료: ${created.id}`);
+      setApiMessage(
+        hasWallet
+          ? `작업 생성 완료: ${created.id}`
+          : `작업 생성 완료: ${created.id} · 서버 실행(3단계) 전에 Phantom(Solana) 지갑을 연결하세요.`
+      );
     } catch (error) {
       setApiMessage(error instanceof Error ? error.message : "작업 생성 실패");
     }
   };
 
   const onExecute = async () => {
-    if (!isOrchestratorApi) {
-      setApiMessage("서버 실행은 운영 전용 계정으로 로그인한 경우에만 할 수 있습니다.");
+    if (!canUseServerJobs) {
+      setApiMessage("서버 실행을 요청하려면 먼저 로그인하세요.");
       return;
     }
     if (!job) {
@@ -175,12 +175,16 @@ export function OrchestratorBoard({
   };
 
   const onConfirmExecution = () => {
-    if (!job || !hasWallet) {
-      setApiMessage("지갑 연결 및 작업 생성을 먼저 완료하세요.");
+    if (!job) {
+      setApiMessage("먼저 1번으로 예치 요청을 생성하세요.");
       return;
     }
     setIsExecutionConfirmed(true);
-    setApiMessage("실행 확인 완료. 3번 버튼으로 서버 실행을 요청하세요.");
+    setApiMessage(
+      hasWallet
+        ? "실행 확인 완료. 3번 버튼으로 서버 실행을 요청하세요."
+        : "실행 확인 완료. 서버 실행을 하려면 Phantom(Solana) 지갑을 연결한 뒤 3번을 누르세요."
+    );
   };
 
   const step3Label = runtime?.executionMode === "live" ? "3. 서버 실행" : "3. 서버 실행 (시뮬레이션)";
@@ -188,14 +192,18 @@ export function OrchestratorBoard({
   return (
     <section className="card orchestrator-card">
       <h2>예치 실행 확인</h2>
-      {runtime?.serverExecutionNote || !isOrchestratorApi ? (
+      {runtime?.serverExecutionNote || !canUseServerJobs ? (
         <div className="runtime-scope-notice" role="note">
           {runtime?.serverExecutionNote ? <p className="runtime-scope-sub">{runtime.serverExecutionNote}</p> : null}
-          {!isOrchestratorApi ? (
+          {!canUseServerJobs ? (
             <p className="runtime-scope-sub" role="status">
-              예치 요청 생성과 서버 실행은 운영 전용으로 로그인한 경우에만 사용할 수 있습니다.
+              1~3단계는 <strong>로그인 · 계정</strong> 메뉴에서 아이디·비밀번호(JWT)로 로그인(또는 이용자 가입)한 뒤에 사용할 수 있습니다. Phantom 지갑만으로는 서버 예치 실행이 열리지 않습니다.
             </p>
-          ) : null}
+          ) : (
+            <p className="runtime-scope-sub" role="status">
+              예치 요청·실행 이력은 현재 로그인한 이용자 계정에만 연결됩니다.
+            </p>
+          )}
         </div>
       ) : null}
       <div className="execution-context-row">
@@ -291,11 +299,11 @@ export function OrchestratorBoard({
         <button
           className={job ? "flow-step-btn done" : "flow-step-btn waiting"}
           onClick={onCreateJob}
-          disabled={!hasWallet || !isOrchestratorApi}
+          disabled={!canUseServerJobs}
         >
           1. 예치 요청 생성
         </button>
-        <button className={isExecutionConfirmed ? "flow-step-btn done" : "flow-step-btn waiting"} onClick={onConfirmExecution} disabled={!job || !hasWallet}>
+        <button className={isExecutionConfirmed ? "flow-step-btn done" : "flow-step-btn waiting"} onClick={onConfirmExecution} disabled={!job}>
           2. 실행 확인
         </button>
         <button

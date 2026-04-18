@@ -13,6 +13,8 @@ export type ExecutionJob = {
   status: "queued" | "blocked" | "executed";
   input: JobInput;
   riskLevel: RiskLevel;
+  /** 요청을 생성한 로그인 사용자(없으면 마이그레이션 이전 데이터). */
+  requestedBy?: string | null;
 };
 
 export type ApprovalLog = {
@@ -34,6 +36,8 @@ export type AuthUser = {
   username: string;
   role: "orchestrator" | "security" | "viewer";
 };
+
+export type JobListScope = Pick<AuthUser, "username" | "role">;
 
 /** 어댑터별 시뮬/제출 한 줄(실행 페이로드에 JSON으로 저장). */
 export type AdapterResultSnapshot = {

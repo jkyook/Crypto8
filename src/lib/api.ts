@@ -1,6 +1,67 @@
 import type { RiskLevel } from "../types";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8787";
+function stripTrailingSlash(s: string): string {
+  return s.replace(/\/+$/, "");
+}
+
+/** 개발 시 기본값은 빈 문자열 → `http://localhost:5173/api/...`로 요청되어 Vite 프록시가 8787로 넘김(로그인·갱신·입금이 같은 백엔드를 씀). */
+function resolveApiBase(): string {
+  const raw = import.meta.env.VITE_API_BASE_URL as string | undefined;
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    return stripTrailingSlash(raw.trim());
+  }
+  if (import.meta.env.DEV) {
+    return "";
+  }
+  return "http://localhost:8787";
+}
+
+const API_BASE = resolveApiBase();
+/** 프록시 실패·잘못된 VITE 설정으로 HTML이 올 때 개발 모드에서만 직접 붙일 API */
+const DEV_DIRECT_API = "http://localhost:8787";
+
+function buildApiUrl(base: string, path: string): string {
+  const p = path.startsWith("/") ? path : `/${path}`;
+  if (!base) {
+    return p;
+  }
+  return `${base}${p}`;
+}
+
+/** Vite dev·localhost preview 등에서 /api 프록시가 깨져도 8787 직접 호출을 시도합니다. */
+function shouldUseLocal8787Fallback(): boolean {
+  if (import.meta.env.DEV) {
+    return true;
+  }
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const h = window.location.hostname;
+  return h === "localhost" || h === "127.0.0.1";
+}
+
+/** Content-Type이 없거나 빗나가도, 본문이 HTML이면 감지합니다. */
+async function responseLooksLikeHtml(res: Response): Promise<boolean> {
+  const ct = res.headers.get("content-type") ?? "";
+  if (ct.includes("text/html")) {
+    return true;
+  }
+  if (ct.includes("application/json")) {
+    return false;
+  }
+  try {
+    const head = (await res.clone().text()).trimStart().slice(0, 256);
+    return head.startsWith("<") || head.startsWith("<!");
+  } catch {
+    return false;
+  }
+}
+
+/** 로컬 스토리지 세션만 지움(리프레시 실패 등). `App`이 이 이벤트로 UI 동기화. */
+export const AUTH_CLEARED_EVENT = "crypto8:auth-cleared";
+/** 같은 탭에서 로그인·토큰 갱신 후 JWT를 다시 읽도록(예: 예치 실행 모달). */
+export const AUTH_UPDATED_EVENT = "crypto8:session-updated";
+
 const TOKEN_KEY = "crypto8_access_token";
 const REFRESH_TOKEN_KEY = "crypto8_refresh_token";
 const ROLE_KEY = "crypto8_role";
@@ -19,6 +80,8 @@ export type Job = {
   status: "queued" | "blocked" | "executed";
   input: JobInput;
   riskLevel: RiskLevel;
+  /** 서버에 기록된 요청자(로그인 사용자명). */
+  requestedBy?: string | null;
 };
 
 export type AuthRole = "orchestrator" | "security" | "viewer";
@@ -190,19 +253,72 @@ export function getSession(): AuthSession | null {
   return { accessToken, refreshToken, role, username };
 }
 
-export async function clearSession(): Promise<void> {
-  const refreshToken = getRefreshToken();
-  if (refreshToken) {
-    await fetch(`${API_BASE}/api/auth/logout`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refreshToken })
-    });
+/** `useSyncExternalStore`용: 액세스 토큰 문자열만 구독합니다. */
+export function readAccessTokenSnapshot(): string {
+  if (typeof localStorage === "undefined") {
+    return "";
   }
+  return localStorage.getItem(TOKEN_KEY) ?? "";
+}
+
+export function subscribeLocalAuth(callback: () => void): () => void {
+  if (typeof window === "undefined") {
+    return () => {};
+  }
+  const onStorage = (e: StorageEvent): void => {
+    if (e.key === TOKEN_KEY || e.key === REFRESH_TOKEN_KEY || e.key === ROLE_KEY || e.key === USERNAME_KEY || e.key === null) {
+      callback();
+    }
+  };
+  window.addEventListener("storage", onStorage);
+  window.addEventListener(AUTH_CLEARED_EVENT, callback);
+  window.addEventListener(AUTH_UPDATED_EVENT, callback);
+  return () => {
+    window.removeEventListener("storage", onStorage);
+    window.removeEventListener(AUTH_CLEARED_EVENT, callback);
+    window.removeEventListener(AUTH_UPDATED_EVENT, callback);
+  };
+}
+
+function clearAuthStorageSync(): void {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(REFRESH_TOKEN_KEY);
   localStorage.removeItem(ROLE_KEY);
   localStorage.removeItem(USERNAME_KEY);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_CLEARED_EVENT));
+  }
+}
+
+export async function clearSession(): Promise<void> {
+  const refreshToken = getRefreshToken();
+  if (refreshToken) {
+    try {
+      await fetch(`${API_BASE}/api/auth/logout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshToken })
+      });
+    } catch {
+      /* 서버 없음·토큰 무효여도 로컬은 정리 */
+    }
+  }
+  clearAuthStorageSync();
+}
+
+async function readJsonFromApiResponse(response: Response, context: string): Promise<Record<string, unknown>> {
+  const text = await response.text();
+  const trimmed = text.trimStart();
+  if (trimmed.startsWith("<") || trimmed.startsWith("<!")) {
+    throw new Error(
+      `${context}: 서버가 JSON 대신 HTML(웹 페이지)을 돌려주었습니다. 보통 API 주소가 잘못됐거나(프론트 5173만 호출), API 프로세스가 꺼져 있을 때입니다. 로컬이면 \`npm run dev:api\`(8787)를 실행하고, 개발 시 \`VITE_API_BASE_URL\`은 비워 두어 /api 프록시를 쓰거나 \`http://localhost:8787\`로 맞추세요.`
+    );
+  }
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    throw new Error(`${context}: JSON이 아닙니다. (${text.slice(0, 120)}…)`);
+  }
 }
 
 export async function login(username: string, password: string): Promise<AuthSession> {
@@ -211,7 +327,7 @@ export async function login(username: string, password: string): Promise<AuthSes
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password })
   });
-  const data = (await response.json()) as {
+  const data = (await readJsonFromApiResponse(response, "로그인")) as {
     ok: boolean;
     accessToken?: string;
     refreshToken?: string;
@@ -219,7 +335,13 @@ export async function login(username: string, password: string): Promise<AuthSes
     message?: string;
   };
   if (!response.ok || !data.accessToken || !data.refreshToken || !data.role) {
-    throw new Error(data.message ?? "로그인 실패");
+    const raw = data.message ?? "로그인 실패";
+    if (response.status === 401 && /invalid credentials/i.test(raw)) {
+      throw new Error(
+        "아이디·비밀번호가 맞지 않거나, 붙어 있는 API 서버에 사용자 데이터가 없습니다. orchestrator_admin / orchestrator123 조합을 확인하고, 로컬이면 API를 한 번 재시작하거나 터미널에서 npx prisma db seed 를 실행해 보세요."
+      );
+    }
+    throw new Error(raw);
   }
   const session: AuthSession = {
     accessToken: data.accessToken,
@@ -231,12 +353,92 @@ export async function login(username: string, password: string): Promise<AuthSes
   localStorage.setItem(REFRESH_TOKEN_KEY, session.refreshToken);
   localStorage.setItem(ROLE_KEY, session.role);
   localStorage.setItem(USERNAME_KEY, session.username);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_UPDATED_EVENT));
+  }
   return session;
+}
+
+function mapRegisterError(status: number, code: string | undefined): string {
+  if (status === 404) {
+    return "회원가입 API를 찾을 수 없습니다. API 서버를 최신 코드로 재시작했는지 확인하세요.";
+  }
+  if (status === 409 || code === "username taken") {
+    return "이미 사용 중인 아이디입니다.";
+  }
+  if (code === "username length invalid") {
+    return "아이디는 3~64자여야 합니다.";
+  }
+  if (code === "username format invalid") {
+    return "아이디는 영문·숫자·밑줄·점·하이픈만 사용할 수 있습니다.";
+  }
+  if (code === "password length invalid") {
+    return "비밀번호는 8~200자여야 합니다.";
+  }
+  if (code === "username/password required") {
+    return "아이디와 비밀번호를 입력하세요.";
+  }
+  return "회원가입에 실패했습니다.";
+}
+
+/** 일반 이용자 회원가입(역할 `viewer`). 성공 시 로그인과 동일하게 토큰을 저장합니다. */
+export async function register(username: string, password: string): Promise<AuthSession> {
+  const trimmed = username.trim();
+  const response = await fetch(`${API_BASE}/api/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: trimmed, password })
+  });
+  const data = (await readJsonFromApiResponse(response, "회원가입")) as {
+    ok?: boolean;
+    accessToken?: string;
+    refreshToken?: string;
+    role?: AuthRole;
+    message?: string;
+  };
+  if (!response.ok || !data.accessToken || !data.refreshToken || !data.role) {
+    throw new Error(mapRegisterError(response.status, typeof data.message === "string" ? data.message : undefined));
+  }
+  const session: AuthSession = {
+    accessToken: data.accessToken,
+    refreshToken: data.refreshToken,
+    role: data.role,
+    username: trimmed
+  };
+  localStorage.setItem(TOKEN_KEY, session.accessToken);
+  localStorage.setItem(REFRESH_TOKEN_KEY, session.refreshToken);
+  localStorage.setItem(ROLE_KEY, session.role);
+  localStorage.setItem(USERNAME_KEY, session.username);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_UPDATED_EVENT));
+  }
+  return session;
+}
+
+export type SelfRegistrationRow = {
+  username: string;
+  role: string;
+  registeredAt: string | null;
+};
+
+/** 운영자(orchestrator) 전용: 직접 가입(`registered_at` 있음) 계정 목록. */
+export async function listSelfRegistrations(): Promise<SelfRegistrationRow[]> {
+  const response = await authedFetch("/api/admin/self-registrations");
+  const raw = (await readJsonFromApiResponse(response, "회원가입 내역")) as {
+    message?: string;
+    registrations?: SelfRegistrationRow[];
+  };
+  if (!response.ok) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "회원가입 내역 조회 실패");
+  }
+  const regs = raw.registrations;
+  return Array.isArray(regs) ? regs : [];
 }
 
 async function refreshAccessTokenOrThrow(): Promise<string> {
   const refreshToken = getRefreshToken();
   if (!refreshToken) {
+    clearAuthStorageSync();
     throw new Error("세션이 만료되었습니다. 다시 로그인하세요.");
   }
   const response = await fetch(`${API_BASE}/api/auth/refresh`, {
@@ -246,11 +448,21 @@ async function refreshAccessTokenOrThrow(): Promise<string> {
   });
   const data = (await response.json()) as { accessToken?: string; role?: AuthRole; username?: string; message?: string };
   if (!response.ok || !data.accessToken || !data.role || !data.username) {
-    throw new Error(data.message ?? "토큰 갱신 실패");
+    clearAuthStorageSync();
+    const raw = data.message ?? "토큰 갱신 실패";
+    if (/invalid refresh token/i.test(raw)) {
+      throw new Error(
+        "로그인 세션이 서버와 맞지 않습니다. (API 주소가 바뀌었거나 서버·DB를 다시 띄운 경우 흔합니다.) 다시 로그인해 주세요."
+      );
+    }
+    throw new Error(raw);
   }
   localStorage.setItem(TOKEN_KEY, data.accessToken);
   localStorage.setItem(ROLE_KEY, data.role);
   localStorage.setItem(USERNAME_KEY, data.username);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_UPDATED_EVENT));
+  }
   return data.accessToken;
 }
 
@@ -262,7 +474,20 @@ async function authedFetch(path: string, init: RequestInit = {}): Promise<Respon
 
   const headers = new Headers(init.headers ?? {});
   headers.set("Authorization", `Bearer ${currentToken}`);
-  const first = await fetch(`${API_BASE}${path}`, { ...init, headers });
+
+  const fetchOnce = (base: string): Promise<Response> => {
+    return fetch(buildApiUrl(base, path), { ...init, headers: new Headers(headers) });
+  };
+
+  let first = await fetchOnce(API_BASE);
+  if (
+    shouldUseLocal8787Fallback() &&
+    stripTrailingSlash(API_BASE) !== stripTrailingSlash(DEV_DIRECT_API) &&
+    (await responseLooksLikeHtml(first))
+  ) {
+    first = await fetchOnce(DEV_DIRECT_API);
+  }
+
   if (first.status !== 401) {
     return first;
   }
@@ -270,7 +495,20 @@ async function authedFetch(path: string, init: RequestInit = {}): Promise<Respon
   const newToken = await refreshAccessTokenOrThrow();
   const retryHeaders = new Headers(init.headers ?? {});
   retryHeaders.set("Authorization", `Bearer ${newToken}`);
-  return fetch(`${API_BASE}${path}`, { ...init, headers: retryHeaders });
+
+  const retryFetch = (base: string): Promise<Response> => {
+    return fetch(buildApiUrl(base, path), { ...init, headers: retryHeaders });
+  };
+
+  let second = await retryFetch(API_BASE);
+  if (
+    shouldUseLocal8787Fallback() &&
+    stripTrailingSlash(API_BASE) !== stripTrailingSlash(DEV_DIRECT_API) &&
+    (await responseLooksLikeHtml(second))
+  ) {
+    second = await retryFetch(DEV_DIRECT_API);
+  }
+  return second;
 }
 
 async function readErrorFromApiResponse(response: Response, fallback: string): Promise<string> {
@@ -285,7 +523,7 @@ async function readErrorFromApiResponse(response: Response, fallback: string): P
       response.status === 403 &&
       (m === "forbidden: insufficient role" || (typeof m === "string" && m.includes("insufficient role")))
     ) {
-      return "권한이 없습니다. 이 작업은 운영 전용으로 로그인한 경우에만 할 수 있습니다.";
+      return "권한이 없습니다. 로그인 상태와 계정 권한을 확인하세요.";
     }
     if (typeof m === "string" && m.length > 0) return m;
   } catch {
@@ -478,7 +716,7 @@ export async function createDepositPositionRemote(payload: {
       response.status === 403 &&
       (msg === "forbidden: insufficient role" || !msg || (typeof msg === "string" && msg.includes("insufficient role")))
     ) {
-      msg = "권한이 없습니다. 예치 저장은 운영 전용으로 로그인한 경우에만 할 수 있습니다.";
+      msg = "권한이 없습니다. 로그인 후 다시 시도하세요.";
     }
     throw new Error(msg ?? "예치 포지션 저장 실패");
   }
@@ -506,7 +744,7 @@ export async function withdrawDepositRemote(amountUsd: number): Promise<{ withdr
       response.status === 403 &&
       (msg === "forbidden: insufficient role" || !msg || (typeof msg === "string" && msg.includes("insufficient role")))
     ) {
-      msg = "권한이 없습니다. 인출 반영은 운영 전용으로 로그인한 경우에만 할 수 있습니다.";
+      msg = "권한이 없습니다. 로그인 후 다시 시도하세요.";
     }
     const trimmed = text.trim();
     if (typeof msg === "string" && msg.length > 0) {

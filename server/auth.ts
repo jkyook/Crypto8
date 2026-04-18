@@ -1,12 +1,14 @@
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { getDb } from "./db";
 
 export type UserRole = "orchestrator" | "security" | "viewer";
 
 const JWT_SECRET = process.env.JWT_SECRET ?? "dev-jwt-secret-change-me";
-const ACCESS_EXPIRES_IN = "15m";
+/** 예: `15m`, `8h`, `7d` — 짧으면 입금 등 API 호출 시 갱신이 잦아집니다. */
+const ACCESS_EXPIRES_IN = process.env.JWT_ACCESS_EXPIRES_IN ?? "15m";
 const REFRESH_EXPIRES_DAYS = 7;
 
 function signAccessToken(username: string, role: UserRole): string {
@@ -31,6 +33,38 @@ async function issueRefreshToken(username: string): Promise<string> {
     }
   });
   return refreshToken;
+}
+
+/** 일반 이용자 가입. 역할은 항상 `viewer`(예치·인출·예치 실행 동일 API). */
+export async function registerUser(username: string, password: string): Promise<{ ok: boolean; message?: string }> {
+  const u = username.trim();
+  if (u.length < 3 || u.length > 64) {
+    return { ok: false, message: "username length invalid" };
+  }
+  if (!/^[a-zA-Z0-9_.-]+$/.test(u)) {
+    return { ok: false, message: "username format invalid" };
+  }
+  if (password.length < 8 || password.length > 200) {
+    return { ok: false, message: "password length invalid" };
+  }
+  const db = getDb();
+  const passwordHash = bcrypt.hashSync(password, 10);
+  try {
+    await db.user.create({
+      data: {
+        username: u,
+        passwordHash,
+        role: "viewer",
+        registeredAt: new Date().toISOString()
+      }
+    });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      return { ok: false, message: "username taken" };
+    }
+    throw e;
+  }
+  return { ok: true };
 }
 
 export async function authenticate(

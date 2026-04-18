@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AddressType } from "@phantom/browser-sdk";
 import { useAccounts, useConnect, useDisconnect, usePhantom } from "@phantom/react-sdk";
-import type { DepositPositionPayload } from "../lib/api";
+import { AUTH_CLEARED_EVENT, AUTH_UPDATED_EVENT, getSession, type DepositPositionPayload } from "../lib/api";
 import { fetchOnChainPortfolioWithFallback, getSolanaRpcCandidates, solscanTokenUrl, type OnChainTokenRow } from "../lib/solanaChainAssets";
 
 export type WalletWithdrawLedgerLine = {
@@ -157,6 +157,38 @@ export function WalletPanel({
   const [isConnecting, setIsConnecting] = useState(false);
   const [isCompactDetailOpen, setIsCompactDetailOpen] = useState(false);
   const [copyHint, setCopyHint] = useState("");
+  const [appUsername, setAppUsername] = useState(() => getSession()?.username ?? "");
+
+  useEffect(() => {
+    const sync = (): void => {
+      setAppUsername(getSession()?.username ?? "");
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener(AUTH_CLEARED_EVENT, sync);
+      window.addEventListener(AUTH_UPDATED_EVENT, sync);
+    }
+    sync();
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener(AUTH_CLEARED_EVENT, sync);
+        window.removeEventListener(AUTH_UPDATED_EVENT, sync);
+      }
+    };
+  }, []);
+
+  const walletAddressLabel = useMemo(() => {
+    const chain = solanaAccount?.address;
+    if (appUsername && chain) {
+      return `${appUsername} · ${chain.slice(0, 4)}…${chain.slice(-4)}`;
+    }
+    if (appUsername) {
+      return `${appUsername} (앱 로그인)`;
+    }
+    if (chain) {
+      return `${chain.slice(0, 6)}…${chain.slice(-4)}`;
+    }
+    return "주소 없음";
+  }, [appUsername, solanaAccount?.address]);
 
   const ledgerRows = useMemo(() => {
     const rows: LedgerRow[] = [];
@@ -380,8 +412,7 @@ export function WalletPanel({
           <>
             <div className="wallet-widget-head wallet-widget-head-address-only">
               <button type="button" className="wallet-address-link" onClick={() => setIsCompactDetailOpen((prev) => !prev)}>
-                {solanaAccount?.address ? `${solanaAccount.address.slice(0, 6)}…${solanaAccount.address.slice(-4)}` : "주소 없음"}{" "}
-                {isCompactDetailOpen ? "▴" : "▾"}
+                {walletAddressLabel} {isCompactDetailOpen ? "▴" : "▾"}
               </button>
             </div>
             {copyHint ? <p className="wallet-copy-hint wallet-copy-hint-compact">{copyHint}</p> : null}
@@ -404,6 +435,12 @@ export function WalletPanel({
           </>
         ) : (
           <div className="wallet-widget-head wallet-widget-head-address-only">
+            {appUsername ? (
+              <span className="wallet-app-id-inline" title="앱(JWT) 로그인 아이디">
+                {appUsername}
+                {" · "}
+              </span>
+            ) : null}
             <button type="button" onClick={onConnect} disabled={isConnecting}>
               {isConnecting ? "연결 중…" : "연결"}
             </button>
@@ -423,7 +460,12 @@ export function WalletPanel({
       {isConnected ? (
         <>
           <div className="wallet-identity-panel">
-            <p className="wallet-full-address">{solanaAccount?.address ?? "주소 없음"}</p>
+            {appUsername ? (
+              <p className="wallet-app-account-line">
+                앱 계정 <strong className="wallet-mono">{appUsername}</strong>
+              </p>
+            ) : null}
+            <p className="wallet-full-address">{solanaAccount?.address ?? "온체인 지갑 미연결 — Phantom 연결 시 주소가 표시됩니다."}</p>
             {copyHint ? <p className="wallet-copy-hint wallet-copy-hint-in-panel">{copyHint}</p> : null}
             <NetworkStatusBlock network={network} plain />
             {networkToggle({ compact: false })}

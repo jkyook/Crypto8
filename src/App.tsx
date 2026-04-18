@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { ApprovalsDashboard } from "./components/ApprovalsDashboard";
 import { AuthPanel } from "./components/AuthPanel";
+import { SignupRegistrationsPanel } from "./components/SignupRegistrationsPanel";
 import { DepositPlanner } from "./components/DepositPlanner";
 import { ExecutionEventsDashboard } from "./components/ExecutionEventsDashboard";
 import { UnifiedOperationsSearch } from "./components/UnifiedOperationsSearch";
 import { OrchestratorBoard } from "./components/OrchestratorBoard";
 import { WalletPanel, type WalletWithdrawLedgerLine } from "./components/WalletPanel";
 import {
+  AUTH_CLEARED_EVENT,
   createDepositPositionRemote,
   fetchMarketAprSnapshot,
   fetchProtocolNews,
@@ -40,7 +42,8 @@ type MenuKey =
   | "operationsLog"
   | "activity"
   | "consensus"
-  | "consultant";
+  | "consultant"
+  | "signupHistory";
 type UserRole = AuthSession["role"];
 type MenuItem = {
   key: MenuKey;
@@ -75,11 +78,12 @@ const MENU_ITEMS: MenuItem[] = [
   { key: "trade", label: "Trade", icon: "🔄", group: "operation", roles: ["orchestrator", "security", "viewer"] },
   { key: "portfolio", label: "Portfolio", icon: "📊", group: "operation", roles: ["orchestrator", "security", "viewer"] },
   { key: "wallet", label: "지갑/자산", icon: "👛", group: "operation", roles: ["orchestrator", "security", "viewer"] },
-  { key: "execution", label: "예치 실행", icon: "🧭", group: "operation", roles: ["orchestrator", "security"] },
+  { key: "execution", label: "예치 실행", icon: "🧭", group: "operation", roles: ["orchestrator", "security", "viewer"] },
   { key: "operationsLog", label: "수익/운영 이력", icon: "📜", group: "operation", roles: ["orchestrator", "security", "viewer"] },
   { key: "activity", label: "활동 피드", icon: "🕘", group: "operation", roles: ["orchestrator", "security", "viewer"] },
   { key: "consultant", label: "컨설턴트 인사이트", icon: "🧠", group: "governance", roles: ["orchestrator", "security"] },
-  { key: "auth", label: "운영자 인증", icon: "🔐", group: "governance", roles: ["orchestrator", "security", "viewer"] },
+  { key: "signupHistory", label: "회원가입 내역", icon: "📋", group: "governance", roles: ["orchestrator"] },
+  { key: "auth", label: "로그인 · 계정", icon: "🔐", group: "governance", roles: ["orchestrator", "security", "viewer"] },
   { key: "consensus", label: "에이전트 합의", icon: "🤝", group: "governance", roles: ["orchestrator", "security", "viewer"] }
 ];
 type TopNavGroupKey = "more";
@@ -552,7 +556,7 @@ function ProductsPanel({
         <p className="product-session-hint">로그인하면 예치 내역이 서버에 저장되어 새로고침 후에도 포트폴리오에 유지됩니다.</p>
       ) : !canPersistToServer ? (
         <p className="product-session-hint">
-          서버에 예치 기록을 남기려면 <strong>예치·운영 전용</strong>으로 로그인하세요. 그 외 계정은 이 기기에서만 임시로 반영됩니다.
+          서버에 예치·인출을 남기려면 <strong>로그인</strong>하세요. 비로그인 시에는 이 기기에서만 임시로 반영됩니다.
         </p>
       ) : null}
       <div className="products-header-row">
@@ -720,7 +724,7 @@ function ProductsPanel({
               initialProductName={selected.name}
               initialEstYieldUsd={estYield}
               initialEstFeeUsd={estFee}
-              isOrchestratorApiSession={canPersistToServer}
+              allowJobExecution={canPersistToServer}
               linkedPositionId={linkedPositionId ?? undefined}
               onActionNotice={onActionNotice}
               onOpenOperationsWithJob={onOpenOperationsWithJob}
@@ -839,7 +843,7 @@ export default function App() {
   const [portfolioNotice, setPortfolioNotice] = useState<{ variant: "error" | "info"; text: string } | null>(null);
   const role = session?.role;
 
-  const canPersistPortfolio = Boolean(session && session.role === "orchestrator");
+  const canPersistPortfolio = Boolean(session);
   const portfolioTotalUsd = useMemo(() => positions.reduce((acc, p) => acc + p.amountUsd, 0), [positions]);
 
   const refreshWithdrawLedgerFromServer = async () => {
@@ -941,6 +945,14 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => {
+    const onAuthCleared = (): void => {
+      setSession(null);
+    };
+    window.addEventListener(AUTH_CLEARED_EVENT, onAuthCleared);
+    return () => window.removeEventListener(AUTH_CLEARED_EVENT, onAuthCleared);
+  }, []);
+
+  useEffect(() => {
     if (!portfolioNotice) {
       return;
     }
@@ -992,6 +1004,8 @@ export default function App() {
 
   const renderContent = () => {
     switch (activeMenu) {
+      case "signupHistory":
+        return <SignupRegistrationsPanel />;
       case "auth":
         return <AuthPanel onSessionChange={setSession} />;
       case "my":
@@ -1034,7 +1048,7 @@ export default function App() {
           />
         );
       case "execution":
-        return <OrchestratorBoard isOrchestratorApiSession={session?.role === "orchestrator"} />;
+        return <OrchestratorBoard allowJobExecution={Boolean(session)} />;
       case "operationsLog":
         return <OperationsHistoryPanel focusJobId={focusJobId} />;
       case "activity":
@@ -1069,7 +1083,7 @@ export default function App() {
 
   /** 상단 주요 메뉴: 예치 · 트레이드 · 포트폴리오 (역할에 없는 항목은 숨김) */
   const mainMenuKeys: MenuKey[] = [...PRIMARY_NAV_ORDER];
-  const operatorMenuKeys: MenuKey[] = ["auth", "consultant", "consensus"];
+  const operatorMenuKeys: MenuKey[] = ["signupHistory", "auth", "consultant", "consensus"];
   const historyMenuKeys: MenuKey[] = ["activity"];
   /** More에 넣지 않음: 지갑·내 현황·예치 실행·운영 이력은 다른 진입점(헤더/검색/딥링크)으로만 이동 */
   const hiddenFromMoreKeys: MenuKey[] = ["wallet", "my", "execution", "operationsLog"];

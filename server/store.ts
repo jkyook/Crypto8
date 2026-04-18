@@ -4,6 +4,7 @@ import type {
   ExecutionEventPayloadV1,
   ExecutionJob,
   JobInput,
+  JobListScope,
   RiskLevel
 } from "./types";
 import type { ExecutionAdapterBundle } from "./executionAdapter";
@@ -24,7 +25,33 @@ function evaluateRisk(input: JobInput): RiskLevel {
   return "Low";
 }
 
-export async function createJob(input: JobInput): Promise<ExecutionJob> {
+function rowToExecutionJob(row: {
+  id: string;
+  createdAt: string;
+  status: string;
+  depositUsd: number;
+  isRangeOut: number;
+  isDepegAlert: number;
+  hasPendingRelease: number;
+  riskLevel: string;
+  requestedBy: string | null;
+}): ExecutionJob {
+  return {
+    id: row.id,
+    createdAt: row.createdAt,
+    status: row.status as ExecutionJob["status"],
+    input: {
+      depositUsd: row.depositUsd,
+      isRangeOut: Boolean(row.isRangeOut),
+      isDepegAlert: Boolean(row.isDepegAlert),
+      hasPendingRelease: Boolean(row.hasPendingRelease)
+    },
+    riskLevel: row.riskLevel as RiskLevel,
+    requestedBy: row.requestedBy
+  };
+}
+
+export async function createJob(input: JobInput, requestedBy: string): Promise<ExecutionJob> {
   if (!Number.isFinite(input.depositUsd) || input.depositUsd <= 0 || input.depositUsd > MAX_DEPOSIT_USD) {
     throw new Error("invalid depositUsd");
   }
@@ -34,7 +61,8 @@ export async function createJob(input: JobInput): Promise<ExecutionJob> {
     createdAt: new Date().toISOString(),
     status: "queued",
     input,
-    riskLevel
+    riskLevel,
+    requestedBy
   };
   const db = getDb();
   await db.job.create({
@@ -46,27 +74,18 @@ export async function createJob(input: JobInput): Promise<ExecutionJob> {
       isRangeOut: input.isRangeOut ? 1 : 0,
       isDepegAlert: input.isDepegAlert ? 1 : 0,
       hasPendingRelease: input.hasPendingRelease ? 1 : 0,
-      riskLevel: job.riskLevel
+      riskLevel: job.riskLevel,
+      requestedBy
     }
   });
   return job;
 }
 
-export async function listJobs(): Promise<ExecutionJob[]> {
+export async function listJobs(scope: JobListScope): Promise<ExecutionJob[]> {
   const db = getDb();
-  const rows = await db.job.findMany({ orderBy: { createdAt: "desc" } });
-  return rows.map((row) => ({
-    id: row.id,
-    createdAt: row.createdAt,
-    status: row.status as ExecutionJob["status"],
-    input: {
-      depositUsd: row.depositUsd,
-      isRangeOut: Boolean(row.isRangeOut),
-      isDepegAlert: Boolean(row.isDepegAlert),
-      hasPendingRelease: Boolean(row.hasPendingRelease)
-    },
-    riskLevel: row.riskLevel as RiskLevel
-  }));
+  const where = scope.role === "security" ? {} : { requestedBy: scope.username };
+  const rows = await db.job.findMany({ where, orderBy: { createdAt: "desc" } });
+  return rows.map(rowToExecutionJob);
 }
 
 export async function getJob(jobId: string): Promise<ExecutionJob | undefined> {
@@ -75,18 +94,7 @@ export async function getJob(jobId: string): Promise<ExecutionJob | undefined> {
   if (!row) {
     return undefined;
   }
-  return {
-    id: row.id,
-    createdAt: row.createdAt,
-    status: row.status as ExecutionJob["status"],
-    input: {
-      depositUsd: row.depositUsd,
-      isRangeOut: Boolean(row.isRangeOut),
-      isDepegAlert: Boolean(row.isDepegAlert),
-      hasPendingRelease: Boolean(row.hasPendingRelease)
-    },
-    riskLevel: row.riskLevel as RiskLevel
-  };
+  return rowToExecutionJob(row);
 }
 
 export async function approveJob(args: {
@@ -245,12 +253,47 @@ async function runExecutionWithRetry(
   throw lastError;
 }
 
-export async function listExecutionEvents(jobId?: string): Promise<ExecutionEvent[]> {
+export async function listExecutionEvents(jobId: string | undefined, scope: JobListScope): Promise<ExecutionEvent[]> {
   const db = getDb();
-  const rows = await db.executionEvent.findMany({
-    where: jobId ? { jobId } : undefined,
-    orderBy: { requestedAt: "desc" }
-  });
+  if (jobId) {
+    const job = await getJob(jobId);
+    if (!job) {
+      return [];
+    }
+    if (scope.role !== "security") {
+      if (job.requestedBy && job.requestedBy !== scope.username) {
+        return [];
+      }
+      if (!job.requestedBy) {
+        return [];
+      }
+    }
+    const rows = await db.executionEvent.findMany({
+      where: { jobId },
+      orderBy: { requestedAt: "desc" }
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      jobId: row.jobId,
+      requestedAt: row.requestedAt,
+      status: row.status as ExecutionEvent["status"],
+      message: row.message,
+      idempotencyKey: row.idempotencyKey ?? undefined,
+      txId: row.txId ?? undefined,
+      summary: row.summary ?? undefined,
+      payload: parsePayloadJson(row.payloadJson)
+    }));
+  }
+
+  const rows =
+    scope.role === "security"
+      ? await db.executionEvent.findMany({
+          orderBy: { requestedAt: "desc" }
+        })
+      : await db.executionEvent.findMany({
+          where: { job: { requestedBy: scope.username } },
+          orderBy: { requestedAt: "desc" }
+        });
   return rows.map((row) => ({
     id: row.id,
     jobId: row.jobId,
@@ -272,7 +315,8 @@ export type ExecuteJobMeta = {
 export async function executeJob(
   jobId: string,
   idempotencyKey?: string,
-  meta?: ExecuteJobMeta
+  meta?: ExecuteJobMeta,
+  auth?: JobListScope
 ): Promise<{
   ok: boolean;
   message: string;
@@ -285,6 +329,9 @@ export async function executeJob(
   const job = await getJob(jobId);
   if (!job) {
     return { ok: false, message: "job not found" };
+  }
+  if (auth && job.requestedBy && job.requestedBy !== auth.username) {
+    return { ok: false, message: "forbidden: job belongs to another user" };
   }
   const existingIdempotent = await findIdempotentEvent(jobId, idempotencyKey);
   if (existingIdempotent) {

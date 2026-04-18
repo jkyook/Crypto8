@@ -8,13 +8,16 @@ datasource db {
 }
 
 model User {
-  username     String @id
-  passwordHash String @map("password_hash")
+  username     String  @id
+  passwordHash String  @map("password_hash")
   role         String
+  /** 이용자 직접 가입 시각(ISO). 시드·데모 계정은 null. */
+  registeredAt String? @map("registered_at")
 
   depositPositions  DepositPosition[]
   withdrawalLedgers WithdrawalLedger[]
 
+  @@index([registeredAt])
   @@map("users")
 }
 
@@ -54,10 +57,13 @@ model Job {
   isDepegAlert      Int     @map("is_depeg_alert")
   hasPendingRelease Int     @map("has_pending_release")
   riskLevel         String  @map("risk_level")
+  /** 예치 실행 요청을 만든 로그인 사용자(이용자별 격리). */
+  requestedBy       String? @map("requested_by")
 
   approvals Approval[]
   executionEvents ExecutionEvent[]
 
+  @@index([requestedBy, createdAt])
   @@map("jobs")
 }
 
