@@ -38,19 +38,19 @@ jobs:
       - name: Prisma client
         run: npm run prisma:generate
 
-      - name: Check API base URL secret
-        run: |
-          if [ -z "${{ secrets.VITE_API_BASE_URL }}" ]; then
-            echo "::error::GitHub 저장소 Secrets에 VITE_API_BASE_URL(HTTPS API 주소)를 추가한 뒤 다시 실행하세요."
-            exit 1
-          fi
-
       - name: Build static site
         env:
-          VITE_BASE_PATH: /${{ github.event.repository.name }}/
-          VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
           VITE_PHANTOM_APP_ID: ${{ secrets.VITE_PHANTOM_APP_ID }}
-        run: npm run build
+        run: |
+          set -e
+          API_URL="${{ secrets.VITE_API_BASE_URL }}"
+          if [ -z "$API_URL" ]; then
+            API_URL="https://crypto8-api.onrender.com"
+            echo "::notice::VITE_API_BASE_URL 시크릿이 없어 기본값 $API_URL 로 빌드합니다. Render 서비스 이름을 바꿨다면 Secrets에 실제 API URL을 넣고 재실행하세요."
+          fi
+          export VITE_BASE_PATH="/${{ github.event.repository.name }}/"
+          export VITE_API_BASE_URL="$API_URL"
+          npm run build
 
       - name: SPA fallback (client-side routes refresh)
         run: cp dist/index.html dist/404.html

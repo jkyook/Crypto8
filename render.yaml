@@ -1,6 +1,10 @@
-# Render 무료 웹 서비스용 블루프린트 (https://render.com)
-# 주의: 무료 플랜은 디스크가 비영속이라 SQLite 데이터가 재시작·재배포 시 초기화될 수 있습니다.
-# 데모·검증용으로 적합하고, 장기 운영은 외부 DB(Turso/Neon 등) 권장.
+# Render 무료 블루프린트: Node API + 정적 프런트(Vite dist)
+# 대시보드: New → Blueprint → 이 저장소 연결 → 적용
+# 주의: 무료 웹 디스크는 비영속이라 SQLite는 재시작 시 초기화될 수 있음(데모용).
+#
+# 배포 후 URL 예시(서비스 이름을 바꾸면 아래 VITE_API_BASE_URL도 같이 수정):
+#   API:   https://crypto8-api.onrender.com
+#   웹:   https://crypto8-web.onrender.com
 
 services:
   - type: web
@@ -22,3 +26,23 @@ services:
         value: dry-run
       - key: LIVE_EXECUTION_CONFIRM
         value: "NO"
+
+  - type: web
+    name: crypto8-web
+    runtime: static
+    plan: free
+    region: oregon
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: NODE_VERSION
+        value: "22.12.0"
+      - key: VITE_BASE_PATH
+        value: /
+      # API 서비스 이름(crypto8-api)과 맞춰야 브라우저에서 호출됩니다.
+      - key: VITE_API_BASE_URL
+        value: https://crypto8-api.onrender.com
