@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { randomUUID } from "crypto";
-import { readFileSync } from "fs";
+import { mkdirSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import cors from "cors";
@@ -21,6 +21,8 @@ import { gatherProtocolInsightsNews } from "./protocolNews";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
+/** Render 등 리버스 프록시 뒤에서 올바른 클라이언트 IP·프로토콜 인식 */
+app.set("trust proxy", 1);
 
 const __serverDir = dirname(fileURLToPath(import.meta.url));
 function readPackageVersion(): string {
@@ -33,6 +35,16 @@ function readPackageVersion(): string {
   }
 }
 const APP_VERSION = readPackageVersion();
+
+app.get("/", (_req, res) => {
+  res.json({
+    ok: true,
+    service: "crypto8-orchestrator-api",
+    message: "API가 정상 기동 중입니다. 웹 UI는 Render의 crypto8-web(정적) 또는 GitHub Pages URL로 여세요.",
+    health: "/api/health",
+    version: APP_VERSION
+  });
+});
 
 app.use(
   cors({
@@ -403,10 +415,31 @@ app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orche
   res.json({ ...result, requestId });
 });
 
+const DB_INIT_TIMEOUT_MS = 25_000;
+
 async function bootstrap(): Promise<void> {
-  await initDb();
-  app.listen(port, () => {
-    console.log(`Crypto8 API listening on http://localhost:${port}`);
+  try {
+    mkdirSync(join(__serverDir, "data"), { recursive: true });
+  } catch (err) {
+    console.error("[bootstrap] server/data 디렉터리 생성 실패:", err);
+  }
+
+  try {
+    await Promise.race([
+      initDb(),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error(`initDb가 ${DB_INIT_TIMEOUT_MS}ms 안에 끝나지 않았습니다. DATABASE_URL·SQLite 경로를 확인하세요.`));
+        }, DB_INIT_TIMEOUT_MS);
+      })
+    ]);
+  } catch (err) {
+    console.error("[bootstrap] DB 초기화 실패:", err);
+    process.exit(1);
+  }
+
+  app.listen(port, "0.0.0.0", () => {
+    console.log(`Crypto8 API listening on http://0.0.0.0:${port} (PORT=${port})`);
   });
 }
 
