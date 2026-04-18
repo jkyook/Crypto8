@@ -4,6 +4,11 @@
 # 2) Settings → Secrets → Actions 에서 VITE_API_BASE_URL 추가 (예: https://crypto8-api.onrender.com)
 # 3) Render 등에 API 배포 후 위 URL을 시크릿에 맞춤
 # 4) main 푸시 또는 Actions 탭에서 "Deploy to GitHub Pages" 수동 실행
+#
+# "Not Found"일 때:
+# - Settings → Pages → Build: GitHub Actions 인지 확인
+# - Actions 탭에서 워크플로 성공 여부 확인 (첫 실행은 Environments → github-pages 승인 필요할 수 있음)
+# - 주소는 https://<계정>.github.io/<저장소이름>/ (저장소 이름 대소문자와 일치)
 
 name: Deploy to GitHub Pages
 
@@ -54,6 +59,9 @@ jobs:
 
       - name: SPA fallback (client-side routes refresh)
         run: cp dist/index.html dist/404.html
+
+      - name: Disable Jekyll (GitHub Pages가 정적 파일을 건너뛰지 않도록)
+        run: touch dist/.nojekyll
 
       - uses: actions/upload-pages-artifact@v3
         with:
