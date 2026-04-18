@@ -1,1 +1,5 @@
 node_modules
+
+# SQLite — 로컬/CI에서 생성. 저장소에 포함 시 Render에서 prisma migrate P3005 발생
+server/data/*.db
+prisma/server/data/
