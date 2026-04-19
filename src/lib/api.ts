@@ -411,13 +411,28 @@ async function readJsonFromApiResponse(response: Response, context: string): Pro
   }
 }
 
+function wrapNetworkError(err: unknown, context: string): never {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg === "Failed to fetch" || msg.includes("NetworkError") || msg.includes("fetch") || msg.includes("ECONNREFUSED")) {
+    throw new Error(
+      `${context}: API 서버에 연결할 수 없습니다. 로컬 개발 중이라면 터미널에서 \`npm run dev:api\`를 실행해 주세요. (포트 8787)`
+    );
+  }
+  throw err instanceof Error ? err : new Error(msg);
+}
+
 export async function login(username: string, password: string): Promise<AuthSession> {
-  const response = await fetch(`${API_BASE}/api/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ username, password })
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ username, password })
+    });
+  } catch (err) {
+    wrapNetworkError(err, "로그인");
+  }
   const data = (await readJsonFromApiResponse(response, "로그인")) as {
     ok: boolean;
     role?: AuthRole;
@@ -448,12 +463,17 @@ export async function login(username: string, password: string): Promise<AuthSes
 }
 
 export async function loginWithWallet(walletAddress: string): Promise<AuthSession> {
-  const response = await fetch(`${API_BASE}/api/auth/wallet`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ walletAddress })
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/auth/wallet`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ walletAddress })
+    });
+  } catch (err) {
+    wrapNetworkError(err, "지갑 로그인");
+  }
   const data = (await readJsonFromApiResponse(response, "지갑 로그인")) as {
     ok?: boolean;
     role?: AuthRole;
@@ -499,12 +519,17 @@ function mapRegisterError(status: number, code: string | undefined): string {
 /** 일반 이용자 회원가입(역할 `viewer`). 성공 시 로그인과 동일하게 토큰을 저장합니다. */
 export async function register(username: string, password: string): Promise<AuthSession> {
   const trimmed = username.trim();
-  const response = await fetch(`${API_BASE}/api/auth/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ username: trimmed, password })
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ username: trimmed, password })
+    });
+  } catch (err) {
+    wrapNetworkError(err, "회원가입");
+  }
   const data = (await readJsonFromApiResponse(response, "회원가입")) as {
     ok?: boolean;
     role?: AuthRole;

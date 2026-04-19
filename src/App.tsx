@@ -22,6 +22,7 @@ import {
   listExecutionEvents,
   listJobs,
   listWithdrawalLedger,
+  login,
   withdrawDepositRemote,
   type AuthSession,
   type DepositPositionPayload,
@@ -900,7 +901,24 @@ function TradePanel() {
   );
 }
 
-function inferProtocolChain(protocolName: string): string {
+/**
+ * 체인명 추출.
+ * pool 레이블이 "Arbitrum · USDC Supply" 형식이면 앞부분에서 체인명을 먼저 파싱하고,
+ * 없으면 프로토콜명으로 폴백한다.
+ */
+function inferProtocolChain(protocolName: string, poolLabel?: string): string {
+  if (poolLabel) {
+    // "Arbitrum · USDC Supply" → "Arbitrum"
+    const chainPart = poolLabel.split("·")[0].trim().split("/")[0].trim();
+    const lc = chainPart.toLowerCase();
+    if (lc === "arbitrum" || lc.includes("arbitrum")) return "Arbitrum";
+    if (lc === "base" || lc.includes("base")) return "Base";
+    if (lc === "solana" || lc.includes("solana")) return "Solana";
+    if (lc === "ethereum" || lc.includes("ethereum")) return "Ethereum";
+    if (lc === "sol") return "Solana";
+    if (lc === "eth") return "Ethereum";
+  }
+  // 프로토콜명 기반 폴백
   const key = protocolName.toLowerCase();
   if (key.includes("orca")) return "Solana";
   if (key.includes("aave")) return "Arbitrum";
@@ -916,19 +934,76 @@ function getProtocolSortRank(protocolName: string): number {
 
 function PortfolioPanel({
   positions,
-  onExecutionComplete
+  onExecutionComplete,
+  onWithdraw,
+  canPersistToServer
 }: {
   positions: DepositPosition[];
   onExecutionComplete?: () => void | Promise<void>;
+  onWithdraw?: (amountUsd: number) => Promise<void>;
+  canPersistToServer?: boolean;
 }) {
   const [protocolAmounts, setProtocolAmounts] = useState<Record<string, number>>({});
   const [protocolDepositDraft, setProtocolDepositDraft] = useState<ProtocolDetailRow | null>(null);
   const [protocolDepositKey, setProtocolDepositKey] = useState(0);
   const [showPositionDetails, setShowPositionDetails] = useState(false);
+
+  // ── 인출 상태 ──────────────────────────────────────────────
+  const [withdrawDraft, setWithdrawDraft] = useState<{ row: ProtocolDetailRow; maxUsd: number } | null>(null);
+  /** 슬라이더 값 = 인출할 USD 금액 (0 ~ maxUsd) */
+  const [withdrawAmtUsd, setWithdrawAmtUsd] = useState(0);
+  const [withdrawVerifyPwd, setWithdrawVerifyPwd] = useState("");
+  const [withdrawVerifyLoading, setWithdrawVerifyLoading] = useState(false);
+  const [withdrawVerifyError, setWithdrawVerifyError] = useState("");
+  const [withdrawDoneMsg, setWithdrawDoneMsg] = useState("");
+
+  /** 슬라이더 값 그대로 사용 — 서버로 보내는 금액과 일치 */
+  const withdrawAmount = Number(withdrawAmtUsd.toFixed(2));
+
+  const onOpenWithdraw = (row: ProtocolDetailRow) => {
+    const inputAmt = protocolAmounts[row.key] ?? 0;
+    // 입력칸 금액이 유효하면 사용, 없으면 잔액 전체를 기본값으로
+    const initAmt = inputAmt > 0 && inputAmt <= row.amount
+      ? inputAmt
+      : row.amount;
+    setWithdrawDraft({ row, maxUsd: row.amount });
+    setWithdrawAmtUsd(Number(initAmt.toFixed(2)));
+    setWithdrawVerifyPwd("");
+    setWithdrawVerifyError("");
+    setWithdrawDoneMsg("");
+  };
+
+  const onConfirmWithdraw = async () => {
+    if (!withdrawDraft || withdrawAmount <= 0) return;
+    const session = getSession();
+    if (!session) {
+      setWithdrawVerifyError("세션이 만료되었습니다. 다시 로그인해 주세요.");
+      return;
+    }
+    if (!withdrawVerifyPwd) {
+      setWithdrawVerifyError("비밀번호를 입력하세요.");
+      return;
+    }
+    setWithdrawVerifyLoading(true);
+    setWithdrawVerifyError("");
+    try {
+      await login(session.username, withdrawVerifyPwd);
+      await onWithdraw?.(withdrawAmount);
+      const doneMsg = `$${withdrawAmount.toFixed(2)} 인출 처리 완료`;
+      setWithdrawDraft(null);
+      setWithdrawVerifyPwd("");
+      setWithdrawDoneMsg(doneMsg);
+      window.setTimeout(() => setWithdrawDoneMsg(""), 5000);
+    } catch (error) {
+      setWithdrawVerifyError(error instanceof Error ? error.message : "인출 확인 실패");
+    } finally {
+      setWithdrawVerifyLoading(false);
+    }
+  };
   const totalDeposited = positions.reduce((acc, item) => acc + item.amountUsd, 0);
   const protocolTotals = positions.reduce<Record<string, ProtocolDetailRow>>((acc, item) => {
     item.protocolMix.forEach((mix) => {
-      const chain = inferProtocolChain(mix.pool ?? mix.name);
+      const chain = inferProtocolChain(mix.name, mix.pool);
       const key = `${mix.name}__${chain}`;
       const prev = acc[key];
       acc[key] = {
@@ -1033,6 +1108,15 @@ function PortfolioPanel({
                   >
                     입금
                   </button>
+                  <button
+                    type="button"
+                    className="protocol-withdraw-action"
+                    onClick={() => onOpenWithdraw(row)}
+                    title="이 프로토콜에서 인출합니다."
+                    disabled={!canPersistToServer || row.amount <= 0}
+                  >
+                    인출
+                  </button>
                 </div>
               </td>
             </tr>
@@ -1054,6 +1138,80 @@ function PortfolioPanel({
           )}
         </tbody>
       </table>
+      {/* ── 인출 확인 패널 ── */}
+      {withdrawDraft ? (
+        <div className="protocol-withdraw-confirm" role="dialog" aria-label="인출 확인">
+          <p className="protocol-withdraw-confirm-title">
+            💸 {withdrawDraft.row.name} · {withdrawDraft.row.chain} 인출
+          </p>
+          <p className="protocol-withdraw-confirm-desc">
+            현재 잔액 <strong>${withdrawDraft.maxUsd.toFixed(2)}</strong> — 슬라이더로 인출 금액을 조절하세요.
+          </p>
+          <div className="protocol-withdraw-slider-row">
+            <span className="protocol-withdraw-slider-label">$0</span>
+            <input
+              type="range"
+              min={0}
+              max={withdrawDraft.maxUsd}
+              step={Math.max(1, Math.round(withdrawDraft.maxUsd / 100))}
+              value={withdrawAmtUsd}
+              onChange={(e) => setWithdrawAmtUsd(Number(e.target.value))}
+              className="protocol-withdraw-slider"
+              aria-label="인출 금액"
+              disabled={withdrawVerifyLoading}
+            />
+            <span className="protocol-withdraw-slider-label">${withdrawDraft.maxUsd.toFixed(0)}</span>
+            <strong className="protocol-withdraw-amount-badge">
+              ${withdrawAmount.toFixed(2)}
+              {withdrawDraft.maxUsd > 0
+                ? <em>({((withdrawAmount / withdrawDraft.maxUsd) * 100).toFixed(0)}%)</em>
+                : null}
+            </strong>
+          </div>
+          <label className="exec-verify-label">
+            비밀번호 확인
+            <input
+              type="password"
+              className="exec-verify-input"
+              value={withdrawVerifyPwd}
+              onChange={(e) => setWithdrawVerifyPwd(e.target.value)}
+              disabled={withdrawVerifyLoading}
+              autoFocus
+              autoComplete="current-password"
+              onKeyDown={(e) => e.key === "Enter" && void onConfirmWithdraw()}
+            />
+          </label>
+          {withdrawVerifyError ? (
+            <p className="exec-verify-error">{withdrawVerifyError}</p>
+          ) : null}
+          <div className="exec-verify-actions">
+            <button
+              type="button"
+              className="auth-primary-btn protocol-withdraw-confirm-btn"
+              onClick={() => void onConfirmWithdraw()}
+              disabled={withdrawVerifyLoading || !withdrawVerifyPwd || withdrawAmount <= 0}
+            >
+              {withdrawVerifyLoading ? "처리 중…" : `$${withdrawAmount.toFixed(2)} 인출 확인`}
+            </button>
+            <button
+              type="button"
+              className="ghost-btn"
+              onClick={() => {
+                setWithdrawDraft(null);
+                setWithdrawVerifyPwd("");
+                setWithdrawVerifyError("");
+              }}
+              disabled={withdrawVerifyLoading}
+            >
+              취소
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {withdrawDoneMsg ? (
+        <p className="auth-message auth-message--ok protocol-withdraw-done">{withdrawDoneMsg}</p>
+      ) : null}
+
       {protocolDepositDraft ? (
         <div className="modal-backdrop modal-backdrop--execution" role="dialog" aria-modal="true" aria-label="프로토콜 입금 처리 팝업">
           <div className="modal-card execution-modal-card deposit-execution-modal">
@@ -1242,25 +1400,25 @@ function StrategiesPage({
 
 function PositionsPage({
   positions,
-  withdrawLedger,
-  portfolioTotalUsd,
   onGo,
-  onExecutionComplete
+  onExecutionComplete,
+  onWithdraw,
+  canPersistToServer
 }: {
   positions: DepositPosition[];
-  withdrawLedger: WalletWithdrawLedgerLine[];
-  portfolioTotalUsd: number;
   onGo: (menu: MenuKey) => void;
   onExecutionComplete?: () => void | Promise<void>;
+  onWithdraw?: (amountUsd: number) => Promise<void>;
+  canPersistToServer?: boolean;
 }) {
   return (
     <div className="page-shell positions-page-shell">
       <section className="mission-hero mission-hero--positions card">
         <div>
           <p className="section-eyebrow">Positions</p>
-          <h1>포지션, 노출, 출금 흐름을 관리합니다</h1>
+          <h1>포지션 및 프로토콜별 노출을 관리합니다</h1>
           <p>
-            체인·프로토콜별 노출과 예치 건별 상세를 확인하고, 지갑/출금 장부까지 같은 문맥에서 점검합니다.
+            체인·프로토콜별 노출과 예치 건별 상세를 확인합니다.
           </p>
         </div>
         <div className="mission-action-stack">
@@ -1268,14 +1426,11 @@ function PositionsPage({
           <button className="ghost-btn" onClick={() => onGo("execution")}>리밸런싱 실행</button>
         </div>
       </section>
-      <PortfolioPanel positions={positions} onExecutionComplete={onExecutionComplete} />
-      <WalletPanel
+      <PortfolioPanel
         positions={positions}
-        withdrawLedger={withdrawLedger}
-        portfolioUsd={portfolioTotalUsd}
-        onOpenMyOverview={() => onGo("my")}
-        onOpenPortfolio={() => onGo("portfolio")}
-        onOpenActivity={() => onGo("activity")}
+        onExecutionComplete={onExecutionComplete}
+        onWithdraw={onWithdraw}
+        canPersistToServer={canPersistToServer}
       />
     </div>
   );
@@ -1539,9 +1694,9 @@ export default function App() {
         return (
           <PositionsPage
             positions={positions}
-            withdrawLedger={withdrawLedger}
-            portfolioTotalUsd={portfolioTotalUsd}
             onGo={onSelectMenu}
+            onWithdraw={handleWithdrawPosition}
+            canPersistToServer={canPersistPortfolio}
             onExecutionComplete={async () => {
               await refreshPositions();
               await refreshWithdrawLedgerFromServer();

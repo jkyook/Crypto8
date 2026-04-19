@@ -3,7 +3,11 @@ import { AddressType } from "@phantom/browser-sdk";
 import { useAccounts, usePhantom } from "@phantom/react-sdk";
 import {
   listAccountAssets,
+  listAccountWallets,
+  login,
+  getSession,
   createOrchestratorJob,
+  createDepositPositionRemote,
   estimateProtocolFees,
   executeJob,
   fetchRuntimeInfo,
@@ -14,7 +18,8 @@ import {
   type ExecuteJobResponse,
   type Job,
   type ProtocolFeeEstimate,
-  type RuntimeInfo
+  type RuntimeInfo,
+  type UserWallet
 } from "../lib/api";
 import { buildDepositAssetReadiness } from "../lib/depositAssetPlan";
 import { buildExecutionPreviewRows } from "../lib/executionPreview";
@@ -72,6 +77,15 @@ export function OrchestratorBoard({
   const [feeEstimateLoading, setFeeEstimateLoading] = useState(false);
   const [executionModeIntent, setExecutionModeIntent] = useState<"dry-run" | "live">("dry-run");
   const [lastExecution, setLastExecution] = useState<ExecuteJobResponse | null>(null);
+  /** Job 생성 시 quoteRows로 미리 만들어 둔 포지션 ID (서버 중복 생성 방지용) */
+  const [preCreatedPositionId, setPreCreatedPositionId] = useState<string | undefined>(undefined);
+  /** 현재 로그인 계정에 등록된 지갑 목록 (계정 연동 검증용) */
+  const [linkedWallets, setLinkedWallets] = useState<UserWallet[]>([]);
+  /** 최종 입금 전 비밀번호 확인 다이얼로그 표시 여부 */
+  const [showPasswordConfirm, setShowPasswordConfirm] = useState(false);
+  const [execVerifyPassword, setExecVerifyPassword] = useState("");
+  const [execVerifyLoading, setExecVerifyLoading] = useState(false);
+  const [execVerifyError, setExecVerifyError] = useState("");
   const correlationId = useMemo(
     () => (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `corr_${Date.now()}`),
     []
@@ -131,6 +145,23 @@ export function OrchestratorBoard({
       });
     return () => controller.abort();
   }, [canUseServerJobs, selectedSourceAsset]);
+  // 로그인 상태가 바뀔 때마다 계정에 연결된 지갑 목록을 가져옴
+  useEffect(() => {
+    if (!canUseServerJobs) {
+      setLinkedWallets([]);
+      return;
+    }
+    const controller = new AbortController();
+    void listAccountWallets({ signal: controller.signal })
+      .then((wallets) => {
+        if (!controller.signal.aborted) setLinkedWallets(wallets);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setLinkedWallets([]);
+      });
+    return () => controller.abort();
+  }, [canUseServerJobs]);
+
   const displayExecutionMode = executionModeIntent;
   const isLiveExecution = displayExecutionMode === "live";
   const [customAllocationPercents, setCustomAllocationPercents] = useState<number[] | null>(null);
@@ -223,6 +254,36 @@ export function OrchestratorBoard({
   ] as const;
   const findFeeForRoute = (route: (typeof assetReadiness.swapRows)[number]) =>
     feeEstimate?.rows.find((fee) => fee.protocol === route.protocol && fee.chain === route.chain && fee.action === route.action);
+  /**
+   * quoteRows → protocolMix 변환 헬퍼.
+   * protocol+chain 쌍으로 묶어 pool 레이블을 "Arbitrum · USDC Supply" 형식으로 유지.
+   * → inferProtocolChain이 체인명을 정확히 추출할 수 있도록 한다.
+   */
+  function buildProtocolMixFromQuoteRows(rows: typeof quoteRows): { name: string; weight: number; pool?: string }[] {
+    const totalUsd = rows.reduce((acc, r) => acc + r.allocationUsd, 0);
+    if (totalUsd <= 0 || rows.length === 0) return [];
+    // protocol + chain 쌍으로 묶기 (체인 정보 유지)
+    const byKey = new Map<string, { amountUsd: number; chain: string; actions: string[] }>();
+    for (const r of rows) {
+      const mapKey = `${r.protocol}||${r.chain}`;
+      const prev = byKey.get(mapKey) ?? { amountUsd: 0, chain: r.chain, actions: [] };
+      byKey.set(mapKey, {
+        amountUsd: prev.amountUsd + r.allocationUsd,
+        chain: r.chain,
+        actions: [...prev.actions, r.action]
+      });
+    }
+    return Array.from(byKey.entries()).map(([mapKey, item]) => {
+      const name = mapKey.split("||")[0] ?? mapKey;
+      // "Arbitrum · USDC Supply" 형식으로 저장 → inferProtocolChain이 체인명 파싱 가능
+      return {
+        name,
+        weight: item.amountUsd / totalUsd,
+        pool: `${item.chain} · ${item.actions[0] ?? name}`
+      };
+    });
+  }
+
   const onCreateJob = async () => {
     if (!canUseServerJobs) {
       setApiMessage("입금내역을 서버에 남기려면 먼저 로그인하세요.");
@@ -247,6 +308,25 @@ export function OrchestratorBoard({
       setIsExecutionConfirmed(false);
       setLastExecution(null);
       setCustomAllocationPercents(null);
+      setPreCreatedPositionId(undefined);
+
+      // quoteRows(사용자가 선택한 배분)로 포지션을 미리 생성 → 서버의 자동배분 덮어쓰기를 방지
+      try {
+        const protocolMix = buildProtocolMixFromQuoteRows(quoteRows);
+        if (protocolMix.length > 0) {
+          const expectedApr = depositUsd > 0 ? initialEstYieldUsd / depositUsd : 0.08;
+          const pos = await createDepositPositionRemote({
+            productName: initialProductName,
+            amountUsd: depositUsd,
+            expectedApr: Number.isFinite(expectedApr) && expectedApr > 0 ? expectedApr : 0.08,
+            protocolMix
+          });
+          setPreCreatedPositionId(pos.id);
+        }
+      } catch {
+        // 포지션 사전 생성 실패 시 서버 자동 생성에 위임 (무시)
+      }
+
       setApiMessage(
         hasWallet
           ? `입금내역 확인 완료: ${created.id}`
@@ -255,6 +335,24 @@ export function OrchestratorBoard({
     } catch (error) {
       setApiMessage(error instanceof Error ? error.message : "작업 생성 실패");
     }
+  };
+
+  /** 실제 executeJob API 호출 (지갑 서명 또는 비밀번호 인증 후 공통 사용) */
+  const runExecution = async (authNote: string) => {
+    if (!job) return;
+    const idemKey = `exec-${job.id}`;
+    const effectivePositionId = preCreatedPositionId ?? linkedPositionId;
+    const result = await executeJob(job.id, {
+      idempotencyKey: idemKey,
+      correlationId,
+      positionId: effectivePositionId,
+      requestedMode: executionModeIntent
+    });
+    setIsExecutionDone(true);
+    setLastExecution(result);
+    const rid = result.requestId ? ` · requestId=${result.requestId}` : "";
+    setApiMessage(`실행 결과: ${result.message}${rid}${authNote}`);
+    await onExecutionComplete?.();
   };
 
   const onExecute = async () => {
@@ -271,31 +369,59 @@ export function OrchestratorBoard({
         ?.solana;
       const signMessage = walletProvider?.signMessage;
       const canSignWithPhantom = Boolean(walletProvider?.isPhantom && typeof signMessage === "function");
-      if (canSignWithPhantom) {
+
+      // 연결된 지갑이 이 계정에 등록된 지갑인지 확인
+      const connectedAddress = (solanaAccount?.address ?? "").toLowerCase();
+      const isLinkedWallet =
+        connectedAddress.length > 0 &&
+        linkedWallets.some((w) => w.walletAddress.toLowerCase() === connectedAddress);
+
+      if (isLinkedWallet && canSignWithPhantom) {
+        // ✅ 계정 등록 지갑 → Phantom 서명
         const approveMessage = new TextEncoder().encode(`Crypto8 execution approval for ${job.id}`);
         await signMessage?.(approveMessage);
-      } else if (isLiveExecution) {
-        setApiMessage("라이브 실행은 Phantom 지갑 서명이 필요합니다. 지갑 연결 상태를 확인하세요.");
-        return;
+        await runExecution(" · 계정 연동 지갑 서명");
+      } else {
+        // ⚠️ 등록되지 않은 지갑이거나 지갑 미연결 → 비밀번호 확인 필요
+        setExecVerifyPassword("");
+        setExecVerifyError("");
+        setShowPasswordConfirm(true);
+        setApiMessage(
+          isLinkedWallet === false && connectedAddress.length > 0
+            ? "연결된 Phantom 지갑이 이 계정에 등록된 지갑과 다릅니다. 비밀번호로 본인 확인 후 진행하세요."
+            : "최종 입금처리를 위해 비밀번호를 입력해 주세요."
+        );
       }
-
-      const idemKey = `exec-${job.id}`;
-      const result = await executeJob(job.id, {
-        idempotencyKey: idemKey,
-        correlationId,
-        positionId: linkedPositionId,
-        requestedMode: executionModeIntent
-      });
-      setIsExecutionDone(true);
-      setLastExecution(result);
-      const rid = result.requestId ? ` · requestId=${result.requestId}` : "";
-      const signNote = canSignWithPhantom ? "" : " · dry-run 지갑 서명 생략";
-      setApiMessage(`실행 결과: ${result.message}${rid}${signNote}`);
-      await onExecutionComplete?.();
     } catch (error) {
       const msg = error instanceof Error ? error.message : "실행 실패";
       setApiMessage(msg);
       onActionNotice?.({ variant: "error", text: msg });
+    }
+  };
+
+  /** 비밀번호 확인 후 실행 처리 */
+  const onPasswordVerifiedExecute = async () => {
+    const session = getSession();
+    if (!session) {
+      setExecVerifyError("세션이 만료되었습니다. 다시 로그인해 주세요.");
+      return;
+    }
+    if (!execVerifyPassword) {
+      setExecVerifyError("비밀번호를 입력하세요.");
+      return;
+    }
+    setExecVerifyLoading(true);
+    setExecVerifyError("");
+    try {
+      // 비밀번호 재확인 (login API 재호출 → credentials 검증)
+      await login(session.username, execVerifyPassword);
+      setShowPasswordConfirm(false);
+      setExecVerifyPassword("");
+      await runExecution(" · 비밀번호 인증");
+    } catch (error) {
+      setExecVerifyError(error instanceof Error ? error.message : "비밀번호 확인 실패");
+    } finally {
+      setExecVerifyLoading(false);
     }
   };
 
@@ -591,6 +717,57 @@ export function OrchestratorBoard({
           ) : null}
         </div>
       ) : null}
+
+      {/* ── 비밀번호 확인 다이얼로그 ── */}
+      {showPasswordConfirm && (
+        <div className="exec-verify-overlay" role="dialog" aria-modal="true" aria-label="본인 확인">
+          <div className="exec-verify-box">
+            <p className="exec-verify-title">🔐 본인 확인</p>
+            <p className="exec-verify-desc">
+              최종 입금처리를 위해 계정 비밀번호를 입력하거나,
+              이 계정에 등록된 Phantom 지갑을 연결하세요.
+            </p>
+            <label className="exec-verify-label">
+              비밀번호
+              <input
+                className="exec-verify-input"
+                type="password"
+                value={execVerifyPassword}
+                onChange={(e) => setExecVerifyPassword(e.target.value)}
+                autoComplete="current-password"
+                autoFocus
+                disabled={execVerifyLoading}
+                onKeyDown={(e) => e.key === "Enter" && void onPasswordVerifiedExecute()}
+              />
+            </label>
+            {execVerifyError && (
+              <p className="exec-verify-error">{execVerifyError}</p>
+            )}
+            <div className="exec-verify-actions">
+              <button
+                type="button"
+                className="auth-primary-btn"
+                onClick={() => void onPasswordVerifiedExecute()}
+                disabled={execVerifyLoading || !execVerifyPassword}
+              >
+                {execVerifyLoading ? "확인 중…" : "확인 후 실행"}
+              </button>
+              <button
+                type="button"
+                className="ghost-btn"
+                onClick={() => {
+                  setShowPasswordConfirm(false);
+                  setExecVerifyPassword("");
+                  setExecVerifyError("");
+                }}
+                disabled={execVerifyLoading}
+              >
+                취소
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="orchestrator-flow-steps" aria-label="예치 실행 절차">
         <button className={canFundDeposit ? "flow-step-btn done" : "flow-step-btn waiting"} disabled>
