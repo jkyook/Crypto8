@@ -18,7 +18,8 @@ function resolveApiBase(): string {
 
 const API_BASE = resolveApiBase();
 /** 프록시 실패·잘못된 VITE 설정으로 HTML이 올 때 개발 모드에서만 직접 붙일 API */
-const DEV_DIRECT_API = "http://localhost:8787";
+const DEV_DIRECT_APIS = ["http://localhost:8787", "http://127.0.0.1:8787"] as const;
+const DEV_DIRECT_API = DEV_DIRECT_APIS[0];
 
 function buildApiUrl(base: string, path: string): string {
   const p = path.startsWith("/") ? path : `/${path}`;
@@ -64,23 +65,32 @@ async function responseLooksLikeHtml(res: Response): Promise<boolean> {
 
 async function fetchWithLocal8787Fallback(path: string, init: RequestInit, context: string): Promise<Response> {
   const fetchFrom = (base: string) => fetch(buildApiUrl(base, path), { ...init, credentials: "include" });
+  const fallbackBases = shouldUseLocal8787Fallback()
+    ? DEV_DIRECT_APIS.filter((base) => stripTrailingSlash(API_BASE) !== stripTrailingSlash(base))
+    : [];
+  const tryFallbacks = async (): Promise<Response | null> => {
+    for (const base of fallbackBases) {
+      try {
+        return await fetchFrom(base);
+      } catch {
+        // 다음 로컬 호스트 후보 시도
+      }
+    }
+    return null;
+  };
   try {
     const first = await fetchFrom(API_BASE);
     if (
-      shouldUseLocal8787Fallback() &&
-      stripTrailingSlash(API_BASE) !== stripTrailingSlash(DEV_DIRECT_API) &&
+      fallbackBases.length > 0 &&
       (await responseLooksLikeHtml(first))
     ) {
-      return fetchFrom(DEV_DIRECT_API);
+      return (await tryFallbacks()) ?? first;
     }
     return first;
   } catch (err) {
-    if (shouldUseLocal8787Fallback() && stripTrailingSlash(API_BASE) !== stripTrailingSlash(DEV_DIRECT_API)) {
-      try {
-        return await fetchFrom(DEV_DIRECT_API);
-      } catch {
-        wrapNetworkError(err, context);
-      }
+    if (fallbackBases.length > 0) {
+      const fallback = await tryFallbacks();
+      if (fallback) return fallback;
     }
     wrapNetworkError(err, context);
   }
@@ -452,7 +462,15 @@ async function readJsonFromApiResponse(response: Response, context: string): Pro
 
 function wrapNetworkError(err: unknown, context: string): never {
   const msg = err instanceof Error ? err.message : String(err);
-  if (msg === "Failed to fetch" || msg.includes("NetworkError") || msg.includes("fetch") || msg.includes("ECONNREFUSED")) {
+  if (
+    msg === "Failed to fetch" ||
+    msg.includes("Load failed") ||
+    msg.includes("NetworkError") ||
+    msg.includes("Network request failed") ||
+    msg.includes("CORS") ||
+    msg.includes("fetch") ||
+    msg.includes("ECONNREFUSED")
+  ) {
     throw new Error(
       `${context}: API 서버에 연결할 수 없습니다. 로컬 개발 중이라면 터미널에서 \`npm run dev:api\`를 실행해 주세요. (포트 8787)`
     );

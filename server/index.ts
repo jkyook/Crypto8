@@ -155,15 +155,24 @@ const CORS_ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS ?? "")
   .filter((s) => s.length > 0);
 
 const isLocalhostOrigin = (origin: string): boolean => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+const isGithubPagesOrigin = (origin: string): boolean => /^https:\/\/[a-zA-Z0-9-]+\.github\.io$/.test(origin);
+const DEFAULT_ALLOWED_ORIGINS = new Set(["https://jkyook.github.io", "https://crypto8-web.onrender.com"]);
+
+function isAllowedCorsOrigin(origin: string): boolean {
+  return (
+    CORS_ALLOWED_ORIGINS.includes(origin) ||
+    DEFAULT_ALLOWED_ORIGINS.has(origin) ||
+    isLocalhostOrigin(origin) ||
+    isGithubPagesOrigin(origin)
+  );
+}
 
 app.use(
   cors({
     origin: (origin, callback) => {
       // same-origin / curl / 서버사이드 호출은 origin이 비어 있음 → 허용
       if (!origin) return callback(null, true);
-      if (CORS_ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
-      if (CORS_ALLOWED_ORIGINS.length === 0 && isLocalhostOrigin(origin)) {
-        // 운영자가 명시 안 한 환경에서는 로컬 호스트만 허용(브라우저 외 호출은 위에서 통과)
+      if (isAllowedCorsOrigin(origin)) {
         return callback(null, true);
       }
       return callback(new Error(`origin not allowed: ${origin}`));
