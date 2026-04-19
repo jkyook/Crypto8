@@ -67,6 +67,12 @@ type YieldProduct = {
   detail: string;
 };
 type DepositPosition = DepositPositionPayload;
+type ProtocolDetailRow = {
+  key: string;
+  name: string;
+  chain: string;
+  amount: number;
+};
 
 const GUEST_WITHDRAW_LEDGER_KEY = "crypto8_withdraw___guest__";
 
@@ -892,6 +898,14 @@ function TradePanel() {
   );
 }
 
+function inferProtocolChain(protocolName: string): string {
+  const key = protocolName.toLowerCase();
+  if (key.includes("orca")) return "Solana";
+  if (key.includes("aave")) return "Arbitrum";
+  if (key.includes("uniswap")) return "Arbitrum";
+  return "Multi";
+}
+
 function PortfolioPanel({
   positions,
   onExecutionComplete
@@ -900,16 +914,25 @@ function PortfolioPanel({
   onExecutionComplete?: () => void | Promise<void>;
 }) {
   const [protocolAmounts, setProtocolAmounts] = useState<Record<string, number>>({});
-  const [protocolDepositDraft, setProtocolDepositDraft] = useState<{ name: string; amountUsd: number } | null>(null);
+  const [protocolDepositDraft, setProtocolDepositDraft] = useState<ProtocolDetailRow | null>(null);
   const [protocolDepositKey, setProtocolDepositKey] = useState(0);
   const [showPositionDetails, setShowPositionDetails] = useState(false);
   const totalDeposited = positions.reduce((acc, item) => acc + item.amountUsd, 0);
-  const protocolTotals = positions.reduce<Record<string, number>>((acc, item) => {
+  const protocolTotals = positions.reduce<Record<string, ProtocolDetailRow>>((acc, item) => {
     item.protocolMix.forEach((mix) => {
-      acc[mix.name] = (acc[mix.name] ?? 0) + item.amountUsd * mix.weight;
+      const chain = inferProtocolChain(mix.pool ?? mix.name);
+      const key = `${mix.name}__${chain}`;
+      const prev = acc[key];
+      acc[key] = {
+        key,
+        name: mix.name,
+        chain,
+        amount: (prev?.amount ?? 0) + item.amountUsd * mix.weight
+      };
     });
     return acc;
   }, {});
+  const protocolRows = Object.values(protocolTotals).sort((a, b) => b.amount - a.amount);
   const annualYield = estimateAnnualYieldUsd(positions);
 
   return (
@@ -927,7 +950,7 @@ function PortfolioPanel({
           </div>
           <div>
             <span>프로토콜 수</span>
-            <strong>{Object.keys(protocolTotals).length}개</strong>
+            <strong>{new Set(protocolRows.map((row) => row.name)).size}개</strong>
           </div>
           <div>
             <span>추정 연 수익</span>
@@ -941,18 +964,20 @@ function PortfolioPanel({
         <thead>
           <tr>
             <th>프로토콜</th>
+            <th>체인</th>
             <th>예치 금액 (USD)</th>
             <th>비중</th>
             <th>입출금</th>
           </tr>
         </thead>
         <tbody>
-          {Object.entries(protocolTotals).map(([name, amount]) => (
-            <tr key={name}>
-              <td>{name}</td>
-              <td>${amount.toFixed(2)}</td>
+          {protocolRows.map((row) => (
+            <tr key={row.key}>
+              <td>{row.name}</td>
+              <td>{row.chain}</td>
+              <td>${row.amount.toFixed(2)}</td>
               <td>
-                <span className="protocol-weight-cell">{totalDeposited > 0 ? ((amount / totalDeposited) * 100).toFixed(1) : "0.0"}%</span>
+                <span className="protocol-weight-cell">{totalDeposited > 0 ? ((row.amount / totalDeposited) * 100).toFixed(1) : "0.0"}%</span>
               </td>
               <td>
                 <div className="protocol-inline-transfer">
@@ -960,34 +985,34 @@ function PortfolioPanel({
                     type="number"
                     min={1}
                     step={100}
-                    value={protocolAmounts[name] ?? Math.max(100, Math.round(amount || 100))}
+                    value={protocolAmounts[row.key] ?? Math.max(100, Math.round(row.amount || 100))}
                     onChange={(event) =>
                       setProtocolAmounts((prev) => ({
                         ...prev,
-                        [name]: Number(event.target.value)
+                        [row.key]: Number(event.target.value)
                       }))
                     }
-                    aria-label={`${name} 입출금 금액`}
+                    aria-label={`${row.name} ${row.chain} 입출금 금액`}
                   />
                   <TradeControls
                     onDeposit={() => {
-                      const input = protocolAmounts[name] ?? Math.max(100, Math.round(amount || 100));
+                      const input = protocolAmounts[row.key] ?? Math.max(100, Math.round(row.amount || 100));
                       if (!Number.isFinite(input) || input <= 0) return;
-                      setProtocolAmounts((prev) => ({ ...prev, [name]: input + 100 }));
+                      setProtocolAmounts((prev) => ({ ...prev, [row.key]: input + 100 }));
                     }}
                     onWithdraw={() => {
-                      const input = protocolAmounts[name] ?? Math.max(100, Math.round(amount || 100));
+                      const input = protocolAmounts[row.key] ?? Math.max(100, Math.round(row.amount || 100));
                       if (!Number.isFinite(input) || input <= 0) return;
-                      setProtocolAmounts((prev) => ({ ...prev, [name]: Math.max(0, input - 100) }));
+                      setProtocolAmounts((prev) => ({ ...prev, [row.key]: Math.max(0, input - 100) }));
                     }}
                   />
                   <button
                     type="button"
                     className="protocol-deposit-action"
                     onClick={() => {
-                      const input = protocolAmounts[name] ?? Math.max(100, Math.round(amount || 100));
+                      const input = protocolAmounts[row.key] ?? Math.max(100, Math.round(row.amount || 100));
                       if (!Number.isFinite(input) || input <= 0) return;
-                      setProtocolDepositDraft({ name, amountUsd: input });
+                      setProtocolDepositDraft({ ...row, amount: input });
                       setProtocolDepositKey((prev) => prev + 1);
                     }}
                     title="조정한 금액으로 입금 처리 팝업을 엽니다. 포지션은 최종 입금처리 후에만 변경됩니다."
@@ -998,13 +1023,14 @@ function PortfolioPanel({
               </td>
             </tr>
           ))}
-          {Object.keys(protocolTotals).length === 0 ? (
+          {protocolRows.length === 0 ? (
             <tr>
-              <td colSpan={4}>아직 예치 내역이 없습니다.</td>
+              <td colSpan={5}>아직 예치 내역이 없습니다.</td>
             </tr>
           ) : (
             <tr className="protocol-total-row">
               <td>합계</td>
+              <td>—</td>
               <td>${totalDeposited.toFixed(2)}</td>
               <td>
                 <span className="protocol-weight-cell">{totalDeposited > 0 ? "100.0" : "0.0"}%</span>
@@ -1023,15 +1049,25 @@ function PortfolioPanel({
             <div className="inline-execution-panel-head">
               <div>
                 <p className="section-eyebrow">Protocol Deposit</p>
-                <h3>{protocolDepositDraft.name} 입금 처리</h3>
+                <h3>
+                  {protocolDepositDraft.name} · {protocolDepositDraft.chain} 입금 처리
+                </h3>
               </div>
             </div>
             <OrchestratorBoard
               key={`${protocolDepositDraft.name}-${protocolDepositKey}`}
-              initialDepositUsd={protocolDepositDraft.amountUsd}
-              initialProductName={`${protocolDepositDraft.name} direct pool`}
-              initialEstYieldUsd={protocolDepositDraft.amountUsd * 0.08}
+              initialDepositUsd={protocolDepositDraft.amount}
+              initialProductName={`${protocolDepositDraft.name} ${protocolDepositDraft.chain} direct pool`}
+              initialEstYieldUsd={protocolDepositDraft.amount * 0.08}
               initialEstFeeUsd={0}
+              previewRowsOverride={[
+                {
+                  protocol: protocolDepositDraft.name,
+                  chain: protocolDepositDraft.chain,
+                  action: `${protocolDepositDraft.name} direct deposit`,
+                  allocationUsd: protocolDepositDraft.amount
+                }
+              ]}
               onExecutionComplete={onExecutionComplete}
             />
           </div>

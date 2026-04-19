@@ -14,6 +14,7 @@ import {
 import { buildExecutionPreviewRows } from "../lib/executionPreview";
 import { buildAgentTasks, evaluateRisk } from "../lib/orchestrator";
 import { checkGuardrails } from "../lib/strategyEngine";
+import type { ExecutionPreviewRow } from "../lib/executionPreview";
 
 type OrchestratorBoardProps = {
   initialDepositUsd?: number;
@@ -24,6 +25,7 @@ type OrchestratorBoardProps = {
   allowJobExecution?: boolean;
   /** 직전 예치 저장으로 생성된 포지션 id(실행 이벤트 페이로드에 연결). */
   linkedPositionId?: string;
+  previewRowsOverride?: ExecutionPreviewRow[];
   onActionNotice?: (notice: { variant: "error" | "info"; text: string }) => void;
   onOpenOperationsWithJob?: (jobId: string) => void;
   onExecutionComplete?: () => void | Promise<void>;
@@ -36,6 +38,7 @@ export function OrchestratorBoard({
   initialEstFeeUsd = 0,
   allowJobExecution: allowJobExecutionProp,
   linkedPositionId,
+  previewRowsOverride,
   onActionNotice,
   onOpenOperationsWithJob,
   onExecutionComplete
@@ -104,9 +107,12 @@ export function OrchestratorBoard({
         }));
       }
     }
+    if (previewRowsOverride && previewRowsOverride.length > 0) {
+      return previewRowsOverride;
+    }
     const usd = job?.input.depositUsd ?? depositUsd;
     return buildExecutionPreviewRows(usd);
-  }, [lastExecution, job, depositUsd]);
+  }, [lastExecution, job, depositUsd, previewRowsOverride]);
   const quoteRows = useMemo(() => {
     if (lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0)) {
       return baseQuoteRows;
