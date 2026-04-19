@@ -18,6 +18,7 @@ import {
   type ExecuteJobResponse,
   type Job,
   type ProductNetwork,
+  type ProductSubtype,
   type ProtocolFeeEstimate,
   type RuntimeInfo,
   type UserWallet
