@@ -1554,6 +1554,8 @@ export default function App() {
             positions={positions}
             withdrawLedger={withdrawLedger}
             portfolioUsd={portfolioTotalUsd}
+            onSessionChange={setSession}
+            onOpenAuth={() => onSelectMenu("auth")}
             onOpenMyOverview={() => onSelectMenu("my")}
             onOpenPortfolio={() => onSelectMenu("portfolio")}
             onOpenActivity={() => onSelectMenu("activity")}
@@ -1621,10 +1623,10 @@ export default function App() {
 
   /** 상단 주요 메뉴: Dashboard · Pools · Positions · Execution (역할에 없는 항목은 숨김) */
   const mainMenuKeys: MenuKey[] = [...PRIMARY_NAV_ORDER];
-  const operatorMenuKeys: MenuKey[] = ["signupHistory", "auth", "consultant", "consensus"];
+  const operatorMenuKeys: MenuKey[] = ["signupHistory", "consultant", "consensus"];
   const historyMenuKeys: MenuKey[] = ["activity", "trade"];
   /** More에 넣지 않음: 지갑·운영 이력은 다른 진입점(헤더/검색/딥링크)으로도 이동 가능 */
-  const hiddenFromMoreKeys: MenuKey[] = ["wallet", "operationsLog"];
+  const hiddenFromMoreKeys: MenuKey[] = ["wallet", "operationsLog", "auth"];
   const operatorMenus = availableMenus.filter((item) => operatorMenuKeys.includes(item.key));
   const moreMenus = availableMenus.filter(
     (item) =>
@@ -1696,6 +1698,8 @@ export default function App() {
             positions={positions}
             withdrawLedger={withdrawLedger}
             portfolioUsd={portfolioTotalUsd}
+            onSessionChange={setSession}
+            onOpenAuth={() => onSelectMenu("auth")}
             onOpenMyOverview={() => onSelectMenu("my")}
             onOpenWallet={() => onSelectMenu("wallet")}
             onOpenPortfolio={() => onSelectMenu("portfolio")}

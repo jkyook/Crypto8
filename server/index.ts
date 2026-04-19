@@ -14,12 +14,16 @@ import {
 } from "./positions";
 import { approveJob, cancelJob, createJob, executeJob, getJob, listApprovals, listExecutionEvents, listJobs } from "./store";
 import type { ApprovalLog, JobInput } from "./types";
-import { authenticate, refreshAccessToken, registerUser, revokeRefreshToken, type UserRole, verifyToken } from "./auth";
+import { authenticate, authenticateWallet, refreshAccessToken, registerUser, revokeRefreshToken, type UserRole, verifyToken } from "./auth";
 import { getDb, initDb } from "./db";
 import { ensureDemoUsersIfEmpty } from "./ensureDemoUsers";
 import rateLimit from "express-rate-limit";
 import { gatherProtocolInsightsNews } from "./protocolNews";
 import { getDailyApySeriesFromCsv, listMarketRatesHistory, maybeAppendMarketRatesSnapshot } from "./marketAprHistory";
+import { listAccountAssets } from "./accountAssets";
+import { estimateProtocolFees, type FeeEstimateInputRow } from "./feeEstimator";
+import { getMarketPriceSnapshot } from "./marketPricing";
+import { linkUserWallet, listUserWallets } from "./userWallets";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
@@ -355,6 +359,22 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
   res.json({ ok: true, role: auth.role, username });
 });
 
+app.post("/api/auth/wallet", authLimiter, async (req, res) => {
+  const body = req.body as { walletAddress?: unknown };
+  if (typeof body.walletAddress !== "string") {
+    res.status(400).json({ ok: false, message: "walletAddress required" });
+    return;
+  }
+  const auth = await authenticateWallet(body.walletAddress);
+  if (!auth.ok || !auth.accessToken || !auth.refreshToken || !auth.role || !auth.username) {
+    res.status(400).json({ ok: false, message: auth.message ?? "wallet login failed" });
+    return;
+  }
+  await linkUserWallet(auth.username, body.walletAddress);
+  setAuthCookies(res, auth.accessToken, auth.refreshToken);
+  res.json({ ok: true, role: auth.role, username: auth.username });
+});
+
 app.post("/api/auth/refresh", async (req, res) => {
   const refreshToken = parseCookies(req)[REFRESH_COOKIE_NAME];
   if (!refreshToken || refreshToken.length > 256) {
@@ -406,6 +426,66 @@ app.get("/api/whitepaper.pdf", (_req, res) => {
       }
     }
   });
+});
+
+app.get("/api/account/assets", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {
+  const username = res.locals.user.username as string;
+  const role = res.locals.user.role as UserRole;
+  res.json({ ok: true, assets: await listAccountAssets(username, role) });
+});
+
+app.get("/api/account/wallets", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {
+  const username = res.locals.user.username as string;
+  res.json({ ok: true, wallets: await listUserWallets(username) });
+});
+
+app.post("/api/account/wallets", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+  const body = req.body as { walletAddress?: unknown; chain?: unknown; provider?: unknown };
+  if (typeof body.walletAddress !== "string") {
+    res.status(400).json({ ok: false, message: "walletAddress required" });
+    return;
+  }
+  const username = res.locals.user.username as string;
+  const chain = typeof body.chain === "string" && body.chain.trim() ? body.chain.trim() : "Solana";
+  const provider = typeof body.provider === "string" && body.provider.trim() ? body.provider.trim() : "phantom";
+  const wallet = await linkUserWallet(username, body.walletAddress, chain, provider);
+  res.json({ ok: true, wallet });
+});
+
+app.get("/api/market/prices", async (_req, res) => {
+  res.json({ ok: true, ...(await getMarketPriceSnapshot()) });
+});
+
+app.post("/api/orchestrator/fee-estimate", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+  const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as { rows?: unknown };
+  const rows = Array.isArray(body.rows) ? body.rows : [];
+  const parsed = rows
+    .map((row): FeeEstimateInputRow | null => {
+      const r = row as Partial<FeeEstimateInputRow>;
+      if (
+        typeof r.protocol !== "string" ||
+        typeof r.chain !== "string" ||
+        typeof r.action !== "string" ||
+        typeof r.allocationUsd !== "number" ||
+        !Number.isFinite(r.allocationUsd) ||
+        r.allocationUsd < 0
+      ) {
+        return null;
+      }
+      return {
+        protocol: r.protocol,
+        chain: r.chain,
+        action: r.action,
+        allocationUsd: r.allocationUsd
+      };
+    })
+    .filter((row): row is FeeEstimateInputRow => row !== null)
+    .slice(0, 20);
+  if (parsed.length === 0) {
+    res.status(400).json({ ok: false, message: "fee estimate rows required" });
+    return;
+  }
+  res.json({ ok: true, ...(await estimateProtocolFees(parsed)) });
 });
 
 app.get("/api/health", async (_req, res) => {
@@ -623,10 +703,24 @@ app.post("/api/orchestrator/jobs", requireAuth(["orchestrator", "security", "vie
     res.status(400).json({ ok: false, message: "invalid input" });
     return;
   }
+  const sourceAsset =
+    body.sourceAsset === "USDC" || body.sourceAsset === "USDT" || body.sourceAsset === "ETH" || body.sourceAsset === "SOL"
+      ? body.sourceAsset
+      : "USDC";
 
   try {
     const username = res.locals.user.username as string;
-    const job = await createJob(body as JobInput, username);
+    const role = res.locals.user.role as UserRole;
+    const fundingAsset = (await listAccountAssets(username, role)).find((asset) => asset.symbol === sourceAsset);
+    if (!fundingAsset || fundingAsset.usdValue < body.depositUsd) {
+      res.status(400).json({
+        ok: false,
+        message: `insufficient ${sourceAsset} balance for deposit`,
+        availableUsd: fundingAsset?.usdValue ?? 0
+      });
+      return;
+    }
+    const job = await createJob({ ...(body as JobInput), sourceAsset }, username);
     res.json({ ok: true, job });
   } catch (error) {
     res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "job create failed" });

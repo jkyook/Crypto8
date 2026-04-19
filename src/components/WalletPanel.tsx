@@ -1,7 +1,22 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AddressType } from "@phantom/browser-sdk";
 import { useAccounts, useConnect, useDisconnect, usePhantom } from "@phantom/react-sdk";
-import { AUTH_CLEARED_EVENT, AUTH_UPDATED_EVENT, getSession, type DepositPositionPayload } from "../lib/api";
+import {
+  AUTH_CLEARED_EVENT,
+  AUTH_UPDATED_EVENT,
+  clearSession,
+  fetchMarketPrices,
+  getSession,
+  linkAccountWallet,
+  listAccountAssets,
+  listAccountWallets,
+  loginWithWallet,
+  type AccountAssetBalance,
+  type AccountAssetSymbol,
+  type AuthSession,
+  type DepositPositionPayload,
+  type UserWallet
+} from "../lib/api";
 import { fetchOnChainPortfolioWithFallback, getSolanaRpcCandidates, solscanTokenUrl, type OnChainTokenRow } from "../lib/solanaChainAssets";
 
 export type WalletWithdrawLedgerLine = {
@@ -22,6 +37,8 @@ type WalletPanelProps = {
   onOpenActivity?: () => void;
   onOpenPortfolio?: () => void;
   onOpenMyOverview?: () => void;
+  onOpenAuth?: () => void;
+  onSessionChange?: (session: AuthSession | null) => void;
 };
 
 type LedgerRow = {
@@ -42,6 +59,20 @@ function formatTokenAmount(n: number): string {
   if (n >= 1_000_000) return n.toLocaleString(undefined, { maximumFractionDigits: 0 });
   if (n >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
   return n.toLocaleString(undefined, { maximumFractionDigits: 8 });
+}
+
+function normalizeAssetSymbol(symbol: string): AccountAssetSymbol | null {
+  const upper = symbol.toUpperCase();
+  if (upper.includes("USDC")) return "USDC";
+  if (upper.includes("USDT")) return "USDT";
+  if (upper.includes("SOL")) return "SOL";
+  if (upper.includes("ETH")) return "ETH";
+  return null;
+}
+
+function shortAddress(address?: string | null): string {
+  if (!address) return "온체인 지갑 미연결";
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
 
 function NetworkStatusBlock({ network, plain }: { network: "mainnet" | "devnet"; plain?: boolean }) {
@@ -70,7 +101,9 @@ function ChainAssetsTable({
   sol,
   tokens,
   network,
-  compact
+  compact,
+  prices,
+  priceMeta
 }: {
   loading: boolean;
   error: string;
@@ -78,6 +111,8 @@ function ChainAssetsTable({
   tokens: OnChainTokenRow[];
   network: "mainnet" | "devnet";
   compact: boolean;
+  prices: Partial<Record<AccountAssetSymbol, number>>;
+  priceMeta: string;
 }) {
   if (loading) {
     return <p className="wallet-chain-loading">블록체인에서 자산 조회 중…</p>;
@@ -88,11 +123,13 @@ function ChainAssetsTable({
   return (
     <div className={compact ? "wallet-chain-table-wrap wallet-chain-table-wrap-compact" : "wallet-chain-table-wrap"}>
       <h4 className="wallet-feed-title">블록체인 자산 (SPL)</h4>
+      {priceMeta ? <p className="wallet-price-meta">가격 기준: {priceMeta}</p> : null}
       <table className="wallet-chain-table">
         <thead>
           <tr>
             <th>자산</th>
             <th>잔고</th>
+            <th>USD 가치</th>
             {!compact ? <th>Mint</th> : null}
             <th>Solscan</th>
           </tr>
@@ -101,30 +138,40 @@ function ChainAssetsTable({
           <tr>
             <td>SOL (네이티브)</td>
             <td className="wallet-mono">{sol !== null ? formatTokenAmount(sol) : "—"}</td>
+            <td className="wallet-mono">
+              {sol !== null && prices.SOL ? `$${(sol * prices.SOL).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : "—"}
+            </td>
             {!compact ? (
               <td className="wallet-mono wallet-mint-muted">—</td>
             ) : null}
             <td>—</td>
           </tr>
           {tokens.map((t) => (
-            <tr key={t.mint}>
-              <td>{t.symbol}</td>
-              <td className="wallet-mono">{formatTokenAmount(t.amount)}</td>
-              {!compact ? <td className="wallet-mono wallet-mint-muted">{t.mint}</td> : null}
-              <td>
-                <button
-                  type="button"
-                  className="wallet-linkish"
-                  onClick={() => window.open(solscanTokenUrl(t.mint, network), "_blank", "noopener,noreferrer")}
-                >
-                  Solscan
-                </button>
-              </td>
-            </tr>
+            (() => {
+              const symbol = normalizeAssetSymbol(t.symbol);
+              const usd = symbol && prices[symbol] ? t.amount * (prices[symbol] ?? 0) : null;
+              return (
+                <tr key={t.mint}>
+                  <td>{t.symbol}</td>
+                  <td className="wallet-mono">{formatTokenAmount(t.amount)}</td>
+                  <td className="wallet-mono">{usd !== null ? `$${usd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : "—"}</td>
+                  {!compact ? <td className="wallet-mono wallet-mint-muted">{t.mint}</td> : null}
+                  <td>
+                    <button
+                      type="button"
+                      className="wallet-linkish"
+                      onClick={() => window.open(solscanTokenUrl(t.mint, network), "_blank", "noopener,noreferrer")}
+                    >
+                      Solscan
+                    </button>
+                  </td>
+                </tr>
+              );
+            })()
           ))}
           {tokens.length === 0 ? (
             <tr>
-              <td colSpan={compact ? 3 : 4}>SPL 토큰 계정 없음 (또는 잔고 0)</td>
+              <td colSpan={compact ? 4 : 5}>SPL 토큰 계정 없음 (또는 잔고 0)</td>
             </tr>
           ) : null}
         </tbody>
@@ -141,7 +188,9 @@ export function WalletPanel({
   onOpenWallet,
   onOpenActivity,
   onOpenPortfolio,
-  onOpenMyOverview
+  onOpenMyOverview,
+  onOpenAuth,
+  onSessionChange
 }: WalletPanelProps) {
   const { connect } = useConnect();
   const { disconnect } = useDisconnect();
@@ -158,6 +207,15 @@ export function WalletPanel({
   const [isCompactDetailOpen, setIsCompactDetailOpen] = useState(false);
   const [copyHint, setCopyHint] = useState("");
   const [appUsername, setAppUsername] = useState(() => getSession()?.username ?? "");
+  const [marketPrices, setMarketPrices] = useState<Partial<Record<AccountAssetSymbol, number>>>({});
+  const [priceMeta, setPriceMeta] = useState("");
+  const [loginChoiceOpen, setLoginChoiceOpen] = useState(false);
+  const [pendingWalletLogin, setPendingWalletLogin] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [walletCreateOpen, setWalletCreateOpen] = useState(false);
+  const [linkedWallets, setLinkedWallets] = useState<UserWallet[]>([]);
+  const [accountAssets, setAccountAssets] = useState<AccountAssetBalance[]>([]);
+  const [accountMenuError, setAccountMenuError] = useState("");
 
   useEffect(() => {
     const sync = (): void => {
@@ -176,16 +234,54 @@ export function WalletPanel({
     };
   }, []);
 
+  useEffect(() => {
+    if (!appUsername) {
+      setLinkedWallets([]);
+      setAccountAssets([]);
+      setAccountMenuError("");
+      return;
+    }
+    const controller = new AbortController();
+    setAccountMenuError("");
+    void Promise.allSettled([listAccountWallets({ signal: controller.signal }), listAccountAssets({ signal: controller.signal })])
+      .then(([walletsResult, assetsResult]) => {
+        if (controller.signal.aborted) return;
+        setLinkedWallets(walletsResult.status === "fulfilled" ? walletsResult.value : []);
+        setAccountAssets(assetsResult.status === "fulfilled" ? assetsResult.value : []);
+        if (walletsResult.status === "rejected") {
+          setAccountMenuError("연결 지갑 정보를 불러오지 못했습니다. API 서버를 새 코드로 재시작하면 복구됩니다.");
+        }
+      });
+    return () => controller.abort();
+  }, [appUsername]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetchMarketPrices({ signal: controller.signal })
+      .then((snapshot) => {
+        if (controller.signal.aborted) return;
+        setMarketPrices(snapshot.prices);
+        setPriceMeta(`${snapshot.source} · ${new Date(snapshot.updatedAt).toLocaleTimeString()}`);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setMarketPrices({});
+          setPriceMeta("가격 조회 실패");
+        }
+      });
+    return () => controller.abort();
+  }, []);
+
   const walletAddressLabel = useMemo(() => {
     const chain = solanaAccount?.address;
     if (appUsername && chain) {
-      return `${appUsername} · ${chain.slice(0, 4)}…${chain.slice(-4)}`;
+      return `${appUsername} · ${shortAddress(chain)}`;
     }
     if (appUsername) {
       return `${appUsername} (앱 로그인)`;
     }
     if (chain) {
-      return `${chain.slice(0, 6)}…${chain.slice(-4)}`;
+      return shortAddress(chain);
     }
     return "주소 없음";
   }, [appUsername, solanaAccount?.address]);
@@ -256,6 +352,21 @@ export function WalletPanel({
     void load();
   }, [isConnected, solanaAccount?.address, network, rpcCandidates]);
 
+  useEffect(() => {
+    const addr = solanaAccount?.address;
+    if (!pendingWalletLogin || !addr) return;
+    setPendingWalletLogin(false);
+    void loginWithWallet(addr)
+      .then((session) => {
+        onSessionChange?.(session);
+        setAppUsername(session.username);
+        setLoginChoiceOpen(false);
+      })
+      .catch((error) => {
+        setConnectError(error instanceof Error ? error.message : "지갑 로그인 실패");
+      });
+  }, [onSessionChange, pendingWalletLogin, solanaAccount?.address]);
+
   const onConnect = async () => {
     setIsConnecting(true);
     setConnectError("");
@@ -284,12 +395,158 @@ export function WalletPanel({
     }
   };
 
+  const onWalletLogin = async () => {
+    setPendingWalletLogin(true);
+    if (solanaAccount?.address) {
+      try {
+        const session = await loginWithWallet(solanaAccount.address);
+        onSessionChange?.(session);
+        setAppUsername(session.username);
+        setLoginChoiceOpen(false);
+        setPendingWalletLogin(false);
+        return;
+      } catch (error) {
+        setPendingWalletLogin(false);
+        setConnectError(error instanceof Error ? error.message : "지갑 로그인 실패");
+        return;
+      }
+    }
+    await onConnect();
+  };
+
+  const onLinkCurrentWallet = async () => {
+    setConnectError("");
+    let addr = solanaAccount?.address;
+    if (!addr) {
+      setPendingWalletLogin(true);
+      await onConnect();
+      setPendingWalletLogin(false);
+      addr = (window as { phantom?: { solana?: { publicKey?: { toString?: () => string } } } }).phantom?.solana?.publicKey?.toString?.();
+    }
+    if (!addr) {
+      setConnectError("지갑 주소를 아직 읽지 못했습니다. 연결 후 다시 시도해 주세요.");
+      return;
+    }
+    try {
+      const wallet = await linkAccountWallet(addr);
+      setLinkedWallets((prev) => [wallet, ...prev.filter((item) => item.walletAddress !== wallet.walletAddress)]);
+      setWalletCreateOpen(false);
+      setAccountMenuOpen(true);
+    } catch (error) {
+      setConnectError(error instanceof Error ? error.message : "지갑 연결 저장 실패");
+    }
+  };
+
+  const onLogout = async () => {
+    await clearSession();
+    await disconnect().catch(() => undefined);
+    setAppUsername("");
+    setLinkedWallets([]);
+    setAccountAssets([]);
+    setAccountMenuOpen(false);
+    setWalletCreateOpen(false);
+    onSessionChange?.(null);
+  };
+
+  const accountAssetsTotal = accountAssets.reduce((acc, asset) => acc + asset.usdValue, 0);
+
+  const loginChoice = (
+    <div className="wallet-login-choice" role="menu" aria-label="로그인 방식 선택">
+      <button
+        type="button"
+        onClick={() => {
+          setLoginChoiceOpen(false);
+          onOpenAuth?.();
+        }}
+      >
+        아이디로 로그인
+      </button>
+      <button type="button" onClick={() => void onWalletLogin()} disabled={isConnecting || pendingWalletLogin}>
+        {isConnecting || pendingWalletLogin ? "지갑 로그인 중..." : "지갑 연결로 로그인"}
+      </button>
+    </div>
+  );
+
+  const accountMenu = appUsername ? (
+    <div className="wallet-account-menu" role="menu" aria-label="계정 메뉴">
+      <div className="wallet-account-menu-head">
+        <span>로그인 계정</span>
+        <strong>{appUsername}</strong>
+      </div>
+      <div className="wallet-account-menu-section">
+        <span>연결 지갑</span>
+        {linkedWallets.length > 0 ? (
+          linkedWallets.slice(0, 3).map((wallet) => (
+            <button key={wallet.id} type="button" className="wallet-account-row" onClick={() => void onConnect()}>
+              <strong>{shortAddress(wallet.walletAddress)}</strong>
+              <em>
+                {wallet.chain} · {wallet.provider} · Phantom 연결
+              </em>
+            </button>
+          ))
+        ) : (
+          <button type="button" className="wallet-account-row" onClick={() => setWalletCreateOpen(true)}>
+            <strong>연결된 지갑 없음</strong>
+            <em>눌러서 Phantom 지갑을 생성/연결</em>
+          </button>
+        )}
+      </div>
+      <div className="wallet-account-menu-section">
+        <span>자산 요약</span>
+        <strong>${accountAssetsTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+        <em>{accountAssets.slice(0, 4).map((asset) => `${asset.symbol} $${asset.usdValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`).join(" · ") || "조회 전"}</em>
+      </div>
+      {accountMenuError ? <p className="wallet-error">{accountMenuError}</p> : null}
+      <div className="wallet-account-actions">
+        <button type="button" onClick={() => setWalletCreateOpen(true)}>
+          지갑 생성/연결
+        </button>
+        <button type="button" className="danger" onClick={() => void onLogout()}>
+          로그아웃
+        </button>
+      </div>
+    </div>
+  ) : null;
+
+  const walletCreateModal = walletCreateOpen ? (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="지갑 생성 및 연결">
+      <div className="modal-card wallet-create-modal">
+        <button type="button" className="modal-close-icon" aria-label="닫기" onClick={() => setWalletCreateOpen(false)}>
+          x
+        </button>
+        <p className="section-eyebrow">Wallet Setup</p>
+        <h3>지갑 생성 및 연결</h3>
+        <p>
+          Phantom이 설치되어 있으면 기존 지갑을 연결하고, 없으면 Phantom의 신규 지갑 생성 화면으로 이동합니다. 연결 후 현재 아이디와 지갑 주소를 저장합니다.
+        </p>
+        <div className="button-row">
+          <button type="button" onClick={() => void onLinkCurrentWallet()} disabled={isConnecting || pendingWalletLogin}>
+            {isConnecting || pendingWalletLogin ? "연결 중..." : "현재 지갑 연결"}
+          </button>
+          <button type="button" className="ghost-btn" onClick={() => window.open("https://phantom.app/download", "_blank", "noopener,noreferrer")}>
+            신규 지갑 만들기
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   const onDisconnect = async () => {
     try {
       setConnectError("");
       setChainError("");
       setIsConnecting(false);
+      setSolOnChain(null);
+      setTokensOnChain([]);
+      setIsCompactDetailOpen(false);
+      setCopyHint("");
+      setPendingWalletLogin(false);
       await disconnect();
+      if (appUsername.startsWith("wallet_")) {
+        await clearSession();
+        onSessionChange?.(null);
+        setAppUsername("");
+      }
     } catch (error) {
       console.error("연결 해제 실패:", error);
     }
@@ -427,6 +684,8 @@ export function WalletPanel({
                   tokens={tokensOnChain}
                   network={network}
                   compact
+                  prices={marketPrices}
+                  priceMeta={priceMeta}
                 />
                 {ledgerSection}
                 {actionRow({ compact: true })}
@@ -436,14 +695,19 @@ export function WalletPanel({
         ) : (
           <div className="wallet-widget-head wallet-widget-head-address-only">
             {appUsername ? (
-              <span className="wallet-app-id-inline" title="앱(JWT) 로그인 아이디">
+              <button type="button" className="wallet-address-link" onClick={() => setAccountMenuOpen((prev) => !prev)}>
                 {appUsername}
-                {" · "}
-              </span>
-            ) : null}
-            <button type="button" onClick={onConnect} disabled={isConnecting}>
-              {isConnecting ? "연결 중…" : "연결"}
-            </button>
+              </button>
+            ) : (
+              <>
+                <button type="button" onClick={() => setLoginChoiceOpen((prev) => !prev)} disabled={isConnecting || pendingWalletLogin}>
+                  {isConnecting || pendingWalletLogin ? "로그인 중…" : "로그인"}
+                </button>
+                {loginChoiceOpen ? loginChoice : null}
+              </>
+            )}
+            {accountMenuOpen ? accountMenu : null}
+            {walletCreateModal}
           </div>
         )}
         {connectError ? <p className="wallet-error">{connectError}</p> : null}
@@ -465,7 +729,9 @@ export function WalletPanel({
                 앱 계정 <strong className="wallet-mono">{appUsername}</strong>
               </p>
             ) : null}
-            <p className="wallet-full-address">{solanaAccount?.address ?? "온체인 지갑 미연결 — Phantom 연결 시 주소가 표시됩니다."}</p>
+            <p className="wallet-full-address" title={solanaAccount?.address ?? undefined}>
+              {shortAddress(solanaAccount?.address)}
+            </p>
             {copyHint ? <p className="wallet-copy-hint wallet-copy-hint-in-panel">{copyHint}</p> : null}
             <NetworkStatusBlock network={network} plain />
             {networkToggle({ compact: false })}
@@ -477,14 +743,19 @@ export function WalletPanel({
             tokens={tokensOnChain}
             network={network}
             compact={false}
+            prices={marketPrices}
+            priceMeta={priceMeta}
           />
           {ledgerSection}
           {actionRow({ compact: false })}
         </>
       ) : (
-        <button type="button" onClick={onConnect} disabled={isConnecting}>
-          {isConnecting ? "연결 중…" : "Phantom 연결"}
-        </button>
+        <div className="wallet-login-panel">
+          <button type="button" onClick={() => setLoginChoiceOpen((prev) => !prev)} disabled={isConnecting || pendingWalletLogin}>
+            {isConnecting || pendingWalletLogin ? "로그인 중…" : "로그인"}
+          </button>
+          {loginChoiceOpen ? loginChoice : null}
+        </div>
       )}
       {connectError ? <p className="wallet-error">{connectError}</p> : null}
     </section>

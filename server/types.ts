@@ -5,6 +5,7 @@ export type JobInput = {
   isRangeOut: boolean;
   isDepegAlert: boolean;
   hasPendingRelease: boolean;
+  sourceAsset?: "USDC" | "USDT" | "ETH" | "SOL";
 };
 
 export type ExecutionJob = {

@@ -507,6 +507,12 @@ body[data-theme="light"] .wallet-ledger-tag-out {
   letter-spacing: 0.01em;
 }
 
+.wallet-price-meta {
+  margin: -4px 0 10px;
+  color: var(--c8-text-muted);
+  font-size: 0.72rem;
+}
+
 body[data-theme="light"] .wallet-feed-title {
   color: #3d556d;
 }
@@ -522,6 +528,131 @@ body[data-theme="light"] .wallet-feed-title {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 12px;
+}
+
+.wallet-login-panel,
+.wallet-widget-head-address-only {
+  position: relative;
+}
+
+.wallet-login-choice {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 30;
+  display: grid;
+  gap: 6px;
+  min-width: 170px;
+  padding: 8px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(7, 15, 28, 0.96);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+}
+
+.wallet-login-choice button {
+  width: 100%;
+}
+
+.wallet-account-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 32;
+  display: grid;
+  gap: 10px;
+  width: min(340px, 92vw);
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(7, 15, 28, 0.97);
+  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.34);
+  text-align: left;
+}
+
+.wallet-account-menu-head,
+.wallet-account-menu-section {
+  display: grid;
+  gap: 4px;
+}
+
+.wallet-account-menu span,
+.wallet-account-menu em,
+.wallet-account-empty {
+  color: var(--c8-text-muted);
+  font-size: 0.74rem;
+  font-style: normal;
+}
+
+.wallet-account-menu strong {
+  color: #f3f8ff;
+}
+
+.wallet-account-row {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 12px;
+  text-align: left;
+}
+
+.wallet-account-actions {
+  display: grid;
+  grid-template-columns: 1fr 0.8fr;
+  gap: 8px;
+}
+
+.wallet-create-modal {
+  max-width: 480px;
+}
+
+.wallet-create-modal p {
+  color: var(--c8-text-muted);
+}
+
+.auth-mode-tabs {
+  display: inline-flex;
+  gap: 6px;
+  padding: 5px;
+  margin: 10px 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.auth-mode-tabs button {
+  border-radius: 999px;
+}
+
+.auth-mode-tabs button.active {
+  background: rgba(123, 232, 195, 0.18);
+  border-color: rgba(123, 232, 195, 0.34);
+}
+
+.wallet-auth-box {
+  margin-top: 12px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(123, 232, 195, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.wallet-auth-box p {
+  color: var(--c8-text-muted);
+}
+
+body[data-theme="light"] .wallet-login-choice {
+  background: rgba(248, 252, 255, 0.98);
+  border-color: rgba(170, 194, 220, 0.6);
+}
+
+body[data-theme="light"] .wallet-account-menu {
+  background: rgba(248, 252, 255, 0.98);
+  border-color: rgba(170, 194, 220, 0.6);
+}
+
+body[data-theme="light"] .wallet-account-menu strong {
+  color: #18324d;
 }
 
 .wallet-compact-detail .wallet-action-grid button,
@@ -570,7 +701,9 @@ body[data-theme="light"] .wallet-action-btn.danger {
 .wallet-full-address {
   margin: 0 0 8px;
   font-size: 0.78rem;
-  word-break: break-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   line-height: 1.35;
 }
@@ -2103,10 +2236,11 @@ body[data-theme="light"] .market-apr-ts-chart--empty {
 
 .deposit-risk-review {
   display: grid;
-  grid-template-columns: minmax(0, 0.9fr) minmax(320px, 1.1fr);
-  gap: 14px;
+  grid-template-columns: minmax(170px, 0.38fr) minmax(0, 1.62fr);
+  gap: 10px;
+  align-items: center;
   margin: 14px 0;
-  padding: 16px;
+  padding: 12px 14px;
   border-radius: 18px;
   border: 1px solid rgba(123, 232, 195, 0.18);
   background:
@@ -2116,24 +2250,22 @@ body[data-theme="light"] .market-apr-ts-chart--empty {
 
 .deposit-risk-review h3 {
   margin: 0;
-  font-size: 1.1rem;
+  font-size: 0.98rem;
 }
 
-.deposit-risk-review p:not(.section-eyebrow) {
-  margin: 8px 0 0;
-  color: var(--c8-text-muted);
-  font-size: 0.84rem;
-  line-height: 1.45;
+.deposit-risk-review .section-eyebrow {
+  margin-bottom: 2px;
 }
 
 .deposit-risk-check-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
 .deposit-risk-check {
-  padding: 11px 12px;
+  min-height: 72px;
+  padding: 9px 10px;
   border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(0, 0, 0, 0.22);
@@ -2157,8 +2289,137 @@ body[data-theme="light"] .market-apr-ts-chart--empty {
 
 .deposit-risk-check strong {
   display: block;
-  margin: 4px 0;
+  margin: 3px 0;
   color: #f3f8ff;
+}
+
+.deposit-asset-routing-card {
+  margin: 14px 0;
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid rgba(59, 212, 255, 0.2);
+  background:
+    radial-gradient(circle at 92% 0%, rgba(59, 212, 255, 0.14), transparent 34%),
+    linear-gradient(145deg, rgba(7, 19, 33, 0.94), rgba(8, 12, 24, 0.96));
+}
+
+.deposit-asset-routing-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.deposit-asset-routing-head h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.deposit-asset-routing-head p:not(.section-eyebrow),
+.deposit-asset-muted,
+.deposit-asset-error {
+  margin: 8px 0 0;
+  color: var(--c8-text-muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.deposit-asset-network-line strong {
+  color: #f3f8ff;
+}
+
+.deposit-asset-error {
+  color: #ffb86b;
+}
+
+.deposit-asset-select {
+  min-width: 190px;
+  color: var(--c8-text-muted);
+  font-size: 0.76rem;
+}
+
+.deposit-asset-select select {
+  width: 100%;
+  margin-top: 6px;
+}
+
+.deposit-asset-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.deposit-asset-summary {
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.deposit-asset-summary.ok {
+  border-color: rgba(123, 232, 195, 0.34);
+}
+
+.deposit-asset-summary.warn {
+  border-color: rgba(255, 184, 107, 0.38);
+}
+
+.deposit-asset-summary span,
+.deposit-asset-summary em {
+  display: block;
+  color: var(--c8-text-muted);
+  font-size: 0.72rem;
+  font-style: normal;
+}
+
+.deposit-asset-summary strong {
+  display: block;
+  margin: 5px 0;
+  color: #f3f8ff;
+  font-size: 1.05rem;
+}
+
+.deposit-swap-route-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.deposit-swap-route-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(180px, 0.85fr) minmax(220px, 0.9fr);
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.deposit-swap-route-row span,
+.deposit-swap-route-row em {
+  color: var(--c8-text-muted);
+  font-size: 0.76rem;
+  font-style: normal;
+}
+
+.deposit-swap-route-row span {
+  display: grid;
+  gap: 4px;
+}
+
+.deposit-swap-route-row strong {
+  color: #f3f8ff;
+  font-size: 0.82rem;
+}
+
+.deposit-fee-estimate-total {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--c8-text-muted);
+  font-size: 0.8rem;
 }
 
 .portfolio-panel-card {
@@ -3143,6 +3404,7 @@ body[data-theme="light"] .pool-card-deposit-panel {
 body[data-theme="light"] .product-actions,
 body[data-theme="light"] .inline-execution-panel,
 body[data-theme="light"] .deposit-risk-review,
+body[data-theme="light"] .deposit-asset-routing-card,
 body[data-theme="light"] .portfolio-panel-card,
 body[data-theme="light"] .portfolio-overview-hero,
 body[data-theme="light"] .operations-log-card,
@@ -3154,6 +3416,8 @@ body[data-theme="light"] .pending-jobs-panel {
 body[data-theme="light"] .product-action-row,
 body[data-theme="light"] .selected-product-ticket,
 body[data-theme="light"] .deposit-risk-check,
+body[data-theme="light"] .deposit-asset-summary,
+body[data-theme="light"] .deposit-swap-route-row,
 body[data-theme="light"] .portfolio-overview-metrics div,
 body[data-theme="light"] .portfolio-overview-risk,
 body[data-theme="light"] .chain-exposure-card,
@@ -4201,8 +4465,15 @@ body[data-theme="light"] .ops-status-rail button {
   .page-grid-two,
   .page-grid-two--execution,
   .deposit-risk-review,
+  .deposit-asset-routing-head,
+  .deposit-asset-summary-grid,
+  .deposit-swap-route-row,
   .portfolio-overview-hero {
     grid-template-columns: 1fr;
+  }
+
+  .deposit-asset-routing-head {
+    display: grid;
   }
 
   .mission-action-stack {

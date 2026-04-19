@@ -131,6 +131,36 @@ export async function authenticate(
   };
 }
 
+export async function authenticateWallet(
+  walletAddress: string
+): Promise<{ ok: boolean; username?: string; role?: UserRole; accessToken?: string; refreshToken?: string; message?: string }> {
+  const address = walletAddress.trim();
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,64}$/.test(address)) {
+    return { ok: false, message: "wallet address invalid" };
+  }
+  const username = `wallet_${address.slice(0, 8)}_${address.slice(-6)}`;
+  const db = getDb();
+  const existing = await db.user.findUnique({ where: { username } });
+  if (!existing) {
+    await db.user.create({
+      data: {
+        username,
+        passwordHash: bcrypt.hashSync(crypto.randomBytes(32).toString("hex"), BCRYPT_ROUNDS),
+        role: "viewer",
+        registeredAt: new Date().toISOString()
+      }
+    });
+  }
+  const user = existing ?? (await db.user.findUniqueOrThrow({ where: { username } }));
+  return {
+    ok: true,
+    username: user.username,
+    role: user.role,
+    accessToken: signAccessToken(user.username, user.role),
+    refreshToken: await issueRefreshToken(user.username)
+  };
+}
+
 export function verifyToken(token: string): { ok: boolean; role?: UserRole; subject?: string } {
   try {
     const payload = jwt.verify(token, JWT_SECRET) as { sub: string; role: UserRole; tokenType?: string };

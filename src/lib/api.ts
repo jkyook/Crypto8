@@ -78,6 +78,7 @@ export type JobInput = {
   isRangeOut: boolean;
   isDepegAlert: boolean;
   hasPendingRelease: boolean;
+  sourceAsset?: AccountAssetSymbol;
 };
 
 export type Job = {
@@ -168,6 +169,56 @@ export type DepositPositionPayload = {
   expectedApr: number;
   protocolMix: Array<{ name: string; weight: number; pool?: string }>;
   createdAt: string;
+};
+
+export type AccountAssetSymbol = "USDC" | "USDT" | "ETH" | "SOL";
+
+export type AccountAssetBalance = {
+  symbol: AccountAssetSymbol;
+  chain: string;
+  amount: number;
+  usdPrice: number;
+  usdValue: number;
+  priceSource: string;
+  priceUpdatedAt: string;
+};
+
+export type UserWallet = {
+  id: string;
+  username: string;
+  walletAddress: string;
+  chain: string;
+  provider: string;
+  createdAt: string;
+};
+
+export type ProtocolFeeEstimateRow = {
+  protocol: string;
+  chain: string;
+  action: string;
+  allocationUsd: number;
+  nativeAsset: "ETH" | "SOL";
+  gasUnits: number;
+  gasPriceGwei?: number;
+  networkFeeUsd: number;
+  swapFeeUsd: number;
+  bridgeFeeUsd: number;
+  estimatedFeeUsd: number;
+  confidence: "medium" | "low";
+  note: string;
+};
+
+export type ProtocolFeeEstimate = {
+  rows: ProtocolFeeEstimateRow[];
+  totalFeeUsd: number;
+  priceSource: string;
+  updatedAt: string;
+};
+
+export type MarketPriceSnapshot = {
+  prices: Record<AccountAssetSymbol, number>;
+  updatedAt: string;
+  source: string;
 };
 
 export type RuntimeInfo = {
@@ -396,6 +447,33 @@ export async function login(username: string, password: string): Promise<AuthSes
   return session;
 }
 
+export async function loginWithWallet(walletAddress: string): Promise<AuthSession> {
+  const response = await fetch(`${API_BASE}/api/auth/wallet`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify({ walletAddress })
+  });
+  const data = (await readJsonFromApiResponse(response, "지갑 로그인")) as {
+    ok?: boolean;
+    role?: AuthRole;
+    username?: string;
+    message?: string;
+  };
+  if (!response.ok || !data.role || !data.username) {
+    throw new Error(typeof data.message === "string" ? data.message : "지갑 로그인 실패");
+  }
+  const session: AuthSession = { role: data.role, username: data.username };
+  localStorage.removeItem(LEGACY_TOKEN_KEY);
+  localStorage.removeItem(LEGACY_REFRESH_TOKEN_KEY);
+  localStorage.setItem(ROLE_KEY, session.role);
+  localStorage.setItem(USERNAME_KEY, session.username);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_UPDATED_EVENT));
+  }
+  return session;
+}
+
 function mapRegisterError(status: number, code: string | undefined): string {
   if (status === 404) {
     return "회원가입 API를 찾을 수 없습니다. API 서버를 최신 코드로 재시작했는지 확인하세요.";
@@ -468,6 +546,78 @@ export async function listSelfRegistrations(): Promise<SelfRegistrationRow[]> {
   }
   const regs = raw.registrations;
   return Array.isArray(regs) ? regs : [];
+}
+
+export async function listAccountAssets(init: Pick<RequestInit, "signal"> = {}): Promise<AccountAssetBalance[]> {
+  const response = await authedFetch("/api/account/assets", init);
+  const raw = (await readJsonFromApiResponse(response, "계정 자산 조회")) as {
+    message?: string;
+    assets?: AccountAssetBalance[];
+  };
+  if (!response.ok) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "계정 자산 조회 실패");
+  }
+  return Array.isArray(raw.assets) ? raw.assets : [];
+}
+
+export async function listAccountWallets(init: Pick<RequestInit, "signal"> = {}): Promise<UserWallet[]> {
+  const response = await authedFetch("/api/account/wallets", init);
+  const raw = (await readJsonFromApiResponse(response, "계정 지갑 조회")) as { message?: string; wallets?: UserWallet[] };
+  if (!response.ok) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "계정 지갑 조회 실패");
+  }
+  return Array.isArray(raw.wallets) ? raw.wallets : [];
+}
+
+export async function linkAccountWallet(walletAddress: string): Promise<UserWallet> {
+  const response = await authedFetch("/api/account/wallets", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ walletAddress, chain: "Solana", provider: "phantom" })
+  });
+  const raw = (await readJsonFromApiResponse(response, "계정 지갑 연결")) as { message?: string; wallet?: UserWallet };
+  if (!response.ok || !raw.wallet) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "계정 지갑 연결 실패");
+  }
+  return raw.wallet;
+}
+
+export async function fetchMarketPrices(init: Pick<RequestInit, "signal"> = {}): Promise<MarketPriceSnapshot> {
+  const response = await fetch(buildApiUrl(API_BASE, "/api/market/prices"), {
+    signal: init.signal,
+    credentials: "include"
+  });
+  const raw = (await readJsonFromApiResponse(response, "시장 가격 조회")) as MarketPriceSnapshot & { ok?: boolean; message?: string };
+  if (!response.ok) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "시장 가격 조회 실패");
+  }
+  return {
+    prices: raw.prices,
+    updatedAt: raw.updatedAt,
+    source: raw.source
+  };
+}
+
+export async function estimateProtocolFees(
+  rows: Array<{ protocol: string; chain: string; action: string; allocationUsd: number }>,
+  init: Pick<RequestInit, "signal"> = {}
+): Promise<ProtocolFeeEstimate> {
+  const response = await authedFetch("/api/orchestrator/fee-estimate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: init.signal,
+    body: JSON.stringify({ rows })
+  });
+  const raw = (await readJsonFromApiResponse(response, "프로토콜 수수료 추정")) as ProtocolFeeEstimate & { message?: string };
+  if (!response.ok) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "프로토콜 수수료 추정 실패");
+  }
+  return {
+    rows: Array.isArray(raw.rows) ? raw.rows : [],
+    totalFeeUsd: typeof raw.totalFeeUsd === "number" ? raw.totalFeeUsd : 0,
+    priceSource: typeof raw.priceSource === "string" ? raw.priceSource : "unknown",
+    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : new Date().toISOString()
+  };
 }
 
 async function refreshAccessTokenOrThrow(): Promise<AuthSession> {
