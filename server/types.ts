@@ -6,6 +6,8 @@ export type JobInput = {
   isDepegAlert: boolean;
   hasPendingRelease: boolean;
   sourceAsset?: "USDC" | "USDT" | "ETH" | "SOL";
+  /** 예치상품이 대상으로 하는 네트워크. 미지정 시 Multi(전체 체인) 전략으로 실행. */
+  productNetwork?: "Ethereum" | "Arbitrum" | "Base" | "Solana" | "Multi";
 };
 
 export type ExecutionJob = {

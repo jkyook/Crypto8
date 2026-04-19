@@ -1,7 +1,10 @@
 import type { ExecutionJob } from "./types";
 import { executeAavePlan } from "./adapters/aaveAdapter";
+import { executeAerodromePlan } from "./adapters/aerodromeAdapter";
+import { executeCurvePlan } from "./adapters/curveAdapter";
 import { executeOrcaPlan } from "./adapters/orcaAdapter";
-import type { AdapterExecutionContext, AdapterExecutionResult, ExecutionMode } from "./adapters/types";
+import { executeRaydiumPlan } from "./adapters/raydiumAdapter";
+import type { AdapterExecutionContext, AdapterExecutionResult, ExecutionMode, ProductNetwork } from "./adapters/types";
 import { executeUniswapPlan } from "./adapters/uniswapAdapter";
 
 export type ExecutionAdapterBundle = {
@@ -11,7 +14,7 @@ export type ExecutionAdapterBundle = {
   adapterResults: AdapterExecutionResult[];
 };
 
-/** 런타임 정보 API와 동일한 기준의 “실효” 실행 모드(라이브는 확인 플래그까지 필요). */
+/** 런타임 정보 API와 동일한 기준의 "실효" 실행 모드(라이브는 확인 플래그까지 필요). */
 export function getEffectiveExecutionMode(): ExecutionMode {
   const requested = process.env.EXECUTION_MODE === "live" ? "live" : "dry-run";
   if (requested === "live" && process.env.LIVE_EXECUTION_CONFIRM === "YES") {
@@ -32,7 +35,6 @@ function ensureSafeLiveMode(mode: ExecutionMode): void {
   if (mode !== "live") {
     return;
   }
-  // 실제 체결 모드는 명시적인 플래그가 있어야 켜진다.
   if (process.env.LIVE_EXECUTION_CONFIRM !== "YES") {
     throw new Error("live mode requires LIVE_EXECUTION_CONFIRM=YES");
   }
@@ -44,6 +46,80 @@ function buildSummary(results: AdapterExecutionResult[], mode: ExecutionMode): s
   return `${mode.toUpperCase()} execution total=$${total.toFixed(2)} | ${lines.join(", ")}`;
 }
 
+/**
+ * 네트워크별 어댑터 디스패치.
+ * defi_anal.py 분석 기반 배분 비율 (풀별 APY 가중치):
+ *
+ * Arbitrum Stable  : Aave Arb USDC 50% + Uniswap Arb USDC-USDT 50%
+ * Arbitrum Growth  : Aave Arb USDC 35% + Uniswap Arb USDC-USDT 35% + Uniswap Arb ETH-USDC 30%
+ * Base Stable      : Aave Base USDC 50% + Aerodrome Base USDC-USDT 50%
+ * Base Yield       : Aave Base USDC 35% + Uniswap Base ETH-USDC 40% + Aerodrome USDC-USDT 25%
+ * Solana Stable    : Orca USDC-USDT 60% + Orca mSOL-SOL 40%
+ * Solana Alpha     : Orca SOL-USDC+mSOL-SOL 65% + Raydium SOL-USDC 35%
+ * Ethereum Stable  : Aave ETH USDC 40% + Curve 3pool 35% + Uniswap ETH USDC-USDT 25%
+ * Ethereum Blue-chip: Aave ETH WETH 30% + Curve stETH-ETH 40% + Uniswap ETH ETH-USDC 30%
+ * Multi (기본)      : Aave (Arb+Base) 35% + Uniswap Arb 40% + Orca 20% + Cash 5%
+ */
+async function runAdaptersByNetwork(
+  context: AdapterExecutionContext
+): Promise<AdapterExecutionResult[]> {
+  const network: ProductNetwork = context.productNetwork ?? "Multi";
+
+  switch (network) {
+    case "Arbitrum": {
+      const [aave, uniswap] = await Promise.all([
+        executeAavePlan(context),
+        executeUniswapPlan(context)
+      ]);
+      return [...aave, ...uniswap];
+    }
+
+    case "Base": {
+      const [aave, aerodrome] = await Promise.all([
+        executeAavePlan(context),
+        executeAerodromePlan(context)
+      ]);
+      return [...aave, ...aerodrome];
+    }
+
+    case "Solana": {
+      const [orca, raydium] = await Promise.all([
+        executeOrcaPlan(context),
+        executeRaydiumPlan(context)
+      ]);
+      return [...orca, ...raydium];
+    }
+
+    case "Ethereum": {
+      const [aave, curve] = await Promise.all([
+        executeAavePlan(context),
+        executeCurvePlan(context)
+      ]);
+      // Ethereum에서 Uniswap V3 USDC-USDT 25% 추가
+      const uniswapEthAmount = Number((context.depositUsd * 0.25).toFixed(2));
+      const uniEthResult: AdapterExecutionResult = {
+        protocol: "Uniswap",
+        chain: "Ethereum",
+        action: "USDC-USDT LP (0.01%, Ethereum)",
+        allocationUsd: uniswapEthAmount,
+        txId: `uni_eth_sim_${context.jobId}_${Date.now()}`,
+        status: "simulated"
+      };
+      return [...aave, ...curve, uniEthResult];
+    }
+
+    default: {
+      // Multi-chain: 기존 동작 유지
+      const [aave, uniswap, orca] = await Promise.all([
+        executeAavePlan(context),
+        executeUniswapPlan(context),
+        executeOrcaPlan(context)
+      ]);
+      return [...aave, ...uniswap, ...orca];
+    }
+  }
+}
+
 export async function runExecutionAdapter(job: ExecutionJob, requestedMode?: ExecutionMode): Promise<ExecutionAdapterBundle> {
   const mode = getExecutionMode(requestedMode);
   ensureSafeLiveMode(mode);
@@ -52,15 +128,11 @@ export async function runExecutionAdapter(job: ExecutionJob, requestedMode?: Exe
     jobId: job.id,
     mode,
     depositUsd: job.input.depositUsd,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    productNetwork: job.input.productNetwork
   };
 
-  const [aave, uniswap, orca] = await Promise.all([
-    executeAavePlan(context),
-    executeUniswapPlan(context),
-    executeOrcaPlan(context)
-  ]);
-  const adapterResults = [...aave, ...uniswap, ...orca];
+  const adapterResults = await runAdaptersByNetwork(context);
   const txId = adapterResults.map((item) => item.txId).join(",");
   const summary = buildSummary(adapterResults, mode);
   return { txId, summary, mode, adapterResults };
