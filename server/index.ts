@@ -49,13 +49,17 @@ const CSRF_COOKIE_NAME = "csrf_token";
 const REFRESH_COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 function resolveSameSite(): CookieOptions["sameSite"] {
-  const raw = (process.env.AUTH_COOKIE_SAME_SITE ?? "strict").toLowerCase();
+  const defaultSameSite = process.env.NODE_ENV === "production" || process.env.RENDER ? "none" : "strict";
+  const raw = (process.env.AUTH_COOKIE_SAME_SITE ?? defaultSameSite).toLowerCase();
   if (raw === "none") return "none";
   if (raw === "lax") return "lax";
   return "strict";
 }
 
-const COOKIE_SECURE = process.env.COOKIE_SECURE === "true" || process.env.NODE_ENV === "production";
+const COOKIE_SECURE =
+  process.env.COOKIE_SECURE === "true" ||
+  process.env.NODE_ENV === "production" ||
+  Boolean(process.env.RENDER);
 const COOKIE_SAME_SITE = resolveSameSite();
 
 function baseCookieOptions(httpOnly: boolean): CookieOptions {

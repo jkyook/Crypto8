@@ -28,6 +28,10 @@ services:
         value: dry-run
       - key: LIVE_EXECUTION_CONFIRM
         value: "NO"
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: AUTH_COOKIE_SAME_SITE
+        value: none
 
   - type: web
     name: crypto8-web
