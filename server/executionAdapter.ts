@@ -91,21 +91,14 @@ async function runAdaptersByNetwork(
     }
 
     case "Ethereum": {
-      const [aave, curve] = await Promise.all([
+      // uniswapAdapter의 UNISWAP_ALLOC_TABLE에 "Ethereum:eth-stable / eth-bluechip" 항목이 있어
+      // executeUniswapPlan이 올바른 Ethereum 풀 결과를 반환한다.
+      const [aave, curve, uniswap] = await Promise.all([
         executeAavePlan(context),
-        executeCurvePlan(context)
+        executeCurvePlan(context),
+        executeUniswapPlan(context)
       ]);
-      // Ethereum에서 Uniswap V3 USDC-USDT 25% 추가
-      const uniswapEthAmount = Number((context.depositUsd * 0.25).toFixed(2));
-      const uniEthResult: AdapterExecutionResult = {
-        protocol: "Uniswap",
-        chain: "Ethereum",
-        action: "USDC-USDT LP (0.01%, Ethereum)",
-        allocationUsd: uniswapEthAmount,
-        txId: `uni_eth_sim_${context.jobId}_${Date.now()}`,
-        status: "simulated"
-      };
-      return [...aave, ...curve, uniEthResult];
+      return [...aave, ...curve, ...uniswap];
     }
 
     default: {
@@ -129,7 +122,8 @@ export async function runExecutionAdapter(job: ExecutionJob, requestedMode?: Exe
     mode,
     depositUsd: job.input.depositUsd,
     timestamp: new Date().toISOString(),
-    productNetwork: job.input.productNetwork
+    productNetwork: job.input.productNetwork,
+    productSubtype: job.input.productSubtype
   };
 
   const adapterResults = await runAdaptersByNetwork(context);

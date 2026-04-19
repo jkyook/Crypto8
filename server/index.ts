@@ -247,7 +247,7 @@ const registerLimiter = rateLimit({
 });
 
 async function fetchCurrentAprs(): Promise<{ aave: number; uniswap: number; orca: number; updatedAt: string }> {
-  const fallback = { aave: 0.045, uniswap: 0.085, orca: 0.072, updatedAt: new Date().toISOString() };
+  const fallback = { aave: 0.038, uniswap: 0.064, orca: 0.073, updatedAt: new Date().toISOString() };
   try {
     const response = await fetch("https://yields.llama.fi/pools");
     if (!response.ok) {
@@ -797,6 +797,20 @@ app.post("/api/orchestrator/jobs", requireAuth(["orchestrator", "security", "vie
       ? body.sourceAsset
       : "USDC";
 
+  // productNetwork 검증 — 허용 값 외에는 undefined로 무시(Multi 전략으로 fallback)
+  const VALID_NETWORKS = ["Ethereum", "Arbitrum", "Base", "Solana", "Multi"] as const;
+  type ValidNetwork = (typeof VALID_NETWORKS)[number];
+  const productNetwork: ValidNetwork | undefined = VALID_NETWORKS.includes(body.productNetwork as ValidNetwork)
+    ? (body.productNetwork as ValidNetwork)
+    : undefined;
+
+  // productSubtype 검증
+  const VALID_SUBTYPES = ["multi-stable", "multi-balanced", "arb-stable", "base-stable", "sol-stable", "eth-stable", "eth-bluechip"] as const;
+  type ValidSubtype = (typeof VALID_SUBTYPES)[number];
+  const productSubtype: ValidSubtype | undefined = VALID_SUBTYPES.includes(body.productSubtype as ValidSubtype)
+    ? (body.productSubtype as ValidSubtype)
+    : undefined;
+
   try {
     const username = res.locals.user.username as string;
     const role = res.locals.user.role as UserRole;
@@ -809,7 +823,7 @@ app.post("/api/orchestrator/jobs", requireAuth(["orchestrator", "security", "vie
       });
       return;
     }
-    const job = await createJob({ ...(body as JobInput), sourceAsset }, username);
+    const job = await createJob({ ...(body as JobInput), sourceAsset, productNetwork, productSubtype }, username);
     res.json({ ok: true, job });
   } catch (error) {
     res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "job create failed" });

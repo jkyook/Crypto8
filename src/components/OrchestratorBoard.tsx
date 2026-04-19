@@ -17,6 +17,7 @@ import {
   type AccountAssetSymbol,
   type ExecuteJobResponse,
   type Job,
+  type ProductNetwork,
   type ProtocolFeeEstimate,
   type RuntimeInfo,
   type UserWallet
@@ -32,6 +33,10 @@ type OrchestratorBoardProps = {
   initialProductName?: string;
   initialEstYieldUsd?: number;
   initialEstFeeUsd?: number;
+  /** 선택한 예치상품의 대상 네트워크. 어댑터 라우팅에 사용됨. */
+  initialProductNetwork?: ProductNetwork;
+  /** 선택한 예치상품의 서브타입. 어댑터 배분 비율 결정에 사용됨. */
+  initialProductSubtype?: ProductSubtype;
   /** `false`이면 서버 예치 실행 단계를 막습니다(비로그인 상품 체험 등). JWT는 `localStorage` 구독으로 판별합니다. */
   allowJobExecution?: boolean;
   /** 직전 예치 저장으로 생성된 포지션 id(실행 이벤트 페이로드에 연결). */
@@ -47,6 +52,8 @@ export function OrchestratorBoard({
   initialProductName = "기본 상품",
   initialEstYieldUsd = 0,
   initialEstFeeUsd = 0,
+  initialProductNetwork,
+  initialProductSubtype,
   allowJobExecution: allowJobExecutionProp,
   linkedPositionId,
   previewRowsOverride,
@@ -182,8 +189,8 @@ export function OrchestratorBoard({
       return previewRowsOverride;
     }
     const usd = job?.input.depositUsd ?? depositUsd;
-    return buildExecutionPreviewRows(usd);
-  }, [lastExecution, job, depositUsd, previewRowsOverride]);
+    return buildExecutionPreviewRows(usd, initialProductNetwork, initialProductSubtype);
+  }, [lastExecution, job, depositUsd, previewRowsOverride, initialProductNetwork, initialProductSubtype]);
   const quoteRows = useMemo(() => {
     if (lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0)) {
       return baseQuoteRows;
@@ -285,7 +292,9 @@ export function OrchestratorBoard({
         isRangeOut,
         isDepegAlert,
         hasPendingRelease,
-        sourceAsset: selectedSourceAsset
+        sourceAsset: selectedSourceAsset,
+        productNetwork: initialProductNetwork,
+        productSubtype: initialProductSubtype
       });
       setJob(created);
       setIsExecutionDone(false);

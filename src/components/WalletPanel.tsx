@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AddressType } from "@phantom/browser-sdk";
 import { useAccounts, useConnect, useDisconnect, usePhantom } from "@phantom/react-sdk";
 import {
@@ -216,6 +217,7 @@ export function WalletPanel({
   const [linkedWallets, setLinkedWallets] = useState<UserWallet[]>([]);
   const [accountAssets, setAccountAssets] = useState<AccountAssetBalance[]>([]);
   const [accountMenuError, setAccountMenuError] = useState("");
+  const accountMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const sync = (): void => {
@@ -271,6 +273,18 @@ export function WalletPanel({
       });
     return () => controller.abort();
   }, []);
+
+  // 계정 메뉴 외부 클릭 시 닫기
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    const handleOutside = (e: MouseEvent) => {
+      if (accountMenuRef.current && !accountMenuRef.current.contains(e.target as Node)) {
+        setAccountMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [accountMenuOpen]);
 
   const walletAddressLabel = useMemo(() => {
     const chain = solanaAccount?.address;
@@ -467,6 +481,11 @@ export function WalletPanel({
     </div>
   );
 
+  const openWalletCreate = () => {
+    setAccountMenuOpen(false);
+    setWalletCreateOpen(true);
+  };
+
   const accountMenu = appUsername ? (
     <div className="wallet-account-menu" role="menu" aria-label="계정 메뉴">
       <div className="wallet-account-menu-head">
@@ -485,7 +504,7 @@ export function WalletPanel({
             </button>
           ))
         ) : (
-          <button type="button" className="wallet-account-row" onClick={() => setWalletCreateOpen(true)}>
+          <button type="button" className="wallet-account-row" onClick={openWalletCreate}>
             <strong>연결된 지갑 없음</strong>
             <em>눌러서 Phantom 지갑을 생성/연결</em>
           </button>
@@ -498,7 +517,7 @@ export function WalletPanel({
       </div>
       {accountMenuError ? <p className="wallet-error">{accountMenuError}</p> : null}
       <div className="wallet-account-actions">
-        <button type="button" onClick={() => setWalletCreateOpen(true)}>
+        <button type="button" onClick={openWalletCreate}>
           지갑 생성/연결
         </button>
         <button type="button" className="danger" onClick={() => void onLogout()}>
@@ -508,28 +527,38 @@ export function WalletPanel({
     </div>
   ) : null;
 
-  const walletCreateModal = walletCreateOpen ? (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="지갑 생성 및 연결">
-      <div className="modal-card wallet-create-modal">
-        <button type="button" className="modal-close-icon" aria-label="닫기" onClick={() => setWalletCreateOpen(false)}>
-          x
-        </button>
-        <p className="section-eyebrow">Wallet Setup</p>
-        <h3>지갑 생성 및 연결</h3>
-        <p>
-          Phantom이 설치되어 있으면 기존 지갑을 연결하고, 없으면 Phantom의 신규 지갑 생성 화면으로 이동합니다. 연결 후 현재 아이디와 지갑 주소를 저장합니다.
-        </p>
-        <div className="button-row">
-          <button type="button" onClick={() => void onLinkCurrentWallet()} disabled={isConnecting || pendingWalletLogin}>
-            {isConnecting || pendingWalletLogin ? "연결 중..." : "현재 지갑 연결"}
-          </button>
-          <button type="button" className="ghost-btn" onClick={() => window.open("https://phantom.app/download", "_blank", "noopener,noreferrer")}>
-            신규 지갑 만들기
-          </button>
-        </div>
-      </div>
-    </div>
-  ) : null;
+  const walletCreateModal = walletCreateOpen
+    ? createPortal(
+        <div
+          className="modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label="지갑 생성 및 연결"
+          onClick={(e) => { if (e.target === e.currentTarget) setWalletCreateOpen(false); }}
+        >
+          <div className="modal-card wallet-create-modal">
+            <button type="button" className="modal-close-icon" aria-label="닫기" onClick={() => setWalletCreateOpen(false)}>
+              ✕
+            </button>
+            <p className="section-eyebrow">Wallet Setup</p>
+            <h3>지갑 생성 및 연결</h3>
+            <p>
+              Phantom이 설치되어 있으면 기존 지갑을 연결하고, 없으면 Phantom의 신규 지갑 생성 화면으로 이동합니다. 연결 후 현재 아이디와 지갑 주소를 저장합니다.
+            </p>
+            {connectError ? <p className="wallet-error">{connectError}</p> : null}
+            <div className="button-row">
+              <button type="button" onClick={() => void onLinkCurrentWallet()} disabled={isConnecting || pendingWalletLogin}>
+                {isConnecting || pendingWalletLogin ? "연결 중..." : "현재 지갑 연결"}
+              </button>
+              <button type="button" className="ghost-btn" onClick={() => window.open("https://phantom.app/download", "_blank", "noopener,noreferrer")}>
+                신규 지갑 만들기
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )
+    : null;
 
   const onDisconnect = async () => {
     try {
@@ -664,6 +693,7 @@ export function WalletPanel({
 
   if (compact) {
     return (
+      <>
       <section className="wallet-widget">
         {isConnected ? (
           <>
@@ -693,10 +723,10 @@ export function WalletPanel({
             ) : null}
           </>
         ) : (
-          <div className="wallet-widget-head wallet-widget-head-address-only">
+          <div className="wallet-widget-head wallet-widget-head-address-only" ref={appUsername ? accountMenuRef : undefined}>
             {appUsername ? (
               <button type="button" className="wallet-address-link" onClick={() => setAccountMenuOpen((prev) => !prev)}>
-                {appUsername}
+                {appUsername} {accountMenuOpen ? "▴" : "▾"}
               </button>
             ) : (
               <>
@@ -707,15 +737,17 @@ export function WalletPanel({
               </>
             )}
             {accountMenuOpen ? accountMenu : null}
-            {walletCreateModal}
           </div>
         )}
         {connectError ? <p className="wallet-error">{connectError}</p> : null}
       </section>
+      {walletCreateModal}
+    </>
     );
   }
 
   return (
+    <>
     <section className="card wallet-page">
       <div className="wallet-page-head">
         <h2>지갑 · 자산</h2>
@@ -759,5 +791,7 @@ export function WalletPanel({
       )}
       {connectError ? <p className="wallet-error">{connectError}</p> : null}
     </section>
+    {walletCreateModal}
+    </>
   );
 }

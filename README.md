@@ -10,7 +10,7 @@ cp .env.example .env
 npm run prisma:generate
 npm run prisma:seed
 npm run dev:api
-npm run dev:web
+npm run dev:web가
 ```
 
 ## Prisma 마이그레이션

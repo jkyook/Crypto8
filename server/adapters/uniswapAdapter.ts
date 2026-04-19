@@ -248,54 +248,89 @@ async function submitUniswapTxsIfLive(
   return { approveUsdcTxId, approveUsdtTxId, mintTxId };
 }
 
+/**
+ * (network:subtype) → Uniswap 배분 테이블.
+ * Arbitrum 풀은 live 실행 가능. Base/Ethereum 풀은 시뮬레이션 전용.
+ *
+ *   multi-stable    Arb USDC-USDT 35%
+ *   multi-balanced  Arb ETH-USDC  30%  (±50% 범위)
+ *   arb-stable      Arb USDC-USDT 35% + Arb ETH-USDC 20%
+ *   base-stable     Base ETH-USDC 30% + Base USDC-USDT 20%  (시뮬레이션)
+ *   sol-stable      0%
+ */
+type UniswapAlloc = {
+  chain: "Arbitrum" | "Base" | "Ethereum";
+  action: string;
+  weight: number;
+  isArbLive?: boolean; // true면 live 모드에서 실제 Arbitrum TX를 시도
+};
+
+const UNISWAP_ALLOC_TABLE: Record<string, UniswapAlloc[]> = {
+  "Multi:multi-stable": [
+    { chain: "Arbitrum", action: "USDC-USDT LP (0.01%)", weight: 0.35, isArbLive: true }
+  ],
+  "Multi:multi-balanced": [
+    { chain: "Arbitrum", action: "ETH-USDC LP (0.05%, ±50%)", weight: 0.3 }
+  ],
+  "Arbitrum:arb-stable": [
+    { chain: "Arbitrum", action: "USDC-USDT LP (0.01%)", weight: 0.35, isArbLive: true },
+    { chain: "Arbitrum", action: "ETH-USDC LP (0.05%, ±50%)", weight: 0.2 }
+  ],
+  "Base:base-stable": [
+    { chain: "Base", action: "ETH-USDC LP (0.05%)", weight: 0.3 },
+    { chain: "Base", action: "USDC-USDT LP (0.01%)", weight: 0.2 }
+  ],
+  "Solana:sol-stable": [],
+  // Ethereum — 시뮬레이션 전용. defi_anal.py 기준: USDC-USDT 0.01% ~5%
+  "Ethereum:eth-stable": [
+    { chain: "Ethereum", action: "USDC-USDT LP (0.01%)", weight: 0.25 }
+  ],
+  // Ethereum Blue-chip — ETH-USDC 0.05% ~12% (defi_anal.py 기준)
+  "Ethereum:eth-bluechip": [
+    { chain: "Ethereum", action: "ETH-USDC LP (0.05%)", weight: 0.3 }
+  ]
+};
+
+const UNI_MULTI_FALLBACK: UniswapAlloc[] = [
+  { chain: "Arbitrum", action: "USDC-USDT LP (0.01%)", weight: 0.25, isArbLive: true },
+  { chain: "Arbitrum", action: "ETH-USDC LP (0.05%, ±50%)", weight: 0.15 }
+];
+
 export async function executeUniswapPlan(context: AdapterExecutionContext): Promise<AdapterExecutionResult[]> {
-  const usdcUsdtAmount = Number((context.depositUsd * 0.25).toFixed(2));
-  const ethUsdcAmount = Number((context.depositUsd * 0.15).toFixed(2));
+  const network = context.productNetwork ?? "Multi";
+  const subtype = context.productSubtype ?? "";
   const status = context.mode === "live" ? "submitted" : "simulated";
   const txPrefix = context.mode === "live" ? "uni_live" : "uni_sim";
-  let approveUsdcTxId = buildTxId(txPrefix, context);
-  let approveUsdtTxId = buildTxId(txPrefix, context);
-  let mintTxId = buildTxId(txPrefix, context);
 
-  if (context.mode === "live") {
-    const liveTx = await submitUniswapTxsIfLive(context, usdcUsdtAmount);
-    approveUsdcTxId = liveTx.approveUsdcTxId;
-    approveUsdtTxId = liveTx.approveUsdtTxId;
-    mintTxId = liveTx.mintTxId;
+  const tableKey = `${network}:${subtype}`;
+  const allocs = UNISWAP_ALLOC_TABLE[tableKey] ?? UNI_MULTI_FALLBACK;
+
+  if (allocs.length === 0) return [];
+
+  const results: AdapterExecutionResult[] = [];
+
+  for (const alloc of allocs) {
+    const allocUsd = Number((context.depositUsd * alloc.weight).toFixed(2));
+
+    // Arbitrum USDC-USDT 풀은 live 모드에서 실제 TX 시도
+    if (context.mode === "live" && alloc.isArbLive) {
+      const liveTx = await submitUniswapTxsIfLive(context, allocUsd);
+      results.push(
+        { protocol: "Uniswap", chain: "Arbitrum", action: "USDC approve -> PositionManager", allocationUsd: 0, txId: liveTx.approveUsdcTxId, status },
+        { protocol: "Uniswap", chain: "Arbitrum", action: "USDT approve -> PositionManager", allocationUsd: 0, txId: liveTx.approveUsdtTxId, status },
+        { protocol: "Uniswap", chain: "Arbitrum", action: alloc.action, allocationUsd: allocUsd, txId: liveTx.mintTxId, status }
+      );
+    } else {
+      results.push({
+        protocol: "Uniswap",
+        chain: alloc.chain,
+        action: alloc.action,
+        allocationUsd: allocUsd,
+        txId: buildTxId(txPrefix, context),
+        status: context.mode === "live" && alloc.chain !== "Arbitrum" ? "simulated" : status
+      });
+    }
   }
 
-  return [
-    {
-      protocol: "Uniswap",
-      chain: "Arbitrum",
-      action: "USDC approve -> PositionManager (USDC-USDT)",
-      allocationUsd: 0,
-      txId: approveUsdcTxId,
-      status
-    },
-    {
-      protocol: "Uniswap",
-      chain: "Arbitrum",
-      action: "USDT approve -> PositionManager (USDC-USDT)",
-      allocationUsd: 0,
-      txId: approveUsdtTxId,
-      status
-    },
-    {
-      protocol: "Uniswap",
-      chain: "Arbitrum",
-      action: "USDC-USDT mint (0.01%, full range)",
-      allocationUsd: usdcUsdtAmount,
-      txId: mintTxId,
-      status
-    },
-    {
-      protocol: "Uniswap",
-      chain: "Arbitrum",
-      action: "ETH-USDC LP route prepared (next: mint position tx)",
-      allocationUsd: ethUsdcAmount,
-      txId: buildTxId(txPrefix, context),
-      status
-    }
-  ];
+  return results;
 }

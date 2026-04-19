@@ -108,12 +108,27 @@ const ROLE_KEY = "crypto8_role";
 const USERNAME_KEY = "crypto8_username";
 const CSRF_COOKIE_NAME = "csrf_token";
 
+export type ProductNetwork = "Ethereum" | "Arbitrum" | "Base" | "Solana" | "Multi";
+
+export type ProductSubtype =
+  | "multi-stable"
+  | "multi-balanced"
+  | "arb-stable"
+  | "base-stable"
+  | "sol-stable"
+  | "eth-stable"
+  | "eth-bluechip";
+
 export type JobInput = {
   depositUsd: number;
   isRangeOut: boolean;
   isDepegAlert: boolean;
   hasPendingRelease: boolean;
   sourceAsset?: AccountAssetSymbol;
+  /** 예치상품의 대상 네트워크. 미지정 시 Multi(전체 체인) 전략으로 실행. */
+  productNetwork?: ProductNetwork;
+  /** 상품 서브타입. 동일 네트워크 내 배분 비율 결정에 사용. */
+  productSubtype?: ProductSubtype;
 };
 
 export type Job = {

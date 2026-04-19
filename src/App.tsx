@@ -32,7 +32,9 @@ import {
   type Job,
   type MarketAprSnapshot,
   type MarketPoolAprHistoryPoint,
-  type MarketPoolAprHistorySeries
+  type MarketPoolAprHistorySeries,
+  type ProductNetwork,
+  type ProductSubtype
 } from "./lib/api";
 import { aggregateChainUsdFromPositions, estimateAnnualYieldUsd } from "./lib/portfolioMetrics";
 import { getNextQuarterStart } from "./lib/quarterSchedule";
@@ -65,7 +67,9 @@ type MenuItem = {
 type YieldProduct = {
   id: string;
   name: string;
-  networkGroup: "multi" | "arbitrum" | "base" | "solana";
+  networkGroup: "multi" | "arbitrum" | "base" | "solana" | "ethereum";
+  /** 서버 어댑터 배분 비율 결정에 사용. api.ts ProductSubtype과 동일 값 사용. */
+  subtype: ProductSubtype;
   targetApr: number;
   estFeeBps: number;
   lockDays: number;
@@ -521,6 +525,30 @@ function applyProductWithdraw(positions: DepositPosition[], amountUsd: number, p
 
 const APR_DAYS_PER_YEAR = 365;
 
+/** UI의 networkGroup(소문자) → 서버 어댑터의 ProductNetwork(PascalCase) 변환 */
+function networkGroupToProductNetwork(networkGroup: YieldProduct["networkGroup"]): ProductNetwork {
+  const map: Record<YieldProduct["networkGroup"], ProductNetwork> = {
+    multi: "Multi",
+    arbitrum: "Arbitrum",
+    base: "Base",
+    solana: "Solana",
+    ethereum: "Ethereum"
+  };
+  return map[networkGroup] ?? "Multi";
+}
+
+/** networkGroup → 기본 ProductSubtype (사용자 추가 상품 등 subtype 미지정 시 fallback) */
+function networkGroupToDefaultSubtype(networkGroup: YieldProduct["networkGroup"]): ProductSubtype {
+  const map: Record<YieldProduct["networkGroup"], ProductSubtype> = {
+    multi: "multi-stable",
+    arbitrum: "arb-stable",
+    base: "base-stable",
+    solana: "sol-stable",
+    ethereum: "eth-stable"
+  };
+  return map[networkGroup] ?? "multi-stable";
+}
+
 const PRODUCT_NETWORK_GROUPS: Array<{
   key: YieldProduct["networkGroup"];
   label: string;
@@ -529,7 +557,8 @@ const PRODUCT_NETWORK_GROUPS: Array<{
   { key: "multi", label: "복수 네트워크", description: "Arbitrum · Base · Solana를 함께 쓰는 기존 분산형 상품" },
   { key: "arbitrum", label: "Arbitrum", description: "브릿지 없이 Arbitrum 안에서 Aave/Uniswap 풀로 분산" },
   { key: "base", label: "Base", description: "Base 네트워크 안에서 USDC 중심 공급/LP로 구성" },
-  { key: "solana", label: "Solana", description: "Solana 안에서 Orca Whirlpool 기반 스테이블/LST 풀로 구성" }
+  { key: "solana", label: "Solana", description: "Solana 안에서 Orca Whirlpool 기반 스테이블/LST 풀로 구성" },
+  { key: "ethereum", label: "Ethereum", description: "Ethereum 메인넷에서 Aave/Curve/Uniswap 풀로 구성된 안정형 상품" }
 ];
 
 const PRODUCT_NETWORK_LABELS = PRODUCT_NETWORK_GROUPS.reduce(
@@ -559,6 +588,13 @@ function buildDefaultProductMix(networkGroup: YieldProduct["networkGroup"]): Yie
       { name: "Orca", weight: 0.25, pool: "Orca Whirlpools mSOL-SOL" }
     ];
   }
+  if (networkGroup === "ethereum") {
+    return [
+      { name: "Aave", weight: 0.4, pool: "Aave v3 Ethereum USDC" },
+      { name: "Curve", weight: 0.35, pool: "Curve 3pool DAI-USDC-USDT" },
+      { name: "Uniswap", weight: 0.25, pool: "Uniswap v3 Ethereum USDC-USDT 0.01%" }
+    ];
+  }
   return [
     { name: "Aave", weight: 0.34, pool: "Aave v3 Arbitrum USDC eMode" },
     { name: "Uniswap", weight: 0.33, pool: "Uniswap v3 Arbitrum USDC-USDT 0.05%" },
@@ -583,6 +619,7 @@ const DEFAULT_PRODUCTS: YieldProduct[] = [
     id: "p-multi-stable-8",
     name: "Multi-network Stable 8%",
     networkGroup: "multi",
+    subtype: "multi-stable",
     targetApr: 0.08,
     estFeeBps: 65,
     lockDays: 30,
@@ -597,6 +634,7 @@ const DEFAULT_PRODUCTS: YieldProduct[] = [
     id: "p-multi-balanced-72",
     name: "Multi-network Balanced 7.2%",
     networkGroup: "multi",
+    subtype: "multi-balanced",
     targetApr: 0.072,
     estFeeBps: 58,
     lockDays: 21,
@@ -611,6 +649,7 @@ const DEFAULT_PRODUCTS: YieldProduct[] = [
     id: "p-arbitrum-stable-76",
     name: "Arbitrum Stable 7.6%",
     networkGroup: "arbitrum",
+    subtype: "arb-stable",
     targetApr: 0.076,
     estFeeBps: 48,
     lockDays: 21,
@@ -625,6 +664,7 @@ const DEFAULT_PRODUCTS: YieldProduct[] = [
     id: "p-base-usdc-70",
     name: "Base USDC Core 7.0%",
     networkGroup: "base",
+    subtype: "base-stable",
     targetApr: 0.07,
     estFeeBps: 44,
     lockDays: 21,
@@ -639,6 +679,7 @@ const DEFAULT_PRODUCTS: YieldProduct[] = [
     id: "p-solana-orca-74",
     name: "Solana Orca Blend 7.4%",
     networkGroup: "solana",
+    subtype: "sol-stable",
     targetApr: 0.074,
     estFeeBps: 42,
     lockDays: 14,
@@ -648,6 +689,36 @@ const DEFAULT_PRODUCTS: YieldProduct[] = [
       { name: "Orca", weight: 0.25, pool: "Orca Whirlpools mSOL-SOL" }
     ],
     detail: "Solana 네트워크 안에서 Orca 스테이블·SOL·LST 풀을 나눠 담는 단일 네트워크 상품."
+  },
+  {
+    id: "p-eth-stable-42",
+    name: "Ethereum Stable 4.2%",
+    networkGroup: "ethereum",
+    subtype: "eth-stable",
+    targetApr: 0.042,
+    estFeeBps: 55,
+    lockDays: 30,
+    protocolMix: [
+      { name: "Aave", weight: 0.4, pool: "Aave v3 Ethereum USDC" },
+      { name: "Curve", weight: 0.35, pool: "Curve 3pool DAI-USDC-USDT" },
+      { name: "Uniswap", weight: 0.25, pool: "Uniswap v3 Ethereum USDC-USDT 0.01%" }
+    ],
+    detail: "Ethereum 메인넷에서 Aave USDC 공급, Curve 3pool, Uniswap 스테이블 LP를 조합한 안정형 상품."
+  },
+  {
+    id: "p-eth-bluechip-55",
+    name: "Ethereum Blue-chip 5.5%",
+    networkGroup: "ethereum",
+    subtype: "eth-bluechip",
+    targetApr: 0.055,
+    estFeeBps: 58,
+    lockDays: 30,
+    protocolMix: [
+      { name: "Aave", weight: 0.3, pool: "Aave v3 Ethereum WETH" },
+      { name: "Curve", weight: 0.4, pool: "Curve stETH-ETH" },
+      { name: "Uniswap", weight: 0.3, pool: "Uniswap v3 Ethereum ETH-USDC 0.05%" }
+    ],
+    detail: "Ethereum 메인넷 대표 자산(ETH/stETH) 중심의 Blue-chip 예치상품. Curve LSD 수익 포함."
   }
 ];
 
@@ -932,6 +1003,7 @@ function ProductsPanel({
                     estFeeBps: 75,
                     lockDays: 30,
                     networkGroup: productNetworkFilter,
+                    subtype: networkGroupToDefaultSubtype(productNetworkFilter),
                     protocolMix: buildDefaultProductMix(productNetworkFilter),
                     detail: `${PRODUCT_NETWORK_LABELS[productNetworkFilter]} 사용자 정의 예치상품`
                   }
@@ -1174,6 +1246,8 @@ function ProductsPanel({
               initialProductName={selected.name}
               initialEstYieldUsd={estYield}
               initialEstFeeUsd={estFee}
+              initialProductNetwork={networkGroupToProductNetwork(selected.networkGroup)}
+              initialProductSubtype={selected.subtype}
               allowJobExecution={canPersistToServer}
               previewRowsOverride={productPreviewRows}
               onActionNotice={onActionNotice}

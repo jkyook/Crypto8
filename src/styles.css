@@ -1630,7 +1630,7 @@ th {
 
 .product-network-tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
   margin: 0 0 16px;
   padding: 8px;
@@ -1678,6 +1678,12 @@ th {
   border-color: rgba(87, 245, 198, 0.44);
   background: linear-gradient(145deg, rgba(24, 160, 124, 0.7), rgba(20, 42, 82, 0.82));
   color: #d1fff1;
+}
+
+.product-network-tab--ethereum {
+  border-color: rgba(180, 155, 255, 0.44);
+  background: linear-gradient(145deg, rgba(110, 80, 200, 0.72), rgba(28, 18, 64, 0.82));
+  color: #e8dcff;
 }
 
 .product-network-tab:hover {
@@ -1807,6 +1813,11 @@ th {
 .product-network-badge--solana {
   border-color: rgba(90, 225, 190, 0.34);
   color: #bff9e8;
+}
+
+.product-network-badge--ethereum {
+  border-color: rgba(155, 130, 255, 0.36);
+  color: #ddd4ff;
 }
 
 .kpi-item.product-card .nav-item:not(.active):hover {
@@ -3908,6 +3919,11 @@ body[data-theme="light"] .product-network-tab--solana {
   background: linear-gradient(145deg, rgba(181, 255, 225, 0.92), rgba(226, 248, 244, 0.84));
 }
 
+body[data-theme="light"] .product-network-tab--ethereum {
+  border-color: rgba(110, 80, 200, 0.34);
+  background: linear-gradient(145deg, rgba(225, 215, 255, 0.94), rgba(244, 240, 255, 0.84));
+}
+
 body[data-theme="light"] .product-network-tab.active {
   border-color: rgba(18, 48, 76, 0.44);
   box-shadow:
@@ -4235,7 +4251,7 @@ body[data-theme="light"] .auto-check-item.wait {
   }
 
   .product-network-tabs {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .product-network-tab {
