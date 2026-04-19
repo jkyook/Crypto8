@@ -54,6 +54,7 @@ export function OrchestratorBoard({
   const [apiMessage, setApiMessage] = useState<string>("");
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
+  const [executionModeIntent, setExecutionModeIntent] = useState<"dry-run" | "live">("dry-run");
   const [lastExecution, setLastExecution] = useState<ExecuteJobResponse | null>(null);
   const correlationId = useMemo(
     () => (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `corr_${Date.now()}`),
@@ -86,7 +87,8 @@ export function OrchestratorBoard({
   const hasWallet = Boolean(isConnected && solanaAccount?.address);
   const jwtAccess = useSyncExternalStore(subscribeLocalAuth, readAccessTokenSnapshot, () => "");
   const canUseServerJobs = jwtAccess.length > 0 && allowJobExecutionProp !== false;
-  const isLiveExecution = runtime?.executionMode === "live";
+  const displayExecutionMode = executionModeIntent;
+  const isLiveExecution = displayExecutionMode === "live";
   const canExecute = Boolean(job) && isExecutionConfirmed && canUseServerJobs && (!isLiveExecution || hasWallet);
   const [customAllocationPercents, setCustomAllocationPercents] = useState<number[] | null>(null);
   const baseQuoteRows = useMemo(() => {
@@ -127,9 +129,9 @@ export function OrchestratorBoard({
   const adjustedAllocationTotal = quoteRows.reduce((acc, row) => acc + row.allocationUsd, 0);
   const quoteTitle = lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0)
     ? "실행 결과 배분"
-    : "시뮬 견적 (어댑터 분배)";
+    : "입금 처리할 항목";
   const stepIndex = isLiveExecution && !hasWallet ? 0 : !job ? 1 : !isExecutionConfirmed ? 2 : !isExecutionDone ? 3 : 4;
-  const stepLabels = ["지갑", "작업", "확인", "실행", "완료"] as const;
+  const stepLabels = ["지갑", "내역", "리스크", "입금", "완료"] as const;
   const autoChecks = [
     { key: "wallet", label: "지갑 연결", ok: hasWallet, detail: hasWallet ? "연결됨" : "연결 필요" },
     { key: "guardrail", label: "전략 가드레일", ok: guardrail.maxPoolOk && guardrail.maxChainOk && guardrail.minProtocolOk, detail: "pool/chain/protocol 점검" },
@@ -138,7 +140,7 @@ export function OrchestratorBoard({
   ] as const;
   const onCreateJob = async () => {
     if (!canUseServerJobs) {
-      setApiMessage("예치 요청을 서버에 남기려면 먼저 로그인하세요.");
+      setApiMessage("입금내역을 서버에 남기려면 먼저 로그인하세요.");
       return;
     }
     try {
@@ -155,8 +157,8 @@ export function OrchestratorBoard({
       setCustomAllocationPercents(null);
       setApiMessage(
         hasWallet
-          ? `작업 생성 완료: ${created.id}`
-          : `작업 생성 완료: ${created.id} · 서버 실행(3단계) 전에 Phantom(Solana) 지갑을 연결하세요.`
+          ? `입금내역 확인 완료: ${created.id}`
+          : `입금내역 확인 완료: ${created.id} · 라이브 모드 최종 입금 전에는 Phantom(Solana) 지갑 서명이 필요합니다.`
       );
     } catch (error) {
       setApiMessage(error instanceof Error ? error.message : "작업 생성 실패");
@@ -165,7 +167,7 @@ export function OrchestratorBoard({
 
   const onExecute = async () => {
     if (!canUseServerJobs) {
-      setApiMessage("서버 실행을 요청하려면 먼저 로그인하세요.");
+      setApiMessage("최종 입금처리를 요청하려면 먼저 로그인하세요.");
       return;
     }
     if (!job) {
@@ -189,7 +191,8 @@ export function OrchestratorBoard({
       const result = await executeJob(job.id, {
         idempotencyKey: idemKey,
         correlationId,
-        positionId: linkedPositionId
+        positionId: linkedPositionId,
+        requestedMode: executionModeIntent
       });
       setIsExecutionDone(true);
       setLastExecution(result);
@@ -206,32 +209,32 @@ export function OrchestratorBoard({
 
   const onConfirmExecution = () => {
     if (!job) {
-      setApiMessage("먼저 1번으로 예치 요청을 생성하세요.");
+      setApiMessage("먼저 1번으로 입금내역을 확인하세요.");
       return;
     }
     setIsExecutionConfirmed(true);
     setApiMessage(
       hasWallet
-        ? "실행 확인 완료. 3번 버튼으로 서버 실행을 요청하세요."
-        : "실행 확인 완료. 서버 실행을 하려면 Phantom(Solana) 지갑을 연결한 뒤 3번을 누르세요."
+        ? "리스크 검토 완료. 4번 버튼으로 최종 입금처리를 요청하세요."
+        : "리스크 검토 완료. dry-run은 지갑 없이 최종 입금처리를 기록할 수 있고, live는 Phantom(Solana) 서명이 필요합니다."
     );
   };
 
-  const step3Label = runtime?.executionMode === "live" ? "3. 서버 실행" : "3. 서버 실행 (시뮬레이션)";
+  const step4Label = isLiveExecution ? "4. 실제 입금처리" : "4. 최종 입금처리 (dry-run)";
 
   return (
     <section className="card orchestrator-card">
-      <h2>예치 실행 확인</h2>
+      <h2>입금 처리</h2>
       {runtime?.serverExecutionNote || !canUseServerJobs ? (
         <div className="runtime-scope-notice" role="note">
           {runtime?.serverExecutionNote ? <p className="runtime-scope-sub">{runtime.serverExecutionNote}</p> : null}
           {!canUseServerJobs ? (
             <p className="runtime-scope-sub" role="status">
-          1~3단계는 <strong>로그인 · 계정</strong> 메뉴에서 아이디·비밀번호(JWT)로 로그인(또는 이용자 가입)한 뒤에 사용할 수 있습니다. dry-run은 Phantom 서명 없이도 서버 실행을 기록할 수 있습니다.
+          1~3단계는 <strong>로그인 · 계정</strong> 메뉴에서 아이디·비밀번호(JWT)로 로그인(또는 이용자 가입)한 뒤에 사용할 수 있습니다. dry-run은 Phantom 서명 없이도 최종 입금처리를 기록할 수 있습니다.
             </p>
           ) : (
             <p className="runtime-scope-sub" role="status">
-              예치 요청·실행 이력은 현재 로그인한 이용자 계정에만 연결됩니다.
+              입금내역·리스크 검토·처리 이력은 현재 로그인한 이용자 계정에만 연결됩니다.
             </p>
           )}
         </div>
@@ -241,6 +244,23 @@ export function OrchestratorBoard({
         <p>금액: ${depositUsd.toFixed(2)}</p>
         <p>예상 수익: ${initialEstYieldUsd.toFixed(2)}</p>
         <p>예상 수수료: ${initialEstFeeUsd.toFixed(2)}</p>
+      </div>
+
+      <div className="deposit-risk-review">
+        <div>
+          <p className="section-eyebrow">Risk Review</p>
+          <h3>입금 후 보안 체크</h3>
+          <p>특정 풀·체인·프로토콜에 과도하게 몰리지 않는지 확인한 뒤 최종 입금처리로 넘어갑니다.</p>
+        </div>
+        <div className="deposit-risk-check-grid">
+          {autoChecks.slice(1).map((item) => (
+            <div key={item.key} className={item.ok ? "deposit-risk-check ok" : "deposit-risk-check wait"}>
+              <span>{item.label}</span>
+              <strong>{item.ok ? "통과" : "점검 필요"}</strong>
+              <em>{item.detail}</em>
+            </div>
+          ))}
+        </div>
       </div>
 
       <ol className={`execution-steps-strip${isExecutionDone ? " execution-steps-strip--complete" : ""}`} aria-label="진행 단계">
@@ -264,7 +284,24 @@ export function OrchestratorBoard({
                 Default
               </button>
             ) : null}
-            <span className="quote-card-mode">{runtime?.executionMode ? runtime.executionMode.toUpperCase() : "—"}</span>
+            <button
+              type="button"
+              className={isLiveExecution ? "quote-card-mode quote-card-mode--live" : "quote-card-mode"}
+              onClick={() => {
+                setExecutionModeIntent((prev) => (prev === "dry-run" ? "live" : "dry-run"));
+                setIsExecutionConfirmed(false);
+                setIsExecutionDone(false);
+                setLastExecution(null);
+                setApiMessage(
+                  executionModeIntent === "dry-run"
+                    ? "실제입금처리 모드로 전환했습니다. 리스크 검토 후 Phantom 서명이 필요합니다."
+                    : "dry-run 모드로 전환했습니다. 지갑 서명 없이 시뮬레이션 기록이 가능합니다."
+                );
+              }}
+              title="dry-run과 실제입금처리 요청 모드를 전환합니다."
+            >
+              {isLiveExecution ? "실제입금처리" : "DRY-RUN"}
+            </button>
           </div>
         </div>
         {quoteRows.length > 0 ? (
@@ -299,14 +336,14 @@ export function OrchestratorBoard({
           <p className="quote-card-empty">금액을 입력하면 어댑터별 시뮬 배분이 표시됩니다.</p>
         )}
         <p className="quote-card-foot">
-          실행 전·후 동일한 표 형식으로 시뮬과 서버 응답을 비교합니다.
+          입금 전·후 동일한 표 형식으로 예상 배분과 서버 응답을 비교합니다.
           {!isResultQuote ? ` 조율 합계 $${adjustedAllocationTotal.toFixed(2)}` : ""}
         </p>
       </div>
 
       {job ? (
         <div className="execution-summary-card" role="region" aria-label="실행 추적 키">
-          <p className="execution-summary-title">실행 추적</p>
+          <p className="execution-summary-title">입금 처리 추적</p>
           <p className="execution-summary-line">
             <span className="execution-summary-k">Job</span> {job.id}
           </p>
@@ -333,7 +370,7 @@ export function OrchestratorBoard({
 
       {lastExecution ? (
         <div className="execution-summary-card execution-summary-result" role="status">
-          <p className="execution-summary-title">직전 서버 응답</p>
+          <p className="execution-summary-title">직전 입금 처리 응답</p>
           <p className="execution-summary-line">
             <span className="execution-summary-k">ok</span> {String(lastExecution.ok)}
           </p>
@@ -351,24 +388,24 @@ export function OrchestratorBoard({
 
       <div className="orchestrator-flow-steps" aria-label="예치 실행 절차">
         <button className={hasWallet ? "flow-step-btn done" : isLiveExecution ? "flow-step-btn waiting" : "flow-step-btn optional"} disabled={!hasWallet}>
-          0. 지갑 연결 {hasWallet ? "완료" : isLiveExecution ? "필요" : "선택"}
+          1. 지갑 연결 {hasWallet ? "완료" : isLiveExecution ? "필요" : "선택"}
         </button>
         <button
           className={job ? "flow-step-btn done" : "flow-step-btn waiting"}
           onClick={onCreateJob}
           disabled={!canUseServerJobs}
         >
-          1. 예치 요청 생성
+          2. 입금내역 확인
         </button>
         <button className={isExecutionConfirmed ? "flow-step-btn done" : "flow-step-btn waiting"} onClick={onConfirmExecution} disabled={!job}>
-          2. 실행 확인
+          3. 리스크 검토
         </button>
         <button
           className={isExecutionDone ? "flow-step-btn done" : "flow-step-btn waiting"}
           onClick={onExecute}
           disabled={!canExecute}
         >
-          {step3Label}
+          {step4Label}
         </button>
       </div>
 
@@ -392,9 +429,9 @@ export function OrchestratorBoard({
           </p>
         </div>
         <div className="kpi-item">
-          <p className="kpi-label">예치 작업 상태</p>
+          <p className="kpi-label">입금 처리 상태</p>
           <p className="kpi-value">{job?.id ? `Job ${job.id.slice(-8)}` : "작업 없음"}</p>
-          <p className="kpi-label">{apiMessage || (job ? "상태: 실행 대기" : "상태: 대기 중")}</p>
+          <p className="kpi-label">{apiMessage || (job ? "상태: 최종 입금처리 대기" : "상태: 대기 중")}</p>
         </div>
       </div>
 
@@ -408,7 +445,8 @@ export function OrchestratorBoard({
         <div className="orchestrator-section">
           <h3>상세 옵션</h3>
           <p className="kpi-label">
-            서버 실효 모드: {runtime ? runtime.executionMode.toUpperCase() : "조회 중"} (요청 {runtime?.executionModeRequested ?? "—"})
+            서버 실효 모드: {runtime ? runtime.executionMode.toUpperCase() : "조회 중"} (요청 {runtime?.executionModeRequested ?? "—"}) · 화면 선택:{" "}
+            {displayExecutionMode === "live" ? "실제입금처리" : "dry-run"}
           </p>
           <div className="orchestrator-auto-checks">
             {autoChecks.map((item) => (

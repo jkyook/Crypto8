@@ -82,7 +82,7 @@ export type JobInput = {
 export type Job = {
   id: string;
   createdAt: string;
-  status: "queued" | "blocked" | "executed";
+  status: "queued" | "blocked" | "executed" | "cancelled";
   input: JobInput;
   riskLevel: RiskLevel;
   /** 서버에 기록된 요청자(로그인 사용자명). */
@@ -567,6 +567,17 @@ export async function listJobs(): Promise<Job[]> {
   return data.jobs;
 }
 
+export async function cancelJob(jobId: string): Promise<Job> {
+  const response = await authedFetch(`/api/orchestrator/jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST"
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorFromApiResponse(response, "작업 취소 실패"));
+  }
+  const data = (await response.json()) as { job: Job };
+  return data.job;
+}
+
 export async function approveJob(jobId: string): Promise<void> {
   const session = getSession();
   if (!session) {
@@ -599,18 +610,21 @@ export type ExecuteJobResponse = {
 
 export async function executeJob(
   jobId: string,
-  options?: { idempotencyKey?: string; correlationId?: string; positionId?: string }
+  options?: { idempotencyKey?: string; correlationId?: string; positionId?: string; requestedMode?: "dry-run" | "live" }
 ): Promise<ExecuteJobResponse> {
   const headers = new Headers({ "Content-Type": "application/json" });
   if (options?.idempotencyKey) {
     headers.set("Idempotency-Key", options.idempotencyKey);
   }
-  const body: { correlationId?: string; positionId?: string } = {};
+  const body: { correlationId?: string; positionId?: string; requestedMode?: "dry-run" | "live" } = {};
   if (options?.correlationId) {
     body.correlationId = options.correlationId;
   }
   if (options?.positionId) {
     body.positionId = options.positionId;
+  }
+  if (options?.requestedMode) {
+    body.requestedMode = options.requestedMode;
   }
   const response = await authedFetch(`/api/orchestrator/execute/${jobId}`, {
     method: "POST",

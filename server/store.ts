@@ -8,6 +8,7 @@ import type {
   RiskLevel
 } from "./types";
 import type { ExecutionAdapterBundle } from "./executionAdapter";
+import type { ExecutionMode } from "./adapters/types";
 import { getEffectiveExecutionMode, runExecutionAdapter } from "./executionAdapter";
 import { getDb } from "./db";
 import { MAX_DEPOSIT_USD } from "./limits";
@@ -95,6 +96,22 @@ export async function getJob(jobId: string): Promise<ExecutionJob | undefined> {
     return undefined;
   }
   return rowToExecutionJob(row);
+}
+
+export async function cancelJob(jobId: string, auth: JobListScope): Promise<ExecutionJob> {
+  const job = await getJob(jobId);
+  if (!job) {
+    throw new Error("job not found");
+  }
+  if (auth.role !== "security" && job.requestedBy !== auth.username) {
+    throw new Error("job not found");
+  }
+  if (job.status === "executed") {
+    throw new Error("executed job cannot be cancelled");
+  }
+  const db = getDb();
+  const updated = await db.job.update({ where: { id: jobId }, data: { status: "cancelled" } });
+  return rowToExecutionJob(updated);
 }
 
 export async function approveJob(args: {
@@ -235,12 +252,13 @@ async function findIdempotentEvent(jobId: string, idempotencyKey?: string): Prom
 
 async function runExecutionWithRetry(
   job: ExecutionJob,
-  retryCount: number
+  retryCount: number,
+  requestedMode?: ExecutionMode
 ): Promise<{ bundle: ExecutionAdapterBundle; attempts: number }> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= retryCount; attempt += 1) {
     try {
-      const bundle = await runExecutionAdapter(job);
+      const bundle = await runExecutionAdapter(job, requestedMode);
       return { bundle, attempts: attempt };
     } catch (error) {
       lastError = error;
@@ -310,6 +328,7 @@ export async function listExecutionEvents(jobId: string | undefined, scope: JobL
 export type ExecuteJobMeta = {
   correlationId?: string;
   positionId?: string;
+  requestedMode?: ExecutionMode;
 };
 
 export async function executeJob(
@@ -375,6 +394,13 @@ export async function executeJob(
       payload: replayPayload
     };
   }
+  if (job.status === "cancelled") {
+    return {
+      ok: false,
+      message: "job is cancelled",
+      job
+    };
+  }
   if (job.riskLevel === "Critical") {
     await db.job.update({ where: { id: jobId }, data: { status: "blocked" } });
     job.status = "blocked";
@@ -396,7 +422,7 @@ export async function executeJob(
   let execution: ExecutionAdapterBundle;
   let attemptsUsed = maxAttempts;
   try {
-    const ran = await runExecutionWithRetry(job, maxAttempts);
+    const ran = await runExecutionWithRetry(job, maxAttempts, meta?.requestedMode);
     execution = ran.bundle;
     attemptsUsed = ran.attempts;
   } catch (error) {

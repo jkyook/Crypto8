@@ -20,8 +20,8 @@ export function getEffectiveExecutionMode(): ExecutionMode {
   return "dry-run";
 }
 
-function getExecutionMode(): ExecutionMode {
-  const envMode = process.env.EXECUTION_MODE;
+function getExecutionMode(requestedMode?: ExecutionMode): ExecutionMode {
+  const envMode = requestedMode ?? process.env.EXECUTION_MODE;
   if (envMode === "live") {
     return "live";
   }
@@ -44,8 +44,8 @@ function buildSummary(results: AdapterExecutionResult[], mode: ExecutionMode): s
   return `${mode.toUpperCase()} execution total=$${total.toFixed(2)} | ${lines.join(", ")}`;
 }
 
-export async function runExecutionAdapter(job: ExecutionJob): Promise<ExecutionAdapterBundle> {
-  const mode = getExecutionMode();
+export async function runExecutionAdapter(job: ExecutionJob, requestedMode?: ExecutionMode): Promise<ExecutionAdapterBundle> {
+  const mode = getExecutionMode(requestedMode);
   ensureSafeLiveMode(mode);
 
   const context: AdapterExecutionContext = {

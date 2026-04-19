@@ -261,7 +261,7 @@ type RebalanceRecommendation = {
 이번 1차 적용에서는 다음을 반영한다.
 
 - 이 문서 저장
-- 포트폴리오 운영 관제 패널 추가
+- 포트폴리오 운영 현황 패널 추가
 - risk score v1 계산
 - concentration, chain exposure, estimated APY 표시
 - 리밸런싱 후보와 다음 조치 표시

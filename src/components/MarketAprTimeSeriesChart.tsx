@@ -3,11 +3,11 @@ import { blendedAprDecimalFromMix } from "../lib/marketAprBlend";
 import type { MarketAprHistoryPoint } from "../lib/api";
 
 const VB_W = 520;
-const VB_H = 154;
-const PAD_L = 44;
-const PAD_R = 14;
-const PAD_T = 12;
-const PAD_B = 42;
+const VB_H = 188;
+const PAD_L = 48;
+const PAD_R = 18;
+const PAD_T = 24;
+const PAD_B = 46;
 
 const COL_AAVE = "#6b8cff";
 const COL_UNI = "#c084fc";
@@ -115,6 +115,12 @@ export function MarketAprTimeSeriesChart({ points, granularity, protocolMix }: M
             yAt
           )
         : lineAcross(parsed[0].blend);
+    const blendArea = parsed.length >= 2
+      ? `${pathB} L ${xAt(parsed[parsed.length - 1].t).toFixed(1)} ${(PAD_T + innerH).toFixed(1)} L ${xAt(parsed[0].t).toFixed(1)} ${(PAD_T + innerH).toFixed(1)} Z`
+      : "";
+    const latest = parsed[parsed.length - 1];
+    const first = parsed[0];
+    const delta = latest.blend - first.blend;
 
     const yTicks = [yMin, (yMin + yMax) / 2, yMax].map((yv) => ({
       y: yAt(yv),
@@ -144,12 +150,15 @@ export function MarketAprTimeSeriesChart({ points, granularity, protocolMix }: M
       pathU,
       pathO,
       pathB,
+      blendArea,
       yTicks,
       xTicks,
       yMin,
       yMax,
       t0,
       t1,
+      latest,
+      delta,
       singlePoint: parsed.length === 1 ? { cx: xAt(parsed[0].t), pts: parsed[0] } : null
     };
   }, [points, protocolMix, granularity]);
@@ -173,9 +182,16 @@ export function MarketAprTimeSeriesChart({ points, granularity, protocolMix }: M
   return (
     <div className="market-apr-ts-chart" role="img" aria-label={`연 이율(%) ${granLabel} 변화`}>
       <div className="market-apr-ts-chart-head">
-        <span className="market-apr-ts-chart-title">
-          {granularity === "day" ? "일별 APY (역사 CSV)" : `이율 변화 (${granLabel} 단위)`}
-        </span>
+        <div>
+          <span className="market-apr-ts-chart-title">
+            {granularity === "day" ? "Market APY Trend" : `이율 변화 (${granLabel} 단위)`}
+          </span>
+          <p className="market-apr-ts-chart-sub">선택 상품의 프로토콜 APY와 배분 가중합을 한 그래프에서 비교합니다.</p>
+        </div>
+        <div className="market-apr-ts-stat-strip">
+          <span>가중합 <strong>{L.latest.blend.toFixed(2)}%</strong></span>
+          <span className={L.delta >= 0 ? "up" : "down"}>{L.delta >= 0 ? "+" : ""}{L.delta.toFixed(2)}p</span>
+        </div>
         <span className="market-apr-ts-legend">
           <span style={{ color: COL_AAVE }}>Aave</span>
           <span style={{ color: COL_UNI }}>Uniswap</span>
@@ -184,6 +200,19 @@ export function MarketAprTimeSeriesChart({ points, granularity, protocolMix }: M
         </span>
       </div>
       <svg className="market-apr-ts-chart-svg" viewBox={`0 0 ${VB_W} ${VB_H}`} preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <linearGradient id="marketAprBlendFill" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor={COL_BLEND} stopOpacity="0.22" />
+            <stop offset="78%" stopColor={COL_BLEND} stopOpacity="0.02" />
+          </linearGradient>
+          <filter id="marketAprGlow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="2.2" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
         <line
           x1={PAD_L}
           x2={PAD_L + L.innerW}
@@ -206,10 +235,11 @@ export function MarketAprTimeSeriesChart({ points, granularity, protocolMix }: M
             </text>
           </g>
         ))}
-        <path d={L.pathA} fill="none" stroke={COL_AAVE} strokeWidth={1.35} className="market-apr-ts-line" />
-        <path d={L.pathU} fill="none" stroke={COL_UNI} strokeWidth={1.35} className="market-apr-ts-line" />
-        <path d={L.pathO} fill="none" stroke={COL_ORCA} strokeWidth={1.35} className="market-apr-ts-line" />
-        <path d={L.pathB} fill="none" stroke={COL_BLEND} strokeWidth={1.75} strokeDasharray="4 3" className="market-apr-ts-line" />
+        {L.blendArea ? <path d={L.blendArea} fill="url(#marketAprBlendFill)" className="market-apr-ts-area" /> : null}
+        <path d={L.pathA} fill="none" stroke={COL_AAVE} strokeWidth={1.6} className="market-apr-ts-line market-apr-ts-line--muted" />
+        <path d={L.pathU} fill="none" stroke={COL_UNI} strokeWidth={1.6} className="market-apr-ts-line market-apr-ts-line--muted" />
+        <path d={L.pathO} fill="none" stroke={COL_ORCA} strokeWidth={1.6} className="market-apr-ts-line market-apr-ts-line--muted" />
+        <path d={L.pathB} fill="none" stroke={COL_BLEND} strokeWidth={2.7} className="market-apr-ts-line market-apr-ts-line--blend" filter="url(#marketAprGlow)" />
         {L.singlePoint ? (
           <g>
             <circle cx={L.singlePoint.cx} cy={L.yAt(L.singlePoint.pts.aave)} r={2.5} fill={COL_AAVE} />

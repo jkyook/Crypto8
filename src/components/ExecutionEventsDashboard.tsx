@@ -5,6 +5,11 @@ type Props = {
   focusJobId?: string;
 };
 
+function compactTxId(txId: string): string {
+  if (txId.length <= 18) return txId;
+  return `${txId.slice(0, 8)}...${txId.slice(-8)}`;
+}
+
 export function ExecutionEventsDashboard({ focusJobId }: Props) {
   const [events, setEvents] = useState<ExecutionEvent[]>([]);
   const [statusFilter, setStatusFilter] = useState<"all" | ExecutionEvent["status"]>("all");
@@ -94,7 +99,13 @@ export function ExecutionEventsDashboard({ focusJobId }: Props) {
                 <td>{item.message}</td>
                 <td>{item.idempotencyKey ?? "—"}</td>
                 <td>
-                  {item.txId ? <code className="table-mono table-mono--sm">{item.txId}</code> : "—"}
+                  {item.txId ? (
+                    <code className="table-mono table-mono--sm table-mono--clip" title={item.txId}>
+                      {compactTxId(item.txId)}
+                    </code>
+                  ) : (
+                    "—"
+                  )}
                 </td>
                 <td>
                   {item.payload ? (

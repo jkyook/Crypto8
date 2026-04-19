@@ -30,7 +30,7 @@ export function PortfolioCommandCenter({ positions, onOpenExecution }: Props) {
       <div className="command-center-hero">
         <div>
           <p className="section-eyebrow">DeFi Operating Console</p>
-          <h2>포트폴리오 운영 관제</h2>
+          <h2>포트폴리오 운영 현황</h2>
           <p className="command-center-lead">{assessment.primaryAction}</p>
         </div>
         <div className="risk-orb" aria-label={`리스크 점수 ${assessment.riskScore}`}>
@@ -56,7 +56,7 @@ export function PortfolioCommandCenter({ positions, onOpenExecution }: Props) {
         </div>
         <div className="command-kpi">
           <span className="kpi-label">연 추정 수익</span>
-          <strong>${assessment.estimatedAnnualYieldUsd.toFixed(2)}</strong>
+          <strong>${Math.round(assessment.estimatedAnnualYieldUsd).toLocaleString()}</strong>
         </div>
       </div>
 

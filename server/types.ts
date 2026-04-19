@@ -10,7 +10,7 @@ export type JobInput = {
 export type ExecutionJob = {
   id: string;
   createdAt: string;
-  status: "queued" | "blocked" | "executed";
+  status: "queued" | "blocked" | "executed" | "cancelled";
   input: JobInput;
   riskLevel: RiskLevel;
   /** 요청을 생성한 로그인 사용자(없으면 마이그레이션 이전 데이터). */

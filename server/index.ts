@@ -12,7 +12,7 @@ import {
   listWithdrawalLedger,
   withdrawDepositAmount
 } from "./positions";
-import { approveJob, createJob, executeJob, getJob, listApprovals, listExecutionEvents, listJobs } from "./store";
+import { approveJob, cancelJob, createJob, executeJob, getJob, listApprovals, listExecutionEvents, listJobs } from "./store";
 import type { ApprovalLog, JobInput } from "./types";
 import { authenticate, refreshAccessToken, registerUser, revokeRefreshToken, type UserRole, verifyToken } from "./auth";
 import { getDb, initDb } from "./db";
@@ -519,6 +519,20 @@ app.get("/api/orchestrator/jobs/:jobId", requireAuth(["orchestrator", "security"
   res.json({ ok: true, job });
 });
 
+app.post("/api/orchestrator/jobs/:jobId/cancel", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+  const jobIdParam = req.params.jobId;
+  const jobId = Array.isArray(jobIdParam) ? jobIdParam[0] : jobIdParam;
+  const username = res.locals.user.username as string;
+  const role = res.locals.user.role as string;
+  try {
+    const job = await cancelJob(jobId, { username, role });
+    res.json({ ok: true, job });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "job cancel failed";
+    res.status(message.includes("not found") ? 404 : 400).json({ ok: false, message });
+  }
+});
+
 app.post("/api/security/approve", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
   const body = req.body as {
     jobId?: string;
@@ -571,6 +585,7 @@ app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orche
   const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as {
     correlationId?: unknown;
     positionId?: unknown;
+    requestedMode?: unknown;
   };
   const headerCorr = req.headers["x-correlation-id"];
   const correlationId =
@@ -580,9 +595,10 @@ app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orche
         ? headerCorr
         : undefined;
   const positionId = typeof body.positionId === "string" ? body.positionId : undefined;
+  const requestedMode = body.requestedMode === "live" || body.requestedMode === "dry-run" ? body.requestedMode : undefined;
   const username = res.locals.user.username as string;
   const role = res.locals.user.role as string;
-  const result = await executeJob(jobId, idempotencyKey, { correlationId, positionId }, { username, role });
+  const result = await executeJob(jobId, idempotencyKey, { correlationId, positionId, requestedMode }, { username, role });
   const requestId = typeof (res.locals as Record<string, unknown>).requestId === "string" ? (res.locals as Record<string, string>).requestId : undefined;
   if (!result.ok) {
     const forbidden = typeof result.message === "string" && result.message.startsWith("forbidden:");
