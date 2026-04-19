@@ -10,6 +10,8 @@ import {
   createDepositPosition,
   listDepositPositions,
   listWithdrawalLedger,
+  withdrawProtocolExposureAmount,
+  withdrawProductDepositAmount,
   withdrawDepositAmount
 } from "./positions";
 import { approveJob, cancelJob, createJob, executeJob, getJob, listApprovals, listExecutionEvents, listJobs } from "./store";
@@ -19,7 +21,7 @@ import { getDb, initDb } from "./db";
 import { ensureDemoUsersIfEmpty } from "./ensureDemoUsers";
 import rateLimit from "express-rate-limit";
 import { gatherProtocolInsightsNews } from "./protocolNews";
-import { getDailyApySeriesFromCsv, listMarketRatesHistory, maybeAppendMarketRatesSnapshot } from "./marketAprHistory";
+import { getDailyApySeriesFromCsv, getPoolApySeriesFromCsv, listMarketRatesHistory, maybeAppendMarketRatesSnapshot } from "./marketAprHistory";
 import { listAccountAssets } from "./accountAssets";
 import { estimateProtocolFees, type FeeEstimateInputRow } from "./feeEstimator";
 import { getMarketPriceSnapshot } from "./marketPricing";
@@ -549,6 +551,31 @@ app.get("/api/market/apy-history-csv", (req, res) => {
   });
 });
 
+/** 선택 상품 풀 라벨 기준: 일자별 풀 APY와 합성 APY 계산용 원천 데이터. */
+app.get("/api/market/pool-apy-history-csv", (req, res) => {
+  const daysRaw = Number(req.query.days);
+  const days = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.floor(daysRaw) : 90;
+  const rawPool = req.query.pool;
+  const pools = (Array.isArray(rawPool) ? rawPool : typeof rawPool === "string" ? [rawPool] : [])
+    .map((value) => String(value).trim())
+    .filter((value) => value.length > 0)
+    .slice(0, 8);
+  if (pools.length === 0) {
+    res.status(400).json({ ok: false, message: "pool query is required", granularity: "day", series: [], points: [] });
+    return;
+  }
+  const out = getPoolApySeriesFromCsv(days, pools);
+  res.json({
+    ok: out.ok,
+    source: out.source,
+    granularity: "day" as const,
+    days,
+    message: out.message,
+    series: out.series,
+    points: out.points
+  });
+});
+
 app.get("/api/runtime/info", (_req, res) => {
   const requested = process.env.EXECUTION_MODE === "live" ? "live" : "dry-run";
   const liveConfirmed = process.env.LIVE_EXECUTION_CONFIRM === "YES";
@@ -582,17 +609,10 @@ function buildProtocolMixFromExecutionPayload(
       { name: "Cash", weight: 0.05, pool: "USDC buffer" }
     ];
   }
-  const byProtocol = new Map<string, { amountUsd: number; pools: Set<string> }>();
-  for (const row of rows) {
-    const current = byProtocol.get(row.protocol) ?? { amountUsd: 0, pools: new Set<string>() };
-    current.amountUsd += row.allocationUsd;
-    current.pools.add(`${row.chain} · ${row.action}`);
-    byProtocol.set(row.protocol, current);
-  }
-  return Array.from(byProtocol.entries()).map(([name, item]) => ({
-    name,
-    weight: Math.min(1, item.amountUsd / depositUsd),
-    pool: Array.from(item.pools).slice(0, 2).join(" / ")
+  return rows.map((row) => ({
+    name: row.protocol,
+    weight: Math.min(1, row.allocationUsd / depositUsd),
+    pool: `${row.chain} · ${row.action}`
   }));
 }
 
@@ -678,6 +698,50 @@ app.post("/api/portfolio/withdraw", requireAuth(["orchestrator", "security", "vi
   }
   const withdrawnUsd = await withdrawDepositAmount(username, body.amountUsd);
   res.json({ ok: true, withdrawnUsd });
+});
+
+app.post("/api/portfolio/withdraw-product", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+  const body = req.body as { amountUsd?: unknown; productName?: unknown };
+  const username = res.locals.user.username as string;
+  if (typeof body.amountUsd !== "number") {
+    res.status(400).json({ ok: false, message: "amountUsd required" });
+    return;
+  }
+  if (typeof body.productName !== "string" || body.productName.trim().length === 0) {
+    res.status(400).json({ ok: false, message: "productName required" });
+    return;
+  }
+  try {
+    assertValidWithdrawAmount(body.amountUsd);
+    const withdrawnUsd = await withdrawProductDepositAmount(username, body.productName, body.amountUsd);
+    res.json({ ok: true, withdrawnUsd });
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "withdraw failed" });
+  }
+});
+
+app.post("/api/portfolio/withdraw-protocol", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+  const body = req.body as { amountUsd?: unknown; protocol?: unknown; chain?: unknown; pool?: unknown };
+  const username = res.locals.user.username as string;
+  if (typeof body.amountUsd !== "number") {
+    res.status(400).json({ ok: false, message: "amountUsd required" });
+    return;
+  }
+  if (typeof body.protocol !== "string" || body.protocol.trim().length === 0) {
+    res.status(400).json({ ok: false, message: "protocol required" });
+    return;
+  }
+  try {
+    assertValidWithdrawAmount(body.amountUsd);
+    const withdrawnUsd = await withdrawProtocolExposureAmount(username, body.amountUsd, {
+      protocol: body.protocol,
+      chain: typeof body.chain === "string" ? body.chain : undefined,
+      pool: typeof body.pool === "string" ? body.pool : undefined
+    });
+    res.json({ ok: true, withdrawnUsd });
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "withdraw failed" });
+  }
 });
 
 app.get("/api/insights/news", async (req, res) => {

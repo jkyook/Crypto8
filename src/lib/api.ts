@@ -149,6 +149,21 @@ export type MarketAprHistoryPoint = {
   uniswap: number;
   orca: number;
 };
+
+export type MarketPoolAprHistorySeries = {
+  key: string;
+  label: string;
+  poolLabel: string;
+  matchedLabel?: string;
+  matchedProject?: string;
+  matchedChain?: string;
+  matchedSymbol?: string;
+};
+
+export type MarketPoolAprHistoryPoint = {
+  t: string;
+  pools: Record<string, number>;
+};
 export type ProtocolNewsItem = {
   title: string;
   source: string;
@@ -981,6 +996,72 @@ export async function withdrawDepositRemote(amountUsd: number): Promise<{ withdr
   return { withdrawnUsd };
 }
 
+export async function withdrawProtocolExposureRemote(payload: {
+  amountUsd: number;
+  protocol: string;
+  chain?: string;
+  pool?: string;
+}): Promise<{ withdrawnUsd: number }> {
+  const response = await authedFetch("/api/portfolio/withdraw-protocol", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const text = await response.text();
+  let data = {} as { ok?: boolean; withdrawnUsd?: number; message?: string };
+  try {
+    if (text) {
+      data = JSON.parse(text) as typeof data;
+    }
+  } catch {
+    /* 비 JSON */
+  }
+  if (!response.ok) {
+    let msg = data.message;
+    if (
+      response.status === 403 &&
+      (msg === "forbidden: insufficient role" || !msg || (typeof msg === "string" && msg.includes("insufficient role")))
+    ) {
+      msg = "권한이 없습니다. 로그인 후 다시 시도하세요.";
+    }
+    throw new Error(msg ?? "프로토콜별 인출 반영 실패");
+  }
+  const withdrawnUsd = typeof data.withdrawnUsd === "number" ? data.withdrawnUsd : 0;
+  return { withdrawnUsd };
+}
+
+export async function withdrawProductDepositRemote(payload: {
+  amountUsd: number;
+  productName: string;
+}): Promise<{ withdrawnUsd: number }> {
+  const response = await authedFetch("/api/portfolio/withdraw-product", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const text = await response.text();
+  let data = {} as { ok?: boolean; withdrawnUsd?: number; message?: string };
+  try {
+    if (text) {
+      data = JSON.parse(text) as typeof data;
+    }
+  } catch {
+    /* 비 JSON */
+  }
+  if (!response.ok) {
+    let msg = data.message;
+    if (
+      response.status === 403 &&
+      (msg === "forbidden: insufficient role" || !msg || (typeof msg === "string" && msg.includes("insufficient role")))
+    ) {
+      msg = "권한이 없습니다. 로그인 후 다시 시도하세요.";
+    }
+    throw new Error(msg ?? "상품별 인출 반영 실패");
+  }
+  const withdrawnUsd = typeof data.withdrawnUsd === "number" ? data.withdrawnUsd : 0;
+  return { withdrawnUsd };
+}
+
 export async function fetchRuntimeInfo(): Promise<RuntimeInfo> {
   const candidates = [`${API_BASE}/api/runtime/info`, "http://localhost:8787/api/runtime/info"];
   for (const url of candidates) {
@@ -1102,6 +1183,59 @@ export async function fetchDailyApyHistoryFromCsv(opts?: { days?: number }): Pro
     }
   }
   return { ok: false, granularity: "day", points: [], message: "CSV 이력 API에 연결하지 못했습니다." };
+}
+
+export async function fetchPoolApyHistoryFromCsv(opts: { days?: number; pools: string[] }): Promise<{
+  ok: boolean;
+  source?: string;
+  granularity: "day";
+  series: MarketPoolAprHistorySeries[];
+  points: MarketPoolAprHistoryPoint[];
+  message?: string;
+}> {
+  const days = opts.days ?? 90;
+  const qs = new URLSearchParams({ days: String(days) });
+  for (const pool of opts.pools) {
+    qs.append("pool", pool);
+  }
+  const path = `/api/market/pool-apy-history-csv?${qs.toString()}`;
+  const candidates = [buildApiUrl(API_BASE, path), `http://localhost:8787${path}`];
+  for (const url of candidates) {
+    try {
+      const response = await fetch(url);
+      const contentType = response.headers.get("content-type") ?? "";
+      if (!contentType.includes("application/json")) {
+        continue;
+      }
+      const data = (await response.json()) as {
+        ok?: boolean;
+        source?: string;
+        granularity?: "day";
+        series?: MarketPoolAprHistorySeries[];
+        points?: MarketPoolAprHistoryPoint[];
+        message?: string;
+      };
+      if (response.ok && data.points && data.series && data.granularity === "day") {
+        return {
+          ok: Boolean(data.ok),
+          source: data.source,
+          granularity: "day",
+          series: data.series,
+          points: data.points,
+          message: data.message
+        };
+      }
+    } catch {
+      // try next
+    }
+  }
+  return {
+    ok: false,
+    granularity: "day",
+    series: [],
+    points: [],
+    message: "CSV 풀 이력 API에 연결하지 못했습니다."
+  };
 }
 
 export async function fetchProtocolNews(protocol: string): Promise<ProtocolNewsBundle> {

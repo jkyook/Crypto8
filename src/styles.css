@@ -1628,6 +1628,91 @@ th {
   margin-top: 2px;
 }
 
+.product-network-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 16px;
+  padding: 8px;
+  border: 1px solid rgba(110, 150, 210, 0.2);
+  border-radius: 18px;
+  background:
+    linear-gradient(145deg, rgba(22, 42, 70, 0.62), rgba(5, 12, 24, 0.82)),
+    radial-gradient(circle at 10% 10%, rgba(105, 165, 230, 0.16), transparent 34%);
+}
+
+.product-network-tab {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 42px;
+  padding: 9px 12px;
+  border-radius: 13px;
+  border: 1px solid rgba(120, 160, 215, 0.18);
+  background: rgba(8, 18, 34, 0.46);
+  color: #b8cde6;
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+}
+
+.product-network-tab--multi {
+  border-color: rgba(255, 207, 138, 0.36);
+  background: linear-gradient(145deg, rgba(96, 70, 32, 0.74), rgba(34, 22, 12, 0.76));
+  color: #ffe2a6;
+}
+
+.product-network-tab--arbitrum {
+  border-color: rgba(128, 145, 255, 0.46);
+  background: linear-gradient(145deg, rgba(72, 78, 178, 0.72), rgba(20, 26, 78, 0.78));
+  color: #dbe2ff;
+}
+
+.product-network-tab--base {
+  border-color: rgba(72, 185, 255, 0.48);
+  background: linear-gradient(145deg, rgba(22, 118, 202, 0.72), rgba(8, 48, 112, 0.82));
+  color: #d4f0ff;
+}
+
+.product-network-tab--solana {
+  border-color: rgba(87, 245, 198, 0.44);
+  background: linear-gradient(145deg, rgba(24, 160, 124, 0.7), rgba(20, 42, 82, 0.82));
+  color: #d1fff1;
+}
+
+.product-network-tab:hover {
+  transform: translateY(-1px);
+  border-color: rgba(140, 190, 245, 0.34);
+  color: #edf7ff;
+}
+
+.product-network-tab.active {
+  border-color: rgba(255, 255, 255, 0.76);
+  color: #f3f9ff;
+  box-shadow:
+    0 16px 34px rgba(0, 0, 0, 0.34),
+    0 0 0 2px rgba(255, 255, 255, 0.12),
+    0 1px 0 rgba(255, 255, 255, 0.12) inset;
+}
+
+.product-network-tab span {
+  font-size: 0.83rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.product-network-tab strong {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(150, 205, 255, 0.16);
+  color: #d6ecff;
+  font-size: 0.76rem;
+}
+
 @media (min-width: 900px) {
   .product-list-grid {
     grid-template-columns: repeat(auto-fit, minmax(248px, 1fr));
@@ -1693,6 +1778,35 @@ th {
   border-radius: 0;
   min-height: 0;
   color: #e4eef9;
+}
+
+.product-network-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(135, 190, 245, 0.28);
+  background: rgba(115, 170, 225, 0.13);
+  color: #bfe2ff;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.product-network-badge--arbitrum {
+  border-color: rgba(105, 140, 255, 0.38);
+  color: #c8d5ff;
+}
+
+.product-network-badge--base {
+  border-color: rgba(88, 180, 255, 0.38);
+  color: #bfe6ff;
+}
+
+.product-network-badge--solana {
+  border-color: rgba(90, 225, 190, 0.34);
+  color: #bff9e8;
 }
 
 .kpi-item.product-card .nav-item:not(.active):hover {
@@ -1870,6 +1984,56 @@ body[data-theme="light"] .product-action-btn.btn-primary {
   margin: 4px 0 0;
   font-size: 0.8rem;
   color: #9fbad6;
+  text-align: right;
+}
+
+.product-withdraw-modal {
+  max-width: min(760px, calc(100vw - 28px));
+}
+
+.product-withdraw-desc {
+  margin: 4px 0 0;
+  color: var(--c8-text-muted);
+  font-size: 0.86rem;
+}
+
+.product-withdraw-slider-row {
+  margin-top: 16px;
+}
+
+.product-withdraw-preview {
+  display: grid;
+  gap: 7px;
+  margin: 16px 0;
+  padding: 12px;
+  border: 1px solid rgba(120, 170, 240, 0.22);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.product-withdraw-preview-row {
+  display: grid;
+  grid-template-columns: minmax(78px, 0.75fr) minmax(0, 1.9fr) minmax(58px, 0.45fr) minmax(82px, 0.65fr);
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(5, 14, 24, 0.34);
+  color: #dcecff;
+  font-size: 0.83rem;
+}
+
+.product-withdraw-preview-row--head {
+  background: transparent;
+  color: var(--c8-text-muted);
+  font-size: 0.74rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.product-withdraw-preview-row strong {
+  color: #ffb6a8;
   text-align: right;
 }
 
@@ -2821,16 +2985,16 @@ body[data-theme="light"] .market-apr-ts-chart--empty {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
 }
 
 .protocol-inline-transfer input {
-  width: 90px;
-  min-width: 70px;
+  width: 82px;
+  min-width: 72px;
   min-height: 34px;
   border-radius: 999px;
   font-weight: 800;
-  flex-shrink: 1;
+  flex: 0 0 82px;
 }
 
 .protocol-deposit-action {
@@ -2839,7 +3003,7 @@ body[data-theme="light"] .market-apr-ts-chart--empty {
   justify-content: center;
   white-space: nowrap;
   min-height: 34px;
-  padding: 0 14px;
+  padding: 0 12px;
   border-radius: 999px;
   font-size: 0.82rem;
   font-weight: 900;
@@ -2855,7 +3019,7 @@ body[data-theme="light"] .market-apr-ts-chart--empty {
   justify-content: center;
   white-space: nowrap;
   min-height: 34px;
-  padding: 0 14px;
+  padding: 0 12px;
   border-radius: 999px;
   font-size: 0.82rem;
   font-weight: 900;
@@ -2956,39 +3120,58 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
 
 .protocol-detail-table th,
 .protocol-detail-table td {
-  width: 16%;
   text-align: center;
   vertical-align: middle;
 }
 
-/* 프로토콜·체인 열은 좁게 */
 .protocol-detail-table th:nth-child(1),
 .protocol-detail-table td:nth-child(1) {
-  width: 14%;
+  width: 11%;
   text-align: left;
 }
 
 .protocol-detail-table th:nth-child(2),
 .protocol-detail-table td:nth-child(2) {
-  width: 12%;
+  width: 9%;
 }
 
-/* 예치금액·비중 열 */
 .protocol-detail-table th:nth-child(3),
-.protocol-detail-table td:nth-child(3),
+.protocol-detail-table td:nth-child(3) {
+  width: 25%;
+  text-align: left;
+}
+
 .protocol-detail-table th:nth-child(4),
 .protocol-detail-table td:nth-child(4) {
-  width: 14%;
+  width: 13%;
 }
 
-/* 입출금 열 — 컨트롤이 많으므로 넉넉하게 */
 .protocol-detail-table th:nth-child(5),
 .protocol-detail-table td:nth-child(5) {
-  width: 46%;
+  width: 10%;
+}
+
+/* 입출금 열 — 버튼이 밀리지 않도록 6컬럼 기준으로 별도 확보 */
+.protocol-detail-table th:nth-child(6),
+.protocol-detail-table td:nth-child(6) {
+  width: 32%;
 }
 
 .protocol-detail-table .protocol-inline-transfer {
   justify-content: center;
+  width: 100%;
+}
+
+.protocol-detail-table .inline-trade-controls {
+  display: inline-flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.protocol-detail-table .inline-trade-btn {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
 }
 
 .protocol-total-row td {
@@ -3694,6 +3877,70 @@ body[data-theme="light"] .products-market-value {
   text-shadow: none;
 }
 
+body[data-theme="light"] .product-network-tabs {
+  border-color: rgba(50, 80, 120, 0.14);
+  background:
+    linear-gradient(145deg, rgba(245, 249, 255, 0.92), rgba(226, 235, 248, 0.86)),
+    radial-gradient(circle at 12% 10%, rgba(65, 125, 200, 0.1), transparent 34%);
+}
+
+body[data-theme="light"] .product-network-tab {
+  color: #123047;
+}
+
+body[data-theme="light"] .product-network-tab--multi {
+  border-color: rgba(205, 128, 28, 0.36);
+  background: linear-gradient(145deg, rgba(255, 218, 142, 0.9), rgba(255, 244, 213, 0.78));
+}
+
+body[data-theme="light"] .product-network-tab--arbitrum {
+  border-color: rgba(84, 100, 230, 0.38);
+  background: linear-gradient(145deg, rgba(202, 210, 255, 0.94), rgba(238, 241, 255, 0.82));
+}
+
+body[data-theme="light"] .product-network-tab--base {
+  border-color: rgba(38, 138, 225, 0.38);
+  background: linear-gradient(145deg, rgba(177, 226, 255, 0.95), rgba(232, 248, 255, 0.84));
+}
+
+body[data-theme="light"] .product-network-tab--solana {
+  border-color: rgba(32, 170, 126, 0.36);
+  background: linear-gradient(145deg, rgba(181, 255, 225, 0.92), rgba(226, 248, 244, 0.84));
+}
+
+body[data-theme="light"] .product-network-tab.active {
+  border-color: rgba(18, 48, 76, 0.44);
+  box-shadow:
+    0 12px 26px rgba(35, 90, 160, 0.18),
+    0 0 0 2px rgba(18, 48, 76, 0.08);
+}
+
+body[data-theme="light"] .product-network-tab strong {
+  background: rgba(40, 105, 180, 0.1);
+  color: #234f83;
+}
+
+body[data-theme="light"] .product-network-badge {
+  border-color: rgba(40, 105, 180, 0.18);
+  background: rgba(40, 105, 180, 0.08);
+  color: #28557f;
+}
+
+body[data-theme="light"] .product-withdraw-preview {
+  background: rgba(239, 247, 255, 0.72);
+  border-color: rgba(170, 194, 220, 0.52);
+}
+
+body[data-theme="light"] .product-withdraw-preview-row {
+  background: rgba(255, 255, 255, 0.72);
+  color: #173452;
+}
+
+body[data-theme="light"] .product-withdraw-preview-row--head {
+  background: transparent;
+  color: #5d7f9f;
+}
+
 body[data-theme="light"] .product-add-form {
   background: rgba(239, 247, 255, 0.72);
   border-color: rgba(170, 194, 220, 0.52);
@@ -3985,6 +4232,15 @@ body[data-theme="light"] .auto-check-item.wait {
 
   .product-estimate-line {
     text-align: left;
+  }
+
+  .product-network-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .product-network-tab {
+    min-height: 38px;
+    padding: 8px 10px;
   }
 
   .execution-modal-card {

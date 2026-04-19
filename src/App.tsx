@@ -12,8 +12,8 @@ import { WalletPanel, type WalletWithdrawLedgerLine } from "./components/WalletP
 import {
   AUTH_CLEARED_EVENT,
   cancelJob,
-  fetchDailyApyHistoryFromCsv,
   fetchMarketAprSnapshot,
+  fetchPoolApyHistoryFromCsv,
   fetchProtocolNews,
   type ProtocolNewsBundle,
   getSession,
@@ -23,16 +23,20 @@ import {
   listJobs,
   listWithdrawalLedger,
   login,
+  withdrawProtocolExposureRemote,
+  withdrawProductDepositRemote,
   withdrawDepositRemote,
   type AuthSession,
   type DepositPositionPayload,
   type ExecutionEvent,
   type Job,
-  type MarketAprHistoryPoint,
-  type MarketAprSnapshot
+  type MarketAprSnapshot,
+  type MarketPoolAprHistoryPoint,
+  type MarketPoolAprHistorySeries
 } from "./lib/api";
 import { aggregateChainUsdFromPositions, estimateAnnualYieldUsd } from "./lib/portfolioMetrics";
 import { getNextQuarterStart } from "./lib/quarterSchedule";
+import type { ExecutionPreviewRow } from "./lib/executionPreview";
 import { OPTION_L2_STAR } from "./lib/strategyEngine";
 
 const PORTFOLIO_DONUT_COLORS = ["#8b7bff", "#3bd4ff", "#47d9a8", "#ffb86b"];
@@ -61,6 +65,7 @@ type MenuItem = {
 type YieldProduct = {
   id: string;
   name: string;
+  networkGroup: "multi" | "arbitrum" | "base" | "solana";
   targetApr: number;
   estFeeBps: number;
   lockDays: number;
@@ -72,6 +77,7 @@ type ProtocolDetailRow = {
   key: string;
   name: string;
   chain: string;
+  pool: string;
   amount: number;
 };
 
@@ -445,7 +451,120 @@ function applyLifoWithdraw(positions: DepositPosition[], amountUsd: number): Dep
   return kept;
 }
 
+function applyTargetedWithdraw(
+  positions: DepositPosition[],
+  amountUsd: number,
+  target: Pick<ProtocolDetailRow, "name" | "chain" | "pool">
+): DepositPosition[] {
+  let remaining = amountUsd;
+  const next: DepositPosition[] = [];
+  const matchesTarget = (mix: { name: string; pool?: string }) =>
+    mix.name.toLowerCase() === target.name.toLowerCase() &&
+    inferProtocolChain(mix.name, mix.pool).toLowerCase() === target.chain.toLowerCase() &&
+    (mix.pool ?? "").trim().toLowerCase() === target.pool.trim().toLowerCase();
+
+  for (const position of positions) {
+    if (remaining <= 0) {
+      next.push(position);
+      continue;
+    }
+    const absoluteMix = position.protocolMix.map((mix) => ({
+      mix,
+      amountUsd: position.amountUsd * mix.weight
+    }));
+    let withdrawnFromPosition = 0;
+    for (const item of absoluteMix) {
+      if (remaining <= 0) break;
+      if (!matchesTarget(item.mix)) continue;
+      const take = Math.min(item.amountUsd, remaining);
+      item.amountUsd -= take;
+      withdrawnFromPosition += take;
+      remaining -= take;
+    }
+    if (withdrawnFromPosition <= 0) {
+      next.push(position);
+      continue;
+    }
+    const nextAmount = position.amountUsd - withdrawnFromPosition;
+    if (nextAmount <= 0.000001) continue;
+    next.push({
+      ...position,
+      amountUsd: nextAmount,
+      protocolMix: absoluteMix
+        .filter((item) => item.amountUsd > 0.000001)
+        .map((item) => ({
+          ...item.mix,
+          weight: item.amountUsd / nextAmount
+        }))
+    });
+  }
+  return next;
+}
+
+function applyProductWithdraw(positions: DepositPosition[], amountUsd: number, productName: string): DepositPosition[] {
+  let remaining = amountUsd;
+  const kept: DepositPosition[] = [];
+  for (const position of positions) {
+    if (remaining <= 0 || position.productName !== productName) {
+      kept.push(position);
+      continue;
+    }
+    if (position.amountUsd <= remaining) {
+      remaining -= position.amountUsd;
+    } else {
+      kept.push({ ...position, amountUsd: position.amountUsd - remaining });
+      remaining = 0;
+    }
+  }
+  return kept;
+}
+
 const APR_DAYS_PER_YEAR = 365;
+
+const PRODUCT_NETWORK_GROUPS: Array<{
+  key: YieldProduct["networkGroup"];
+  label: string;
+  description: string;
+}> = [
+  { key: "multi", label: "복수 네트워크", description: "Arbitrum · Base · Solana를 함께 쓰는 기존 분산형 상품" },
+  { key: "arbitrum", label: "Arbitrum", description: "브릿지 없이 Arbitrum 안에서 Aave/Uniswap 풀로 분산" },
+  { key: "base", label: "Base", description: "Base 네트워크 안에서 USDC 중심 공급/LP로 구성" },
+  { key: "solana", label: "Solana", description: "Solana 안에서 Orca Whirlpool 기반 스테이블/LST 풀로 구성" }
+];
+
+const PRODUCT_NETWORK_LABELS = PRODUCT_NETWORK_GROUPS.reduce(
+  (acc, group) => ({ ...acc, [group.key]: group.label }),
+  {} as Record<YieldProduct["networkGroup"], string>
+);
+
+function buildDefaultProductMix(networkGroup: YieldProduct["networkGroup"]): YieldProduct["protocolMix"] {
+  if (networkGroup === "arbitrum") {
+    return [
+      { name: "Aave", weight: 0.45, pool: "Aave v3 Arbitrum USDC eMode" },
+      { name: "Uniswap", weight: 0.35, pool: "Uniswap v3 Arbitrum USDC-USDT 0.05%" },
+      { name: "Uniswap", weight: 0.2, pool: "Uniswap v3 Arbitrum ETH-USDC 0.05% (±50%)" }
+    ];
+  }
+  if (networkGroup === "base") {
+    return [
+      { name: "Aave", weight: 0.5, pool: "Aave v3 Base USDC eMode" },
+      { name: "Uniswap", weight: 0.3, pool: "Uniswap v3 Base ETH-USDC 0.05%" },
+      { name: "Uniswap", weight: 0.2, pool: "Uniswap v3 Base USDC-USDT 0.05%" }
+    ];
+  }
+  if (networkGroup === "solana") {
+    return [
+      { name: "Orca", weight: 0.4, pool: "Orca Whirlpools USDC-USDT" },
+      { name: "Orca", weight: 0.35, pool: "Orca Whirlpools SOL-USDC" },
+      { name: "Orca", weight: 0.25, pool: "Orca Whirlpools mSOL-SOL" }
+    ];
+  }
+  return [
+    { name: "Aave", weight: 0.34, pool: "Aave v3 Arbitrum USDC eMode" },
+    { name: "Uniswap", weight: 0.33, pool: "Uniswap v3 Arbitrum USDC-USDT 0.05%" },
+    { name: "Orca", weight: 0.33, pool: "Orca Whirlpools SOL-USDC" }
+  ];
+}
 
 function mixItemAnnualAprDecimal(name: string, snapshot: MarketAprSnapshot): number {
   const key = name.toLowerCase();
@@ -461,8 +580,9 @@ function aprDecimalToSimpleWeekYieldPercentPoints(annualAprDecimal: number): num
 
 const DEFAULT_PRODUCTS: YieldProduct[] = [
   {
-    id: "p-8",
-    name: "Stable Yield 8%",
+    id: "p-multi-stable-8",
+    name: "Multi-network Stable 8%",
+    networkGroup: "multi",
     targetApr: 0.08,
     estFeeBps: 65,
     lockDays: 30,
@@ -471,11 +591,12 @@ const DEFAULT_PRODUCTS: YieldProduct[] = [
       { name: "Uniswap", weight: 0.35, pool: "Uniswap v3 Arbitrum USDC-USDT 0.05%" },
       { name: "Orca", weight: 0.2, pool: "Orca Whirlpools SOL-USDC" }
     ],
-    detail: "초기 전략 문서 기반 기본 상품. 안정성 중심 분산 예치."
+    detail: "초기 전략 문서 기반 기본 상품. Arbitrum, Base, Solana를 함께 쓰는 안정성 중심 분산 예치."
   },
   {
-    id: "p-72",
-    name: "Balanced Yield 7.2%",
+    id: "p-multi-balanced-72",
+    name: "Multi-network Balanced 7.2%",
+    networkGroup: "multi",
     targetApr: 0.072,
     estFeeBps: 58,
     lockDays: 21,
@@ -484,7 +605,49 @@ const DEFAULT_PRODUCTS: YieldProduct[] = [
       { name: "Uniswap", weight: 0.3, pool: "Uniswap v3 Arbitrum ETH-USDC 0.05% (±50%)" },
       { name: "Orca", weight: 0.2, pool: "Orca Whirlpools mSOL-SOL" }
     ],
-    detail: "변동성 완화를 우선한 중립형 예치상품."
+    detail: "변동성 완화를 우선한 중립형 예치상품. 네트워크 간 분산 효과를 유지합니다."
+  },
+  {
+    id: "p-arbitrum-stable-76",
+    name: "Arbitrum Stable 7.6%",
+    networkGroup: "arbitrum",
+    targetApr: 0.076,
+    estFeeBps: 48,
+    lockDays: 21,
+    protocolMix: [
+      { name: "Aave", weight: 0.45, pool: "Aave v3 Arbitrum USDC eMode" },
+      { name: "Uniswap", weight: 0.35, pool: "Uniswap v3 Arbitrum USDC-USDT 0.05%" },
+      { name: "Uniswap", weight: 0.2, pool: "Uniswap v3 Arbitrum ETH-USDC 0.05% (±50%)" }
+    ],
+    detail: "브릿지 없이 Arbitrum 내에서 USDC 공급과 스테이블/ETH-USDC LP를 조합한 상품."
+  },
+  {
+    id: "p-base-usdc-70",
+    name: "Base USDC Core 7.0%",
+    networkGroup: "base",
+    targetApr: 0.07,
+    estFeeBps: 44,
+    lockDays: 21,
+    protocolMix: [
+      { name: "Aave", weight: 0.5, pool: "Aave v3 Base USDC eMode" },
+      { name: "Uniswap", weight: 0.3, pool: "Uniswap v3 Base ETH-USDC 0.05%" },
+      { name: "Uniswap", weight: 0.2, pool: "Uniswap v3 Base USDC-USDT 0.05%" }
+    ],
+    detail: "Base 네트워크 안에서 Aave USDC 공급과 Uniswap Base LP를 묶어 네트워크 이동을 줄입니다."
+  },
+  {
+    id: "p-solana-orca-74",
+    name: "Solana Orca Blend 7.4%",
+    networkGroup: "solana",
+    targetApr: 0.074,
+    estFeeBps: 42,
+    lockDays: 14,
+    protocolMix: [
+      { name: "Orca", weight: 0.4, pool: "Orca Whirlpools USDC-USDT" },
+      { name: "Orca", weight: 0.35, pool: "Orca Whirlpools SOL-USDC" },
+      { name: "Orca", weight: 0.25, pool: "Orca Whirlpools mSOL-SOL" }
+    ],
+    detail: "Solana 네트워크 안에서 Orca 스테이블·SOL·LST 풀을 나눠 담는 단일 네트워크 상품."
   }
 ];
 
@@ -493,6 +656,7 @@ function ProductsPanel({
   hasSession,
   canPersistToServer,
   onWithdraw,
+  onWithdrawProduct,
   onActionNotice,
   onOpenOperationsWithJob,
   onExecutionComplete
@@ -501,24 +665,32 @@ function ProductsPanel({
   hasSession: boolean;
   canPersistToServer: boolean;
   onWithdraw: (amountUsd: number) => void | Promise<void>;
+  onWithdrawProduct?: (amountUsd: number, productName: string) => void | Promise<void>;
   onActionNotice?: (notice: { variant: "error" | "info"; text: string }) => void;
   onOpenOperationsWithJob?: (jobId: string) => void;
   onExecutionComplete?: () => void | Promise<void>;
 }) {
   const [products, setProducts] = useState<YieldProduct[]>(DEFAULT_PRODUCTS);
   const [selectedId, setSelectedId] = useState<string>(DEFAULT_PRODUCTS[0].id);
+  const [productNetworkFilter, setProductNetworkFilter] = useState<YieldProduct["networkGroup"]>("multi");
   const [depositAmount, setDepositAmount] = useState(1000);
   const [newName, setNewName] = useState("");
   const [newApr, setNewApr] = useState("0.07");
   const [isAddFormOpen, setIsAddFormOpen] = useState(false);
   const [isExecutionOpen, setIsExecutionOpen] = useState(false);
   const [executionFlowKey, setExecutionFlowKey] = useState(0);
+  const [productWithdrawDraft, setProductWithdrawDraft] = useState<YieldProduct | null>(null);
+  const [productWithdrawAmount, setProductWithdrawAmount] = useState(0);
+  const [productWithdrawPassword, setProductWithdrawPassword] = useState("");
+  const [productWithdrawLoading, setProductWithdrawLoading] = useState(false);
+  const [productWithdrawError, setProductWithdrawError] = useState("");
   const userDepositedUsd = positions.reduce((acc, p) => acc + p.amountUsd, 0);
   const [simulationDays, setSimulationDays] = useState(30);
   const [marketApr, setMarketApr] = useState<MarketAprSnapshot | null>(null);
   const [aprError, setAprError] = useState("");
   const [showStandardL2Allocation, setShowStandardL2Allocation] = useState(false);
-  const [marketHistoryPoints, setMarketHistoryPoints] = useState<MarketAprHistoryPoint[]>([]);
+  const [marketHistoryPoints, setMarketHistoryPoints] = useState<MarketPoolAprHistoryPoint[]>([]);
+  const [marketHistorySeries, setMarketHistorySeries] = useState<MarketPoolAprHistorySeries[]>([]);
   const [historyCsvDays, setHistoryCsvDays] = useState(90);
   const historyGranularity: "day" = "day";
   const resolvePoolLabel = (name: string, pool?: string) => {
@@ -531,7 +703,38 @@ function ProductsPanel({
   };
   const tvlUsd = 241_979_511 + userDepositedUsd;
   const volume24hUsd = 298_259_130;
-  const selected = products.find((item) => item.id === selectedId) ?? products[0];
+  const visibleProducts = useMemo(
+    () => products.filter((product) => product.networkGroup === productNetworkFilter),
+    [productNetworkFilter, products]
+  );
+  const selected = products.find((item) => item.id === selectedId) ?? visibleProducts[0] ?? products[0];
+  const productWithdrawMaxUsd = useMemo(() => {
+    if (!productWithdrawDraft) return 0;
+    return positions
+      .filter((position) => position.productName === productWithdrawDraft.name)
+      .reduce((acc, position) => acc + position.amountUsd, 0);
+  }, [positions, productWithdrawDraft]);
+  const productWithdrawPreview = useMemo(() => {
+    if (!productWithdrawDraft || productWithdrawAmount <= 0) return [];
+    return productWithdrawDraft.protocolMix.map((item) => ({
+      protocol: item.name,
+      pool: resolvePoolLabel(item.name, item.pool),
+      weight: item.weight,
+      amountUsd: productWithdrawAmount * item.weight
+    }));
+  }, [productWithdrawAmount, productWithdrawDraft]);
+  const selectedPoolLabels = useMemo(
+    () => selected.protocolMix.map((item) => resolvePoolLabel(item.name, item.pool)),
+    [selected]
+  );
+  const selectedPoolWeights = useMemo(() => {
+    const weights: Record<string, number> = {};
+    selected.protocolMix.forEach((item, idx) => {
+      const key = selectedPoolLabels[idx]?.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 42);
+      if (key) weights[key] = (weights[key] ?? 0) + item.weight;
+    });
+    return weights;
+  }, [selected.protocolMix, selectedPoolLabels]);
   const estYield = depositAmount * selected.targetApr;
   const estFee = (depositAmount * selected.estFeeBps) / 10_000;
   const dailyRate = marketApr
@@ -555,6 +758,14 @@ function ProductsPanel({
     blendedWeekYieldPercentPoints != null ? (depositAmount * blendedWeekYieldPercentPoints) / 100 : null;
 
   useEffect(() => {
+    if (visibleProducts.length === 0) return;
+    if (!visibleProducts.some((product) => product.id === selectedId)) {
+      setSelectedId(visibleProducts[0].id);
+      setIsExecutionOpen(false);
+    }
+  }, [selectedId, visibleProducts]);
+
+  useEffect(() => {
     let cancelled = false;
     const loadAprAndHistory = async () => {
       try {
@@ -568,12 +779,16 @@ function ProductsPanel({
         }
       }
       try {
-        const hist = await fetchDailyApyHistoryFromCsv({ days: historyCsvDays });
+        const hist = await fetchPoolApyHistoryFromCsv({ days: historyCsvDays, pools: selectedPoolLabels });
         if (!cancelled) {
           setMarketHistoryPoints(hist.points);
+          setMarketHistorySeries(hist.series);
         }
       } catch {
-        if (!cancelled) setMarketHistoryPoints([]);
+        if (!cancelled) {
+          setMarketHistoryPoints([]);
+          setMarketHistorySeries([]);
+        }
       }
     };
     void loadAprAndHistory();
@@ -582,7 +797,7 @@ function ProductsPanel({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [historyCsvDays]);
+  }, [historyCsvDays, selectedPoolLabels]);
 
   const openProductDepositFlow = (product: YieldProduct, amountUsd = depositAmount) => {
     setSelectedId(product.id);
@@ -596,13 +811,50 @@ function ProductsPanel({
     setIsExecutionOpen(false);
   };
 
-  const withdrawProductAmount = (product: YieldProduct) => {
+  const openProductWithdrawFlow = (product: YieldProduct) => {
     setSelectedId(product.id);
     if (!Number.isFinite(depositAmount) || depositAmount <= 0) {
       onActionNotice?.({ variant: "error", text: "0보다 큰 인출 금액을 입력해 주세요." });
       return;
     }
-    void onWithdraw(depositAmount);
+    const maxUsd = positions
+      .filter((position) => position.productName === product.name)
+      .reduce((acc, position) => acc + position.amountUsd, 0);
+    if (maxUsd <= 0) {
+      onActionNotice?.({ variant: "info", text: "선택 상품으로 예치된 잔액이 없습니다." });
+      return;
+    }
+    setProductWithdrawDraft(product);
+    setProductWithdrawAmount(Math.min(depositAmount, maxUsd));
+    setProductWithdrawPassword("");
+    setProductWithdrawError("");
+  };
+
+  const confirmProductWithdraw = async () => {
+    if (!productWithdrawDraft || productWithdrawAmount <= 0) return;
+    if (canPersistToServer && !productWithdrawPassword) {
+      setProductWithdrawError("비밀번호를 입력하세요.");
+      return;
+    }
+    setProductWithdrawLoading(true);
+    setProductWithdrawError("");
+    try {
+      if (canPersistToServer) {
+        const session = getSession();
+        if (!session) throw new Error("세션이 만료되었습니다. 다시 로그인해 주세요.");
+        await login(session.username, productWithdrawPassword);
+      }
+      await (onWithdrawProduct
+        ? onWithdrawProduct(productWithdrawAmount, productWithdrawDraft.name)
+        : onWithdraw(productWithdrawAmount));
+      setProductWithdrawDraft(null);
+      setProductWithdrawPassword("");
+      onActionNotice?.({ variant: "info", text: `${productWithdrawDraft.name} $${productWithdrawAmount.toFixed(2)} 인출 처리 완료` });
+    } catch (error) {
+      setProductWithdrawError(error instanceof Error ? error.message : "상품 인출 확인 실패");
+    } finally {
+      setProductWithdrawLoading(false);
+    }
   };
 
   const onQuickDepositProduct = (product: YieldProduct, amount: number) => {
@@ -613,6 +865,28 @@ function ProductsPanel({
     setExecutionFlowKey((prev) => prev + 1);
     openProductDepositFlow(product, amount);
   };
+
+  const marketHistorySeriesWithWeights = useMemo(
+    () =>
+      marketHistorySeries.map((series) => ({
+        ...series,
+        weight: selectedPoolWeights[series.key] ?? 0
+      })),
+    [marketHistorySeries, selectedPoolWeights]
+  );
+
+  const productPreviewRows = useMemo<ExecutionPreviewRow[]>(() => {
+    if (!Number.isFinite(depositAmount) || depositAmount <= 0) return [];
+    return selected.protocolMix.map((item) => {
+      const pool = resolvePoolLabel(item.name, item.pool);
+      return {
+        protocol: item.name,
+        chain: inferProtocolChain(item.name, pool),
+        action: pool.replace(/^Aave v3\s+/i, "").replace(/^Uniswap v3\s+/i, "").replace(/^Orca Whirlpools\s+/i, ""),
+        allocationUsd: Number((depositAmount * item.weight).toFixed(2))
+      };
+    });
+  }, [depositAmount, selected]);
 
   return (
     <section className="card">
@@ -657,12 +931,9 @@ function ProductsPanel({
                     targetApr: apr,
                     estFeeBps: 75,
                     lockDays: 30,
-                    protocolMix: [
-                      { name: "Aave", weight: 0.34, pool: "Aave v3 Arbitrum USDC eMode" },
-                      { name: "Uniswap", weight: 0.33, pool: "Uniswap v3 Arbitrum USDC-USDT 0.05%" },
-                      { name: "Orca", weight: 0.33, pool: "Orca Whirlpools SOL-USDC" }
-                    ],
-                    detail: "사용자 정의 예치상품"
+                    networkGroup: productNetworkFilter,
+                    protocolMix: buildDefaultProductMix(productNetworkFilter),
+                    detail: `${PRODUCT_NETWORK_LABELS[productNetworkFilter]} 사용자 정의 예치상품`
                   }
                 ]);
                 setSelectedId(id);
@@ -676,8 +947,31 @@ function ProductsPanel({
           </div>
         </div>
       ) : null}
+      <div className="product-network-tabs" role="tablist" aria-label="Pools 네트워크 선택">
+        {PRODUCT_NETWORK_GROUPS.map((group) => {
+          const count = products.filter((product) => product.networkGroup === group.key).length;
+          return (
+            <button
+              key={group.key}
+              type="button"
+              role="tab"
+              aria-selected={productNetworkFilter === group.key}
+              className={
+                productNetworkFilter === group.key
+                  ? `product-network-tab product-network-tab--${group.key} active`
+                  : `product-network-tab product-network-tab--${group.key}`
+              }
+              title={group.description}
+              onClick={() => setProductNetworkFilter(group.key)}
+            >
+              <span>{group.label}</span>
+              <strong>{count}</strong>
+            </button>
+          );
+        })}
+      </div>
       <div className="kpi-grid product-list-grid">
-        {products.map((product) => (
+        {visibleProducts.map((product) => (
           <div
             key={product.id}
             className={selectedId === product.id ? "kpi-item product-card product-card--selected" : "kpi-item product-card"}
@@ -716,6 +1010,9 @@ function ProductsPanel({
               }}
               title="상품을 선택하면 아래 입금 패널과 예치풀 상세가 이 상품 기준으로 바뀝니다."
             >
+              <span className={`product-network-badge product-network-badge--${product.networkGroup}`}>
+                {PRODUCT_NETWORK_LABELS[product.networkGroup]}
+              </span>
               <p className="kpi-label">{product.name}</p>
               <p className="kpi-value">목표 연수익 {(product.targetApr * 100).toFixed(1)}%</p>
               <p className="product-inline-metrics">
@@ -758,7 +1055,7 @@ function ProductsPanel({
             >
               입금
             </button>
-            <button type="button" className="product-action-btn" onClick={() => withdrawProductAmount(selected)}>
+            <button type="button" className="product-action-btn" onClick={() => openProductWithdrawFlow(selected)}>
               인출
             </button>
           </div>
@@ -818,7 +1115,7 @@ function ProductsPanel({
           <MarketAprTimeSeriesChart
             points={marketHistoryPoints}
             granularity={historyGranularity}
-            protocolMix={selected.protocolMix}
+            series={marketHistorySeriesWithWeights}
           />
           <p>
             기간{" "}
@@ -878,10 +1175,110 @@ function ProductsPanel({
               initialEstYieldUsd={estYield}
               initialEstFeeUsd={estFee}
               allowJobExecution={canPersistToServer}
+              previewRowsOverride={productPreviewRows}
               onActionNotice={onActionNotice}
               onOpenOperationsWithJob={onOpenOperationsWithJob}
               onExecutionComplete={onExecutionComplete}
             />
+          </div>
+        </div>
+      ) : null}
+      {productWithdrawDraft ? (
+        <div className="modal-backdrop modal-backdrop--execution" role="dialog" aria-modal="true" aria-label="상품 인출 확인">
+          <div className="modal-card execution-modal-card product-withdraw-modal">
+            <button
+              type="button"
+              className="modal-close-icon"
+              aria-label="닫기"
+              onClick={() => {
+                setProductWithdrawDraft(null);
+                setProductWithdrawPassword("");
+                setProductWithdrawError("");
+              }}
+              disabled={productWithdrawLoading}
+            >
+              x
+            </button>
+            <div className="inline-execution-panel-head">
+              <div>
+                <p className="section-eyebrow">Pool Withdraw</p>
+                <h3>{productWithdrawDraft.name} 인출</h3>
+                <p className="product-withdraw-desc">슬라이더 금액을 선택하면 상품을 구성하는 각 풀이 비중대로 함께 감소합니다.</p>
+              </div>
+            </div>
+            <div className="protocol-withdraw-slider-row product-withdraw-slider-row">
+              <span className="protocol-withdraw-slider-label">$0</span>
+              <input
+                type="range"
+                min={0}
+                max={productWithdrawMaxUsd}
+                step={Math.max(1, Math.round(productWithdrawMaxUsd / 100))}
+                value={productWithdrawAmount}
+                onChange={(event) => setProductWithdrawAmount(Number(event.target.value))}
+                className="protocol-withdraw-slider"
+                aria-label="상품 인출 금액"
+                disabled={productWithdrawLoading}
+              />
+              <span className="protocol-withdraw-slider-label">${productWithdrawMaxUsd.toFixed(0)}</span>
+              <strong className="protocol-withdraw-amount-badge">
+                ${productWithdrawAmount.toFixed(2)}
+                {productWithdrawMaxUsd > 0 ? <em>({((productWithdrawAmount / productWithdrawMaxUsd) * 100).toFixed(0)}%)</em> : null}
+              </strong>
+            </div>
+            <div className="product-withdraw-preview">
+              <div className="product-withdraw-preview-row product-withdraw-preview-row--head">
+                <span>프로토콜</span>
+                <span>풀</span>
+                <span>비중</span>
+                <span>감소액</span>
+              </div>
+              {productWithdrawPreview.map((item, idx) => (
+                <div key={`${item.pool}-${idx}`} className="product-withdraw-preview-row">
+                  <span>{item.protocol}</span>
+                  <span>{item.pool}</span>
+                  <span>{(item.weight * 100).toFixed(0)}%</span>
+                  <strong>${item.amountUsd.toFixed(2)}</strong>
+                </div>
+              ))}
+            </div>
+            {canPersistToServer ? (
+              <label className="exec-verify-label">
+                비밀번호 확인
+                <input
+                  type="password"
+                  className="exec-verify-input"
+                  value={productWithdrawPassword}
+                  onChange={(event) => setProductWithdrawPassword(event.target.value)}
+                  disabled={productWithdrawLoading}
+                  autoFocus
+                  autoComplete="current-password"
+                  onKeyDown={(event) => event.key === "Enter" && void confirmProductWithdraw()}
+                />
+              </label>
+            ) : null}
+            {productWithdrawError ? <p className="exec-verify-error">{productWithdrawError}</p> : null}
+            <div className="exec-verify-actions">
+              <button
+                type="button"
+                className="auth-primary-btn protocol-withdraw-confirm-btn"
+                onClick={() => void confirmProductWithdraw()}
+                disabled={productWithdrawLoading || productWithdrawAmount <= 0 || (canPersistToServer && !productWithdrawPassword)}
+              >
+                {productWithdrawLoading ? "처리 중…" : `$${productWithdrawAmount.toFixed(2)} 인출 확인`}
+              </button>
+              <button
+                type="button"
+                className="ghost-btn"
+                onClick={() => {
+                  setProductWithdrawDraft(null);
+                  setProductWithdrawPassword("");
+                  setProductWithdrawError("");
+                }}
+                disabled={productWithdrawLoading}
+              >
+                취소
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
@@ -936,11 +1333,13 @@ function PortfolioPanel({
   positions,
   onExecutionComplete,
   onWithdraw,
+  onWithdrawTarget,
   canPersistToServer
 }: {
   positions: DepositPosition[];
   onExecutionComplete?: () => void | Promise<void>;
   onWithdraw?: (amountUsd: number) => Promise<void>;
+  onWithdrawTarget?: (amountUsd: number, target: Pick<ProtocolDetailRow, "name" | "chain" | "pool">) => Promise<void>;
   canPersistToServer?: boolean;
 }) {
   const [protocolAmounts, setProtocolAmounts] = useState<Record<string, number>>({});
@@ -988,7 +1387,13 @@ function PortfolioPanel({
     setWithdrawVerifyError("");
     try {
       await login(session.username, withdrawVerifyPwd);
-      await onWithdraw?.(withdrawAmount);
+      await (onWithdrawTarget
+        ? onWithdrawTarget(withdrawAmount, {
+            name: withdrawDraft.row.name,
+            chain: withdrawDraft.row.chain,
+            pool: withdrawDraft.row.pool
+          })
+        : onWithdraw?.(withdrawAmount));
       const doneMsg = `$${withdrawAmount.toFixed(2)} 인출 처리 완료`;
       setWithdrawDraft(null);
       setWithdrawVerifyPwd("");
@@ -1004,12 +1409,14 @@ function PortfolioPanel({
   const protocolTotals = positions.reduce<Record<string, ProtocolDetailRow>>((acc, item) => {
     item.protocolMix.forEach((mix) => {
       const chain = inferProtocolChain(mix.name, mix.pool);
-      const key = `${mix.name}__${chain}`;
+      const pool = mix.pool ?? `${chain} · ${mix.name}`;
+      const key = `${mix.name}__${chain}__${pool}`;
       const prev = acc[key];
       acc[key] = {
         key,
         name: mix.name,
         chain,
+        pool,
         amount: (prev?.amount ?? 0) + item.amountUsd * mix.weight
       };
     });
@@ -1020,7 +1427,9 @@ function PortfolioPanel({
     if (byProtocolRank !== 0) return byProtocolRank;
     const byName = a.name.localeCompare(b.name, "ko-KR", { sensitivity: "base" });
     if (byName !== 0) return byName;
-    return a.chain.localeCompare(b.chain, "ko-KR", { sensitivity: "base" });
+    const byChain = a.chain.localeCompare(b.chain, "ko-KR", { sensitivity: "base" });
+    if (byChain !== 0) return byChain;
+    return a.pool.localeCompare(b.pool, "ko-KR", { sensitivity: "base" });
   });
   const annualYield = estimateAnnualYieldUsd(positions);
 
@@ -1054,6 +1463,7 @@ function PortfolioPanel({
           <tr>
             <th>프로토콜</th>
             <th>체인</th>
+            <th>풀</th>
             <th>예치 금액 (USD)</th>
             <th>비중</th>
             <th>입출금</th>
@@ -1064,6 +1474,7 @@ function PortfolioPanel({
             <tr key={row.key}>
               <td>{row.name}</td>
               <td>{row.chain}</td>
+              <td className="product-pool-pool-label">{row.pool}</td>
               <td>${row.amount.toFixed(2)}</td>
               <td>
                 <span className="protocol-weight-cell">{totalDeposited > 0 ? ((row.amount / totalDeposited) * 100).toFixed(1) : "0.0"}%</span>
@@ -1123,11 +1534,12 @@ function PortfolioPanel({
           ))}
           {protocolRows.length === 0 ? (
             <tr>
-              <td colSpan={5}>아직 예치 내역이 없습니다.</td>
+              <td colSpan={6}>아직 예치 내역이 없습니다.</td>
             </tr>
           ) : (
             <tr className="protocol-total-row">
               <td>합계</td>
+              <td>—</td>
               <td>—</td>
               <td>${totalDeposited.toFixed(2)}</td>
               <td>
@@ -1145,7 +1557,7 @@ function PortfolioPanel({
             💸 {withdrawDraft.row.name} · {withdrawDraft.row.chain} 인출
           </p>
           <p className="protocol-withdraw-confirm-desc">
-            현재 잔액 <strong>${withdrawDraft.maxUsd.toFixed(2)}</strong> — 슬라이더로 인출 금액을 조절하세요.
+            {withdrawDraft.row.pool} 현재 잔액 <strong>${withdrawDraft.maxUsd.toFixed(2)}</strong> — 슬라이더로 인출 금액을 조절하세요.
           </p>
           <div className="protocol-withdraw-slider-row">
             <span className="protocol-withdraw-slider-label">$0</span>
@@ -1236,7 +1648,7 @@ function PortfolioPanel({
                 {
                   protocol: protocolDepositDraft.name,
                   chain: protocolDepositDraft.chain,
-                  action: `${protocolDepositDraft.name} direct deposit`,
+                  action: protocolDepositDraft.pool.replace(`${protocolDepositDraft.chain} · `, ""),
                   allocationUsd: protocolDepositDraft.amount
                 }
               ]}
@@ -1403,12 +1815,14 @@ function PositionsPage({
   onGo,
   onExecutionComplete,
   onWithdraw,
+  onWithdrawTarget,
   canPersistToServer
 }: {
   positions: DepositPosition[];
   onGo: (menu: MenuKey) => void;
   onExecutionComplete?: () => void | Promise<void>;
   onWithdraw?: (amountUsd: number) => Promise<void>;
+  onWithdrawTarget?: (amountUsd: number, target: Pick<ProtocolDetailRow, "name" | "chain" | "pool">) => Promise<void>;
   canPersistToServer?: boolean;
 }) {
   return (
@@ -1430,6 +1844,7 @@ function PositionsPage({
         positions={positions}
         onExecutionComplete={onExecutionComplete}
         onWithdraw={onWithdraw}
+        onWithdrawTarget={onWithdrawTarget}
         canPersistToServer={canPersistToServer}
       />
     </div>
@@ -1557,6 +1972,86 @@ export default function App() {
     }
   };
 
+  const handleWithdrawProtocolExposure = async (
+    amountUsd: number,
+    target: Pick<ProtocolDetailRow, "name" | "chain" | "pool">
+  ) => {
+    if (amountUsd <= 0) return;
+    setPortfolioNotice(null);
+    try {
+      if (canPersistPortfolio) {
+        const { withdrawnUsd } = await withdrawProtocolExposureRemote({
+          amountUsd,
+          protocol: target.name,
+          chain: target.chain,
+          pool: target.pool
+        });
+        await refreshPositions();
+        await refreshWithdrawLedgerFromServer();
+        if (withdrawnUsd <= 0 && amountUsd > 0) {
+          setPortfolioNotice({ variant: "info", text: "해당 풀에서 인출할 예치 잔액이 없습니다." });
+        } else if (withdrawnUsd < amountUsd) {
+          setPortfolioNotice({
+            variant: "info",
+            text: `요청 ${amountUsd.toLocaleString("ko-KR")} USD 중 해당 풀에서 실제 반영 ${withdrawnUsd.toFixed(2)} USD입니다.`
+          });
+        }
+      } else {
+        setPositions((prev) => applyTargetedWithdraw(prev, amountUsd, target));
+        setWithdrawLedger((prev) => {
+          const next = [{ id: `wd_${Date.now()}`, amountUsd, createdAt: new Date().toISOString() }, ...prev];
+          try {
+            localStorage.setItem(GUEST_WITHDRAW_LEDGER_KEY, JSON.stringify(next));
+          } catch {
+            /* 저장 실패 무시 */
+          }
+          return next;
+        });
+      }
+    } catch (err) {
+      setPortfolioNotice({
+        variant: "error",
+        text: err instanceof Error ? err.message : "풀별 인출에 실패했습니다."
+      });
+    }
+  };
+
+  const handleWithdrawProductDeposit = async (amountUsd: number, productName: string) => {
+    if (amountUsd <= 0) return;
+    setPortfolioNotice(null);
+    try {
+      if (canPersistPortfolio) {
+        const { withdrawnUsd } = await withdrawProductDepositRemote({ amountUsd, productName });
+        await refreshPositions();
+        await refreshWithdrawLedgerFromServer();
+        if (withdrawnUsd <= 0 && amountUsd > 0) {
+          setPortfolioNotice({ variant: "info", text: "선택 상품으로 인출할 예치 잔액이 없습니다." });
+        } else if (withdrawnUsd < amountUsd) {
+          setPortfolioNotice({
+            variant: "info",
+            text: `요청 ${amountUsd.toLocaleString("ko-KR")} USD 중 ${productName}에서 실제 반영 ${withdrawnUsd.toFixed(2)} USD입니다.`
+          });
+        }
+      } else {
+        setPositions((prev) => applyProductWithdraw(prev, amountUsd, productName));
+        setWithdrawLedger((prev) => {
+          const next = [{ id: `wd_${Date.now()}`, amountUsd, createdAt: new Date().toISOString() }, ...prev];
+          try {
+            localStorage.setItem(GUEST_WITHDRAW_LEDGER_KEY, JSON.stringify(next));
+          } catch {
+            /* 저장 실패 무시 */
+          }
+          return next;
+        });
+      }
+    } catch (err) {
+      setPortfolioNotice({
+        variant: "error",
+        text: err instanceof Error ? err.message : "상품별 인출에 실패했습니다."
+      });
+    }
+  };
+
   const handleCancelJob = async (jobId: string) => {
     setPortfolioNotice(null);
     const before = recentJobs;
@@ -1674,6 +2169,7 @@ export default function App() {
               hasSession={Boolean(session)}
               canPersistToServer={canPersistPortfolio}
               onWithdraw={handleWithdrawPosition}
+              onWithdrawProduct={handleWithdrawProductDeposit}
               onActionNotice={setPortfolioNotice}
               onOpenOperationsWithJob={(jobId) => {
                 setFocusJobId(jobId);
@@ -1696,6 +2192,7 @@ export default function App() {
             positions={positions}
             onGo={onSelectMenu}
             onWithdraw={handleWithdrawPosition}
+            onWithdrawTarget={handleWithdrawProtocolExposure}
             canPersistToServer={canPersistPortfolio}
             onExecutionComplete={async () => {
               await refreshPositions();

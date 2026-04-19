@@ -1,6 +1,5 @@
 import { useMemo } from "react";
-import { blendedAprDecimalFromMix } from "../lib/marketAprBlend";
-import type { MarketAprHistoryPoint } from "../lib/api";
+import type { MarketPoolAprHistoryPoint, MarketPoolAprHistorySeries } from "../lib/api";
 
 const VB_W = 520;
 const VB_H = 188;
@@ -9,15 +8,17 @@ const PAD_R = 18;
 const PAD_T = 24;
 const PAD_B = 46;
 
-const COL_AAVE = "#6b8cff";
-const COL_UNI = "#c084fc";
-const COL_ORCA = "#47d9a8";
+const SERIES_COLORS = ["#6b8cff", "#c084fc", "#47d9a8", "#ffb86b", "#3bd4ff", "#f97316"];
 const COL_BLEND = "#ff5c5c";
 
+type WeightedPoolSeries = MarketPoolAprHistorySeries & {
+  weight: number;
+};
+
 type MarketAprTimeSeriesChartProps = {
-  points: MarketAprHistoryPoint[];
-  granularity: "hour" | "day";
-  protocolMix: Array<{ name: string; weight: number }>;
+  points: MarketPoolAprHistoryPoint[];
+  granularity: "day";
+  series: WeightedPoolSeries[];
 };
 
 function toAprPercent(dec: number): number {
@@ -30,25 +31,43 @@ function buildPath(
   yAt: (v: number) => number
 ): string {
   if (pts.length === 0) return "";
-  const d = pts.map((p, i) => `${i === 0 ? "M" : "L"} ${xAt(p.t).toFixed(1)} ${yAt(p.yv).toFixed(1)}`);
-  return d.join(" ");
+  return pts.map((p, i) => `${i === 0 ? "M" : "L"} ${xAt(p.t).toFixed(1)} ${yAt(p.yv).toFixed(1)}`).join(" ");
 }
 
-export function MarketAprTimeSeriesChart({ points, granularity, protocolMix }: MarketAprTimeSeriesChartProps) {
+function compactLabel(label: string): string {
+  return label
+    .replace(/^Aave V3\s*/i, "Aave ")
+    .replace(/^Uniswap V3\s*/i, "Uni ")
+    .replace(/^Orca\s*/i, "Orca ")
+    .replace(/\s*\(0\.05%\)/i, "")
+    .replace(/\s*supply/i, "")
+    .trim();
+}
+
+export function MarketAprTimeSeriesChart({ points, granularity, series }: MarketAprTimeSeriesChartProps) {
   const layout = useMemo(() => {
     const innerW = VB_W - PAD_L - PAD_R;
     const innerH = VB_H - PAD_T - PAD_B;
-    if (points.length === 0) {
+    const activeSeries = series.filter((item) => item.weight > 0);
+    if (points.length === 0 || activeSeries.length === 0) {
       return { innerW, innerH, empty: true as const };
     }
 
-    const parsed = points.map((p) => ({
-      t: new Date(p.t).getTime(),
-      aave: toAprPercent(p.aave),
-      uni: toAprPercent(p.uniswap),
-      orca: toAprPercent(p.orca),
-      blend: toAprPercent(blendedAprDecimalFromMix(p, protocolMix))
-    }));
+    const parsed = points.map((p) => {
+      const values = activeSeries.map((item) => ({
+        key: item.key,
+        yv: toAprPercent(p.pools[item.key] ?? 0)
+      }));
+      const blend = values.reduce((acc, value) => {
+        const item = activeSeries.find((seriesItem) => seriesItem.key === value.key);
+        return acc + (value.yv * (item?.weight ?? 0));
+      }, 0);
+      return {
+        t: new Date(p.t).getTime(),
+        values,
+        blend
+      };
+    });
 
     let t0 = parsed[0].t;
     let t1 = parsed[parsed.length - 1].t;
@@ -59,7 +78,7 @@ export function MarketAprTimeSeriesChart({ points, granularity, protocolMix }: M
     }
     const tSpan = Math.max(t1 - t0, 60_000);
 
-    const allY = parsed.flatMap((p) => [p.aave, p.uni, p.orca, p.blend]);
+    const allY = parsed.flatMap((p) => [...p.values.map((value) => value.yv), p.blend]);
     let yMin = Math.min(...allY);
     let yMax = Math.max(...allY);
     if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) {
@@ -83,41 +102,27 @@ export function MarketAprTimeSeriesChart({ points, granularity, protocolMix }: M
       return `M ${PAD_L} ${y.toFixed(1)} L ${(PAD_L + innerW).toFixed(1)} ${y.toFixed(1)}`;
     };
 
-    const pathA =
+    const poolPaths = activeSeries.map((item, idx) => {
+      const valuePoints = parsed.map((p) => ({
+        t: p.t,
+        yv: p.values.find((value) => value.key === item.key)?.yv ?? 0
+      }));
+      return {
+        key: item.key,
+        label: compactLabel(item.matchedLabel ?? item.label),
+        weight: item.weight,
+        color: SERIES_COLORS[idx % SERIES_COLORS.length],
+        path: parsed.length >= 2 ? buildPath(valuePoints, xAt, yAt) : lineAcross(valuePoints[0].yv),
+        latest: valuePoints[valuePoints.length - 1].yv
+      };
+    });
+
+    const blendPoints = parsed.map((p) => ({ t: p.t, yv: p.blend }));
+    const pathB = parsed.length >= 2 ? buildPath(blendPoints, xAt, yAt) : lineAcross(blendPoints[0].yv);
+    const blendArea =
       parsed.length >= 2
-        ? buildPath(
-            parsed.map((p) => ({ t: p.t, yv: p.aave })),
-            xAt,
-            yAt
-          )
-        : lineAcross(parsed[0].aave);
-    const pathU =
-      parsed.length >= 2
-        ? buildPath(
-            parsed.map((p) => ({ t: p.t, yv: p.uni })),
-            xAt,
-            yAt
-          )
-        : lineAcross(parsed[0].uni);
-    const pathO =
-      parsed.length >= 2
-        ? buildPath(
-            parsed.map((p) => ({ t: p.t, yv: p.orca })),
-            xAt,
-            yAt
-          )
-        : lineAcross(parsed[0].orca);
-    const pathB =
-      parsed.length >= 2
-        ? buildPath(
-            parsed.map((p) => ({ t: p.t, yv: p.blend })),
-            xAt,
-            yAt
-          )
-        : lineAcross(parsed[0].blend);
-    const blendArea = parsed.length >= 2
-      ? `${pathB} L ${xAt(parsed[parsed.length - 1].t).toFixed(1)} ${(PAD_T + innerH).toFixed(1)} L ${xAt(parsed[0].t).toFixed(1)} ${(PAD_T + innerH).toFixed(1)} Z`
-      : "";
+        ? `${pathB} L ${xAt(parsed[parsed.length - 1].t).toFixed(1)} ${(PAD_T + innerH).toFixed(1)} L ${xAt(parsed[0].t).toFixed(1)} ${(PAD_T + innerH).toFixed(1)} Z`
+        : "";
     const latest = parsed[parsed.length - 1];
     const first = parsed[0];
     const delta = latest.blend - first.blend;
@@ -130,15 +135,10 @@ export function MarketAprTimeSeriesChart({ points, granularity, protocolMix }: M
     const xTickCount = Math.min(5, Math.max(parsed.length, 1));
     const xTicks: Array<{ x: number; label: string }> = [];
     for (let i = 0; i < xTickCount; i += 1) {
-      const idx =
-        parsed.length <= 1 ? 0 : Math.round((i * (parsed.length - 1)) / Math.max(xTickCount - 1, 1));
+      const idx = parsed.length <= 1 ? 0 : Math.round((i * (parsed.length - 1)) / Math.max(xTickCount - 1, 1));
       const p = parsed[idx];
       const d = new Date(p.t);
-      const label =
-        granularity === "day"
-          ? d.toLocaleString("ko-KR", { month: "numeric", day: "numeric" })
-          : d.toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
-      xTicks.push({ x: xAt(p.t), label });
+      xTicks.push({ x: xAt(p.t), label: d.toLocaleString("ko-KR", { month: "numeric", day: "numeric" }) });
     }
 
     return {
@@ -146,57 +146,49 @@ export function MarketAprTimeSeriesChart({ points, granularity, protocolMix }: M
       innerH,
       empty: false as const,
       yAt,
-      pathA,
-      pathU,
-      pathO,
+      poolPaths,
       pathB,
       blendArea,
       yTicks,
       xTicks,
-      yMin,
-      yMax,
-      t0,
-      t1,
       latest,
       delta,
       singlePoint: parsed.length === 1 ? { cx: xAt(parsed[0].t), pts: parsed[0] } : null
     };
-  }, [points, protocolMix, granularity]);
-
-  const granLabel = granularity === "day" ? "일" : "시간";
+  }, [points, series]);
 
   if ("empty" in layout && layout.empty) {
     return (
-      <div className="market-apr-ts-chart market-apr-ts-chart--empty" role="img" aria-label="이율 시계열">
-        <p>아직 저장된 시계열이 없습니다. API가 주기적으로 조회될수록 그래프가 채워집니다(5분 간격 저장).</p>
+      <div className="market-apr-ts-chart market-apr-ts-chart--empty" role="img" aria-label="풀별 APY 시계열">
+        <p>선택 상품의 풀별 APY 이력을 불러오는 중입니다. API 서버가 실행 중인지 확인해 주세요.</p>
       </div>
     );
   }
 
-  if (!("pathA" in layout)) {
+  if (!("pathB" in layout)) {
     return null;
   }
 
   const L = layout;
 
   return (
-    <div className="market-apr-ts-chart" role="img" aria-label={`연 이율(%) ${granLabel} 변화`}>
+    <div className="market-apr-ts-chart" role="img" aria-label={`선택 상품 풀별 연 이율 ${granularity} 변화`}>
       <div className="market-apr-ts-chart-head">
         <div>
-          <span className="market-apr-ts-chart-title">
-            {granularity === "day" ? "Market APY Trend" : `이율 변화 (${granLabel} 단위)`}
-          </span>
-          <p className="market-apr-ts-chart-sub">선택 상품의 프로토콜 APY와 배분 가중합을 한 그래프에서 비교합니다.</p>
+          <span className="market-apr-ts-chart-title">Pool APY Trend</span>
+          <p className="market-apr-ts-chart-sub">선택 상품을 구성하는 실제 풀 APY와 배분 가중 합성 APY입니다.</p>
         </div>
         <div className="market-apr-ts-stat-strip">
-          <span>가중합 <strong>{L.latest.blend.toFixed(2)}%</strong></span>
+          <span>합성 APY <strong>{L.latest.blend.toFixed(2)}%</strong></span>
           <span className={L.delta >= 0 ? "up" : "down"}>{L.delta >= 0 ? "+" : ""}{L.delta.toFixed(2)}p</span>
         </div>
         <span className="market-apr-ts-legend">
-          <span style={{ color: COL_AAVE }}>Aave</span>
-          <span style={{ color: COL_UNI }}>Uniswap</span>
-          <span style={{ color: COL_ORCA }}>Orca</span>
-          <span style={{ color: COL_BLEND }}>가중합</span>
+          {L.poolPaths.map((item) => (
+            <span key={item.key} style={{ color: item.color }} title={`${item.label} · ${(item.weight * 100).toFixed(0)}%`}>
+              {item.label}
+            </span>
+          ))}
+          <span style={{ color: COL_BLEND }}>합성 APY</span>
         </span>
       </div>
       <svg className="market-apr-ts-chart-svg" viewBox={`0 0 ${VB_W} ${VB_H}`} preserveAspectRatio="xMidYMid meet">
@@ -213,38 +205,35 @@ export function MarketAprTimeSeriesChart({ points, granularity, protocolMix }: M
             </feMerge>
           </filter>
         </defs>
-        <line
-          x1={PAD_L}
-          x2={PAD_L + L.innerW}
-          y1={PAD_T + L.innerH}
-          y2={PAD_T + L.innerH}
-          className="market-apr-ts-axis"
-        />
+        <line x1={PAD_L} x2={PAD_L + L.innerW} y1={PAD_T + L.innerH} y2={PAD_T + L.innerH} className="market-apr-ts-axis" />
         <line x1={PAD_L} x2={PAD_L} y1={PAD_T} y2={PAD_T + L.innerH} className="market-apr-ts-axis" />
         {L.yTicks.map((tk) => (
           <g key={tk.label}>
-            <line
-              x1={PAD_L}
-              x2={PAD_L + L.innerW}
-              y1={tk.y}
-              y2={tk.y}
-              className="market-apr-ts-grid"
-            />
+            <line x1={PAD_L} x2={PAD_L + L.innerW} y1={tk.y} y2={tk.y} className="market-apr-ts-grid" />
             <text x={PAD_L - 6} y={tk.y + 3} textAnchor="end" className="market-apr-ts-tick">
               {tk.label}
             </text>
           </g>
         ))}
         {L.blendArea ? <path d={L.blendArea} fill="url(#marketAprBlendFill)" className="market-apr-ts-area" /> : null}
-        <path d={L.pathA} fill="none" stroke={COL_AAVE} strokeWidth={1.6} className="market-apr-ts-line market-apr-ts-line--muted" />
-        <path d={L.pathU} fill="none" stroke={COL_UNI} strokeWidth={1.6} className="market-apr-ts-line market-apr-ts-line--muted" />
-        <path d={L.pathO} fill="none" stroke={COL_ORCA} strokeWidth={1.6} className="market-apr-ts-line market-apr-ts-line--muted" />
+        {L.poolPaths.map((item) => (
+          <path
+            key={item.key}
+            d={item.path}
+            fill="none"
+            stroke={item.color}
+            strokeWidth={1.6}
+            className="market-apr-ts-line market-apr-ts-line--muted"
+          />
+        ))}
         <path d={L.pathB} fill="none" stroke={COL_BLEND} strokeWidth={2.7} className="market-apr-ts-line market-apr-ts-line--blend" filter="url(#marketAprGlow)" />
         {L.singlePoint ? (
           <g>
-            <circle cx={L.singlePoint.cx} cy={L.yAt(L.singlePoint.pts.aave)} r={2.5} fill={COL_AAVE} />
-            <circle cx={L.singlePoint.cx} cy={L.yAt(L.singlePoint.pts.uni)} r={2.5} fill={COL_UNI} />
-            <circle cx={L.singlePoint.cx} cy={L.yAt(L.singlePoint.pts.orca)} r={2.5} fill={COL_ORCA} />
+            {L.poolPaths.map((item) => {
+              const singlePoint = L.singlePoint!;
+              const point = singlePoint.pts.values.find((value) => value.key === item.key);
+              return point ? <circle key={item.key} cx={singlePoint.cx} cy={L.yAt(point.yv)} r={2.5} fill={item.color} /> : null;
+            })}
             <circle cx={L.singlePoint.cx} cy={L.yAt(L.singlePoint.pts.blend)} r={3} fill={COL_BLEND} />
           </g>
         ) : null}
@@ -254,9 +243,7 @@ export function MarketAprTimeSeriesChart({ points, granularity, protocolMix }: M
           </text>
         ))}
       </svg>
-      {points.length < 2 ? (
-        <p className="market-apr-ts-chart-note">포인트가 늘어나면 추세선이 더 의미 있게 보입니다.</p>
-      ) : null}
+      {points.length < 2 ? <p className="market-apr-ts-chart-note">포인트가 늘어나면 추세선이 더 의미 있게 보입니다.</p> : null}
     </div>
   );
 }

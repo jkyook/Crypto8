@@ -256,32 +256,16 @@ export function OrchestratorBoard({
     feeEstimate?.rows.find((fee) => fee.protocol === route.protocol && fee.chain === route.chain && fee.action === route.action);
   /**
    * quoteRows → protocolMix 변환 헬퍼.
-   * protocol+chain 쌍으로 묶어 pool 레이블을 "Arbitrum · USDC Supply" 형식으로 유지.
-   * → inferProtocolChain이 체인명을 정확히 추출할 수 있도록 한다.
+   * 풀별 인출이 정확히 동작하도록 protocol+chain으로 합치지 않고 실행 행 단위 풀을 유지한다.
    */
   function buildProtocolMixFromQuoteRows(rows: typeof quoteRows): { name: string; weight: number; pool?: string }[] {
     const totalUsd = rows.reduce((acc, r) => acc + r.allocationUsd, 0);
     if (totalUsd <= 0 || rows.length === 0) return [];
-    // protocol + chain 쌍으로 묶기 (체인 정보 유지)
-    const byKey = new Map<string, { amountUsd: number; chain: string; actions: string[] }>();
-    for (const r of rows) {
-      const mapKey = `${r.protocol}||${r.chain}`;
-      const prev = byKey.get(mapKey) ?? { amountUsd: 0, chain: r.chain, actions: [] };
-      byKey.set(mapKey, {
-        amountUsd: prev.amountUsd + r.allocationUsd,
-        chain: r.chain,
-        actions: [...prev.actions, r.action]
-      });
-    }
-    return Array.from(byKey.entries()).map(([mapKey, item]) => {
-      const name = mapKey.split("||")[0] ?? mapKey;
-      // "Arbitrum · USDC Supply" 형식으로 저장 → inferProtocolChain이 체인명 파싱 가능
-      return {
-        name,
-        weight: item.amountUsd / totalUsd,
-        pool: `${item.chain} · ${item.actions[0] ?? name}`
-      };
-    });
+    return rows.map((row) => ({
+      name: row.protocol,
+      weight: row.allocationUsd / totalUsd,
+      pool: `${row.chain} · ${row.action}`
+    }));
   }
 
   const onCreateJob = async () => {
