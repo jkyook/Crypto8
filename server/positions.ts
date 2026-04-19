@@ -67,8 +67,18 @@ function parseRow(row: {
 }): DepositPositionRow {
   let protocolMix: ProtocolMixEntry[] = [];
   try {
-    protocolMix = JSON.parse(row.protocolMix) as ProtocolMixEntry[];
-  } catch {
+    const parsed = JSON.parse(row.protocolMix);
+    protocolMix = Array.isArray(parsed) ? (parsed as ProtocolMixEntry[]) : [];
+  } catch (err) {
+    // 데이터 손상 가시화: 조용히 빈 배열로 폴백하면 UI 원인 추적이 어렵다.
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        msg: "deposit_position_protocolmix_parse_failed",
+        positionId: row.id,
+        error: String(err)
+      })
+    );
     protocolMix = [];
   }
   return {

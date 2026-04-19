@@ -82,18 +82,25 @@ export async function listMarketRatesHistory(opts: {
   return { granularity, points };
 }
 
-/* ---- apy_history.csv (일별 역사 APY) — MG_HanTo 수집본 또는 번들 CSV ---- */
+/* ---- apy_history.csv (일별 역사 APY) — 외부 수집본 또는 번들 CSV ---- */
 
-/** 로컬에서 MG_HanTo 수집 CSV가 있으면 우선 사용(Render 등에는 없으므로 번들로 폴백). */
-const MG_HAN_APY_HISTORY_CSV = "/Users/yugjingwan/PycharmProjects/MG_HanTo/data/defi_yield/apy_history.csv";
-
+/**
+ * CSV 경로 우선순위:
+ *  1) `APY_HISTORY_CSV_PATH` 환경변수
+ *  2) (선택) `APY_HISTORY_CSV_FALLBACK_PATH` 환경변수 — 개발자 로컬 수집본 등
+ *  3) 번들된 `server/data/apy_history.csv`
+ *
+ * 이전에는 특정 개발자의 절대경로(`/Users/yugjingwan/...`)가 하드코딩되어 있어
+ *  코드 베이스 공유 시 의도치 않은 환경 의존성이 새겼습니다. 환경변수로만 받도록 정리.
+ */
 function defaultApyCsvPath(): string {
-  const fromEnv = process.env.APY_HISTORY_CSV_PATH;
-  if (typeof fromEnv === "string" && fromEnv.trim().length > 0) {
-    return fromEnv.trim();
+  const fromEnv = process.env.APY_HISTORY_CSV_PATH?.trim();
+  if (fromEnv && fromEnv.length > 0) {
+    return fromEnv;
   }
-  if (existsSync(MG_HAN_APY_HISTORY_CSV)) {
-    return MG_HAN_APY_HISTORY_CSV;
+  const fallbackEnv = process.env.APY_HISTORY_CSV_FALLBACK_PATH?.trim();
+  if (fallbackEnv && fallbackEnv.length > 0 && existsSync(fallbackEnv)) {
+    return fallbackEnv;
   }
   return join(__marketHistoryDir, "data", "apy_history.csv");
 }

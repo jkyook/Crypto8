@@ -48,12 +48,36 @@ app.get("/", (_req, res) => {
   });
 });
 
+/**
+ * CORS 화이트리스트.
+ * `CORS_ALLOWED_ORIGINS` 콤마구분(예: `http://localhost:5173,https://crypto8.example.com`).
+ * 미설정이면 개발 편의를 위해 localhost/127.0.0.1 (모든 포트) 허용. 프로덕션에서는 명시 권장.
+ */
+const CORS_ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter((s) => s.length > 0);
+
+const isLocalhostOrigin = (origin: string): boolean => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+
 app.use(
   cors({
+    origin: (origin, callback) => {
+      // same-origin / curl / 서버사이드 호출은 origin이 비어 있음 → 허용
+      if (!origin) return callback(null, true);
+      if (CORS_ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+      if (CORS_ALLOWED_ORIGINS.length === 0 && isLocalhostOrigin(origin)) {
+        // 운영자가 명시 안 한 환경에서는 로컬 호스트만 허용(브라우저 외 호출은 위에서 통과)
+        return callback(null, true);
+      }
+      return callback(new Error(`origin not allowed: ${origin}`));
+    },
+    credentials: true,
     exposedHeaders: ["X-Request-Id"]
   })
 );
-app.use(express.json());
+// JSON 본문 크기 제한: 기본 100kb는 LP 데이터 등에는 충분. 한도 명시로 메모리 폭주 방지.
+app.use(express.json({ limit: "256kb" }));
 
 app.use((req, res, next) => {
   const incoming = req.headers["x-request-id"];
@@ -78,23 +102,33 @@ app.use((req, res, next) => {
   next();
 });
 
+/** Rate limiter 상수 모음. 운영 중 튜닝 시 한 곳만 보면 됨. */
+const RATE_LIMITS = {
+  authWindowMs: 60 * 1000,
+  authMax: 30,
+  executeWindowMs: 60 * 1000,
+  executeMax: 20,
+  registerWindowMs: 15 * 60 * 1000,
+  registerMax: 12
+} as const;
+
 const authLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 30,
+  windowMs: RATE_LIMITS.authWindowMs,
+  max: RATE_LIMITS.authMax,
   standardHeaders: true,
   legacyHeaders: false
 });
 
 const executeLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 20,
+  windowMs: RATE_LIMITS.executeWindowMs,
+  max: RATE_LIMITS.executeMax,
   standardHeaders: true,
   legacyHeaders: false
 });
 
 const registerLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 12,
+  windowMs: RATE_LIMITS.registerWindowMs,
+  max: RATE_LIMITS.registerMax,
   standardHeaders: true,
   legacyHeaders: false
 });
@@ -177,8 +211,8 @@ adminRouter.get("/self-registrations", requireAuth(["orchestrator"]), async (_re
 app.use("/api/admin", adminRouter);
 
 app.post("/api/auth/register", registerLimiter, async (req, res) => {
-  const body = req.body as { username?: string; password?: string };
-  if (!body.username || !body.password) {
+  const body = req.body as { username?: unknown; password?: unknown };
+  if (typeof body.username !== "string" || typeof body.password !== "string") {
     res.status(400).json({ ok: false, message: "username/password required" });
     return;
   }
@@ -204,12 +238,17 @@ app.post("/api/auth/register", registerLimiter, async (req, res) => {
 });
 
 app.post("/api/auth/login", authLimiter, async (req, res) => {
-  const body = req.body as { username?: string; password?: string };
-  if (!body.username || !body.password) {
+  const body = req.body as { username?: unknown; password?: unknown };
+  if (typeof body.username !== "string" || typeof body.password !== "string") {
     res.status(400).json({ ok: false, message: "username/password required" });
     return;
   }
-  const auth = await authenticate(body.username, body.password);
+  const username = body.username.trim();
+  if (username.length === 0 || username.length > 64 || body.password.length === 0 || body.password.length > 200) {
+    res.status(400).json({ ok: false, message: "username/password length invalid" });
+    return;
+  }
+  const auth = await authenticate(username, body.password);
   if (!auth.ok || !auth.accessToken || !auth.refreshToken || !auth.role) {
     res.status(401).json({ ok: false, message: "invalid credentials" });
     return;
@@ -218,8 +257,8 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
 });
 
 app.post("/api/auth/refresh", async (req, res) => {
-  const body = req.body as { refreshToken?: string };
-  if (!body.refreshToken) {
+  const body = req.body as { refreshToken?: unknown };
+  if (typeof body.refreshToken !== "string" || body.refreshToken.length === 0 || body.refreshToken.length > 256) {
     res.status(400).json({ ok: false, message: "refreshToken required" });
     return;
   }
@@ -237,8 +276,8 @@ app.post("/api/auth/refresh", async (req, res) => {
 });
 
 app.post("/api/auth/logout", async (req, res) => {
-  const body = req.body as { refreshToken?: string };
-  if (!body.refreshToken) {
+  const body = req.body as { refreshToken?: unknown };
+  if (typeof body.refreshToken !== "string" || body.refreshToken.length === 0 || body.refreshToken.length > 256) {
     res.status(400).json({ ok: false, message: "refreshToken required" });
     return;
   }
