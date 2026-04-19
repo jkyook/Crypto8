@@ -62,6 +62,30 @@ async function responseLooksLikeHtml(res: Response): Promise<boolean> {
   }
 }
 
+async function fetchWithLocal8787Fallback(path: string, init: RequestInit, context: string): Promise<Response> {
+  const fetchFrom = (base: string) => fetch(buildApiUrl(base, path), { ...init, credentials: "include" });
+  try {
+    const first = await fetchFrom(API_BASE);
+    if (
+      shouldUseLocal8787Fallback() &&
+      stripTrailingSlash(API_BASE) !== stripTrailingSlash(DEV_DIRECT_API) &&
+      (await responseLooksLikeHtml(first))
+    ) {
+      return fetchFrom(DEV_DIRECT_API);
+    }
+    return first;
+  } catch (err) {
+    if (shouldUseLocal8787Fallback() && stripTrailingSlash(API_BASE) !== stripTrailingSlash(DEV_DIRECT_API)) {
+      try {
+        return await fetchFrom(DEV_DIRECT_API);
+      } catch {
+        wrapNetworkError(err, context);
+      }
+    }
+    wrapNetworkError(err, context);
+  }
+}
+
 /** 로컬 세션 표시만 지움(리프레시 실패 등). `App`이 이 이벤트로 UI 동기화. */
 export const AUTH_CLEARED_EVENT = "crypto8:auth-cleared";
 /** 같은 탭에서 로그인·토큰 갱신 후 세션 표시를 다시 읽도록(예: 예치 실행 모달). */
@@ -437,17 +461,15 @@ function wrapNetworkError(err: unknown, context: string): never {
 }
 
 export async function login(username: string, password: string): Promise<AuthSession> {
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE}/api/auth/login`, {
+  const response = await fetchWithLocal8787Fallback(
+    "/api/auth/login",
+    {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      credentials: "include",
       body: JSON.stringify({ username, password })
-    });
-  } catch (err) {
-    wrapNetworkError(err, "로그인");
-  }
+    },
+    "로그인"
+  );
   const data = (await readJsonFromApiResponse(response, "로그인")) as {
     ok: boolean;
     role?: AuthRole;
@@ -478,17 +500,15 @@ export async function login(username: string, password: string): Promise<AuthSes
 }
 
 export async function loginWithWallet(walletAddress: string): Promise<AuthSession> {
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE}/api/auth/wallet`, {
+  const response = await fetchWithLocal8787Fallback(
+    "/api/auth/wallet",
+    {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      credentials: "include",
       body: JSON.stringify({ walletAddress })
-    });
-  } catch (err) {
-    wrapNetworkError(err, "지갑 로그인");
-  }
+    },
+    "지갑 로그인"
+  );
   const data = (await readJsonFromApiResponse(response, "지갑 로그인")) as {
     ok?: boolean;
     role?: AuthRole;
@@ -534,17 +554,15 @@ function mapRegisterError(status: number, code: string | undefined): string {
 /** 일반 이용자 회원가입(역할 `viewer`). 성공 시 로그인과 동일하게 토큰을 저장합니다. */
 export async function register(username: string, password: string): Promise<AuthSession> {
   const trimmed = username.trim();
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE}/api/auth/register`, {
+  const response = await fetchWithLocal8787Fallback(
+    "/api/auth/register",
+    {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      credentials: "include",
       body: JSON.stringify({ username: trimmed, password })
-    });
-  } catch (err) {
-    wrapNetworkError(err, "회원가입");
-  }
+    },
+    "회원가입"
+  );
   const data = (await readJsonFromApiResponse(response, "회원가입")) as {
     ok?: boolean;
     role?: AuthRole;
