@@ -20,6 +20,7 @@ const API_BASE = resolveApiBase();
 /** 프록시 실패·잘못된 VITE 설정으로 HTML이 올 때 개발 모드에서만 직접 붙일 API */
 const DEV_DIRECT_APIS = ["http://localhost:8787", "http://127.0.0.1:8787"] as const;
 const DEV_DIRECT_API = DEV_DIRECT_APIS[0];
+const CSRF_STORAGE_KEY = "crypto8.csrfToken";
 
 function buildApiUrl(base: string, path: string): string {
   const p = path.startsWith("/") ? path : `/${path}`;
@@ -360,16 +361,73 @@ function readCookie(name: string): string | null {
   return decodeURIComponent(raw.slice(prefix.length));
 }
 
+function readStoredCsrfToken(): string | null {
+  if (typeof sessionStorage !== "undefined") {
+    const token = sessionStorage.getItem(CSRF_STORAGE_KEY);
+    if (token) return token;
+  }
+  return readCookie(CSRF_COOKIE_NAME);
+}
+
+function storeCsrfToken(token: unknown): void {
+  if (typeof token !== "string" || token.length === 0) {
+    return;
+  }
+  if (typeof sessionStorage !== "undefined") {
+    sessionStorage.setItem(CSRF_STORAGE_KEY, token);
+  }
+}
+
+function clearStoredCsrfToken(): void {
+  if (typeof sessionStorage !== "undefined") {
+    sessionStorage.removeItem(CSRF_STORAGE_KEY);
+  }
+}
+
+function storeCsrfTokenFromResponse(response: Response, data?: Record<string, unknown>): void {
+  const headerToken = response.headers.get("X-CSRF-Token");
+  storeCsrfToken(headerToken ?? data?.csrfToken);
+}
+
+async function responseIsCsrfMismatch(response: Response): Promise<boolean> {
+  if (response.status !== 403) {
+    return false;
+  }
+  try {
+    const text = await response.clone().text();
+    return /csrf token mismatch/i.test(text);
+  } catch {
+    return false;
+  }
+}
+
 function isUnsafeMethod(method: string | undefined): boolean {
   const normalized = (method ?? "GET").toUpperCase();
   return !["GET", "HEAD", "OPTIONS"].includes(normalized);
 }
 
-function addCsrfHeader(headers: Headers, method: string | undefined): void {
+async function ensureCsrfToken(): Promise<string | null> {
+  const current = readStoredCsrfToken();
+  if (current) {
+    return current;
+  }
+  try {
+    const response = await fetch(buildApiUrl(API_BASE, "/api/auth/csrf"), {
+      credentials: "include"
+    });
+    const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    storeCsrfTokenFromResponse(response, data);
+    return readStoredCsrfToken();
+  } catch {
+    return null;
+  }
+}
+
+async function addCsrfHeader(headers: Headers, method: string | undefined): Promise<void> {
   if (!isUnsafeMethod(method)) {
     return;
   }
-  const csrfToken = readCookie(CSRF_COOKIE_NAME);
+  const csrfToken = await ensureCsrfToken();
   if (csrfToken) {
     headers.set("X-CSRF-Token", csrfToken);
   }
@@ -424,6 +482,7 @@ function clearAuthStorageSync(): void {
   localStorage.removeItem(LEGACY_REFRESH_TOKEN_KEY);
   localStorage.removeItem(ROLE_KEY);
   localStorage.removeItem(USERNAME_KEY);
+  clearStoredCsrfToken();
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(AUTH_CLEARED_EVENT));
   }
@@ -432,7 +491,7 @@ function clearAuthStorageSync(): void {
 export async function clearSession(): Promise<void> {
   try {
     const headers = new Headers({ "Content-Type": "application/json" });
-    addCsrfHeader(headers, "POST");
+    await addCsrfHeader(headers, "POST");
     await fetch(`${API_BASE}/api/auth/logout`, {
       method: "POST",
       headers,
@@ -492,6 +551,7 @@ export async function login(username: string, password: string): Promise<AuthSes
     ok: boolean;
     role?: AuthRole;
     username?: string;
+    csrfToken?: string;
     message?: string;
   };
   if (!response.ok || !data.role) {
@@ -509,6 +569,7 @@ export async function login(username: string, password: string): Promise<AuthSes
   };
   localStorage.removeItem(LEGACY_TOKEN_KEY);
   localStorage.removeItem(LEGACY_REFRESH_TOKEN_KEY);
+  storeCsrfTokenFromResponse(response, data);
   localStorage.setItem(ROLE_KEY, session.role);
   localStorage.setItem(USERNAME_KEY, session.username);
   if (typeof window !== "undefined") {
@@ -531,6 +592,7 @@ export async function loginWithWallet(walletAddress: string): Promise<AuthSessio
     ok?: boolean;
     role?: AuthRole;
     username?: string;
+    csrfToken?: string;
     message?: string;
   };
   if (!response.ok || !data.role || !data.username) {
@@ -539,6 +601,7 @@ export async function loginWithWallet(walletAddress: string): Promise<AuthSessio
   const session: AuthSession = { role: data.role, username: data.username };
   localStorage.removeItem(LEGACY_TOKEN_KEY);
   localStorage.removeItem(LEGACY_REFRESH_TOKEN_KEY);
+  storeCsrfTokenFromResponse(response, data);
   localStorage.setItem(ROLE_KEY, session.role);
   localStorage.setItem(USERNAME_KEY, session.username);
   if (typeof window !== "undefined") {
@@ -585,6 +648,7 @@ export async function register(username: string, password: string): Promise<Auth
     ok?: boolean;
     role?: AuthRole;
     username?: string;
+    csrfToken?: string;
     message?: string;
   };
   if (!response.ok || !data.role) {
@@ -596,6 +660,7 @@ export async function register(username: string, password: string): Promise<Auth
   };
   localStorage.removeItem(LEGACY_TOKEN_KEY);
   localStorage.removeItem(LEGACY_REFRESH_TOKEN_KEY);
+  storeCsrfTokenFromResponse(response, data);
   localStorage.setItem(ROLE_KEY, session.role);
   localStorage.setItem(USERNAME_KEY, session.username);
   if (typeof window !== "undefined") {
@@ -697,15 +762,23 @@ export async function estimateProtocolFees(
 }
 
 async function refreshAccessTokenOrThrow(): Promise<AuthSession> {
-  const headers = new Headers({ "Content-Type": "application/json" });
-  addCsrfHeader(headers, "POST");
-  const response = await fetch(`${API_BASE}/api/auth/refresh`, {
-    method: "POST",
-    headers,
-    credentials: "include",
-    body: JSON.stringify({})
-  });
-  const data = (await response.json()) as { role?: AuthRole; username?: string; message?: string };
+  const postRefresh = async (): Promise<Response> => {
+    const headers = new Headers({ "Content-Type": "application/json" });
+    await addCsrfHeader(headers, "POST");
+    return fetch(`${API_BASE}/api/auth/refresh`, {
+      method: "POST",
+      headers,
+      credentials: "include",
+      body: JSON.stringify({})
+    });
+  };
+  let response = await postRefresh();
+  if (await responseIsCsrfMismatch(response)) {
+    clearStoredCsrfToken();
+    await ensureCsrfToken();
+    response = await postRefresh();
+  }
+  const data = (await response.json()) as { role?: AuthRole; username?: string; csrfToken?: string; message?: string };
   if (!response.ok || !data.role || !data.username) {
     clearAuthStorageSync();
     const raw = data.message ?? "토큰 갱신 실패";
@@ -718,6 +791,7 @@ async function refreshAccessTokenOrThrow(): Promise<AuthSession> {
   }
   localStorage.removeItem(LEGACY_TOKEN_KEY);
   localStorage.removeItem(LEGACY_REFRESH_TOKEN_KEY);
+  storeCsrfTokenFromResponse(response, data);
   localStorage.setItem(ROLE_KEY, data.role);
   localStorage.setItem(USERNAME_KEY, data.username);
   if (typeof window !== "undefined") {
@@ -732,7 +806,7 @@ async function authedFetch(path: string, init: RequestInit = {}): Promise<Respon
   }
 
   const headers = new Headers(init.headers ?? {});
-  addCsrfHeader(headers, init.method);
+  await addCsrfHeader(headers, init.method);
 
   const fetchOnce = (base: string): Promise<Response> => {
     return fetch(buildApiUrl(base, path), { ...init, credentials: "include", headers: new Headers(headers) });
@@ -747,13 +821,21 @@ async function authedFetch(path: string, init: RequestInit = {}): Promise<Respon
     first = await fetchOnce(DEV_DIRECT_API);
   }
 
+  if (await responseIsCsrfMismatch(first)) {
+    clearStoredCsrfToken();
+    await ensureCsrfToken();
+    const freshHeaders = new Headers(init.headers ?? {});
+    await addCsrfHeader(freshHeaders, init.method);
+    first = await fetch(buildApiUrl(API_BASE, path), { ...init, credentials: "include", headers: freshHeaders });
+  }
+
   if (first.status !== 401) {
     return first;
   }
 
   await refreshAccessTokenOrThrow();
   const retryHeaders = new Headers(init.headers ?? {});
-  addCsrfHeader(retryHeaders, init.method);
+  await addCsrfHeader(retryHeaders, init.method);
 
   const retryFetch = (base: string): Promise<Response> => {
     return fetch(buildApiUrl(base, path), { ...init, credentials: "include", headers: retryHeaders });

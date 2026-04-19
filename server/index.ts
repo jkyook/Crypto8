@@ -93,24 +93,28 @@ function issueCsrfToken(): string {
   return randomBytes(32).toString("hex");
 }
 
-function setAuthCookies(res: express.Response, accessToken: string, refreshToken: string): void {
+function setCsrfCookie(res: express.Response): string {
+  const csrfToken = issueCsrfToken();
+  res.cookie(CSRF_COOKIE_NAME, csrfToken, {
+    ...baseCookieOptions(false),
+    maxAge: REFRESH_COOKIE_MAX_AGE_MS
+  });
+  res.setHeader("X-CSRF-Token", csrfToken);
+  return csrfToken;
+}
+
+function setAuthCookies(res: express.Response, accessToken: string, refreshToken: string): string {
   res.cookie(ACCESS_COOKIE_NAME, accessToken, baseCookieOptions(true));
   res.cookie(REFRESH_COOKIE_NAME, refreshToken, {
     ...baseCookieOptions(true),
     maxAge: REFRESH_COOKIE_MAX_AGE_MS
   });
-  res.cookie(CSRF_COOKIE_NAME, issueCsrfToken(), {
-    ...baseCookieOptions(false),
-    maxAge: REFRESH_COOKIE_MAX_AGE_MS
-  });
+  return setCsrfCookie(res);
 }
 
-function setAccessAndCsrfCookies(res: express.Response, accessToken: string): void {
+function setAccessAndCsrfCookies(res: express.Response, accessToken: string): string {
   res.cookie(ACCESS_COOKIE_NAME, accessToken, baseCookieOptions(true));
-  res.cookie(CSRF_COOKIE_NAME, issueCsrfToken(), {
-    ...baseCookieOptions(false),
-    maxAge: REFRESH_COOKIE_MAX_AGE_MS
-  });
+  return setCsrfCookie(res);
 }
 
 function clearAuthCookies(res: express.Response): void {
@@ -182,7 +186,7 @@ app.use(
       return callback(new Error(`origin not allowed: ${origin}`));
     },
     credentials: true,
-    exposedHeaders: ["X-Request-Id"]
+    exposedHeaders: ["X-Request-Id", "X-CSRF-Token"]
   })
 );
 // JSON 본문 크기 제한: 기본 100kb는 LP 데이터 등에는 충분. 한도 명시로 메모리 폭주 방지.
@@ -350,8 +354,8 @@ app.post("/api/auth/register", registerLimiter, async (req, res) => {
     res.status(500).json({ ok: false, message: "register succeeded but login failed" });
     return;
   }
-  setAuthCookies(res, auth.accessToken, auth.refreshToken);
-  res.json({ ok: true, role: auth.role, username: trimmed });
+  const csrfToken = setAuthCookies(res, auth.accessToken, auth.refreshToken);
+  res.json({ ok: true, role: auth.role, username: trimmed, csrfToken });
 });
 
 app.post("/api/auth/login", authLimiter, async (req, res) => {
@@ -370,8 +374,8 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
     res.status(401).json({ ok: false, message: "invalid credentials" });
     return;
   }
-  setAuthCookies(res, auth.accessToken, auth.refreshToken);
-  res.json({ ok: true, role: auth.role, username });
+  const csrfToken = setAuthCookies(res, auth.accessToken, auth.refreshToken);
+  res.json({ ok: true, role: auth.role, username, csrfToken });
 });
 
 app.post("/api/auth/wallet", authLimiter, async (req, res) => {
@@ -386,8 +390,15 @@ app.post("/api/auth/wallet", authLimiter, async (req, res) => {
     return;
   }
   await linkUserWallet(auth.username, body.walletAddress);
-  setAuthCookies(res, auth.accessToken, auth.refreshToken);
-  res.json({ ok: true, role: auth.role, username: auth.username });
+  const csrfToken = setAuthCookies(res, auth.accessToken, auth.refreshToken);
+  res.json({ ok: true, role: auth.role, username: auth.username, csrfToken });
+});
+
+app.get("/api/auth/csrf", (req, res) => {
+  const existing = parseCookies(req)[CSRF_COOKIE_NAME];
+  const csrfToken = existing && existing.length <= 128 ? existing : setCsrfCookie(res);
+  res.setHeader("X-CSRF-Token", csrfToken);
+  res.json({ ok: true, csrfToken });
 });
 
 app.post("/api/auth/refresh", async (req, res) => {
@@ -407,11 +418,12 @@ app.post("/api/auth/refresh", async (req, res) => {
     res.status(401).json({ ok: false, message: "invalid refresh token" });
     return;
   }
-  setAccessAndCsrfCookies(res, refreshed.accessToken);
+  const csrfToken = setAccessAndCsrfCookies(res, refreshed.accessToken);
   res.json({
     ok: true,
     role: refreshed.role,
-    username: refreshed.username
+    username: refreshed.username,
+    csrfToken
   });
 });
 
