@@ -74,6 +74,8 @@ type ProtocolDetailRow = {
   amount: number;
 };
 
+const PROTOCOL_SORT_ORDER = ["Aave", "Uniswap", "Orca"] as const;
+
 const GUEST_WITHDRAW_LEDGER_KEY = "crypto8_withdraw___guest__";
 
 const PRIMARY_NAV_ORDER: MenuKey[] = ["my", "products", "portfolio", "execution"];
@@ -906,6 +908,12 @@ function inferProtocolChain(protocolName: string): string {
   return "Multi";
 }
 
+function getProtocolSortRank(protocolName: string): number {
+  const key = protocolName.toLowerCase();
+  const rank = PROTOCOL_SORT_ORDER.findIndex((name) => key.includes(name.toLowerCase()));
+  return rank === -1 ? PROTOCOL_SORT_ORDER.length : rank;
+}
+
 function PortfolioPanel({
   positions,
   onExecutionComplete
@@ -932,7 +940,13 @@ function PortfolioPanel({
     });
     return acc;
   }, {});
-  const protocolRows = Object.values(protocolTotals).sort((a, b) => b.amount - a.amount);
+  const protocolRows = Object.values(protocolTotals).sort((a, b) => {
+    const byProtocolRank = getProtocolSortRank(a.name) - getProtocolSortRank(b.name);
+    if (byProtocolRank !== 0) return byProtocolRank;
+    const byName = a.name.localeCompare(b.name, "ko-KR", { sensitivity: "base" });
+    if (byName !== 0) return byName;
+    return a.chain.localeCompare(b.chain, "ko-KR", { sensitivity: "base" });
+  });
   const annualYield = estimateAnnualYieldUsd(positions);
 
   return (
@@ -1437,6 +1451,7 @@ export default function App() {
   }, [portfolioNotice]);
 
   useEffect(() => {
+    const controller = new AbortController();
     const loadRecent = async () => {
       if (!session) {
         setRecentJobs([]);
@@ -1450,25 +1465,23 @@ export default function App() {
         }
         return;
       }
-      try {
-        const [jobs, events, depositRows, wdRows] = await Promise.all([
-          listJobs(),
-          listExecutionEvents(),
-          listDepositPositions(),
-          listWithdrawalLedger().catch(() => [] as WalletWithdrawLedgerLine[])
-        ]);
-        setRecentJobs(jobs.slice(0, 6));
-        setRecentEvents(events.slice(0, 6));
-        setPositions(depositRows);
-        setWithdrawLedger(wdRows);
-      } catch (_error) {
-        setRecentJobs([]);
-        setRecentEvents([]);
-        setPositions([]);
-        setWithdrawLedger([]);
+      const signal = controller.signal;
+      const [jobsResult, eventsResult, depositRowsResult, wdRowsResult] = await Promise.allSettled([
+        listJobs({ signal }),
+        listExecutionEvents(undefined, { signal }),
+        listDepositPositions({ signal }),
+        listWithdrawalLedger({ signal })
+      ]);
+      if (signal.aborted) {
+        return;
       }
+      setRecentJobs(jobsResult.status === "fulfilled" ? jobsResult.value.slice(0, 6) : []);
+      setRecentEvents(eventsResult.status === "fulfilled" ? eventsResult.value.slice(0, 6) : []);
+      setPositions(depositRowsResult.status === "fulfilled" ? depositRowsResult.value : []);
+      setWithdrawLedger(wdRowsResult.status === "fulfilled" ? wdRowsResult.value : []);
     };
     void loadRecent();
+    return () => controller.abort();
   }, [session]);
 
   useEffect(() => {

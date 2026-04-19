@@ -1,10 +1,10 @@
 import "dotenv/config";
-import { randomUUID } from "crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "crypto";
 import { mkdirSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import cors from "cors";
-import express, { Router } from "express";
+import express, { Router, type CookieOptions } from "express";
 import {
   assertValidWithdrawAmount,
   createDepositPosition,
@@ -37,6 +37,96 @@ function readPackageVersion(): string {
   }
 }
 const APP_VERSION = readPackageVersion();
+const ACCESS_COOKIE_NAME = "access_token";
+const REFRESH_COOKIE_NAME = "refresh_token";
+const CSRF_COOKIE_NAME = "csrf_token";
+const REFRESH_COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function resolveSameSite(): CookieOptions["sameSite"] {
+  const raw = (process.env.AUTH_COOKIE_SAME_SITE ?? "strict").toLowerCase();
+  if (raw === "none") return "none";
+  if (raw === "lax") return "lax";
+  return "strict";
+}
+
+const COOKIE_SECURE = process.env.COOKIE_SECURE === "true" || process.env.NODE_ENV === "production";
+const COOKIE_SAME_SITE = resolveSameSite();
+
+function baseCookieOptions(httpOnly: boolean): CookieOptions {
+  return {
+    httpOnly,
+    secure: COOKIE_SECURE,
+    sameSite: COOKIE_SAME_SITE,
+    path: "/"
+  };
+}
+
+function parseCookies(req: express.Request): Record<string, string> {
+  const header = req.headers.cookie;
+  if (!header) return {};
+  return header.split(";").reduce<Record<string, string>>((acc, pair) => {
+    const idx = pair.indexOf("=");
+    if (idx === -1) return acc;
+    const key = pair.slice(0, idx).trim();
+    const value = pair.slice(idx + 1).trim();
+    if (!key) return acc;
+    try {
+      acc[key] = decodeURIComponent(value);
+    } catch {
+      acc[key] = value;
+    }
+    return acc;
+  }, {});
+}
+
+function issueCsrfToken(): string {
+  return randomBytes(32).toString("hex");
+}
+
+function setAuthCookies(res: express.Response, accessToken: string, refreshToken: string): void {
+  res.cookie(ACCESS_COOKIE_NAME, accessToken, baseCookieOptions(true));
+  res.cookie(REFRESH_COOKIE_NAME, refreshToken, {
+    ...baseCookieOptions(true),
+    maxAge: REFRESH_COOKIE_MAX_AGE_MS
+  });
+  res.cookie(CSRF_COOKIE_NAME, issueCsrfToken(), {
+    ...baseCookieOptions(false),
+    maxAge: REFRESH_COOKIE_MAX_AGE_MS
+  });
+}
+
+function setAccessAndCsrfCookies(res: express.Response, accessToken: string): void {
+  res.cookie(ACCESS_COOKIE_NAME, accessToken, baseCookieOptions(true));
+  res.cookie(CSRF_COOKIE_NAME, issueCsrfToken(), {
+    ...baseCookieOptions(false),
+    maxAge: REFRESH_COOKIE_MAX_AGE_MS
+  });
+}
+
+function clearAuthCookies(res: express.Response): void {
+  res.clearCookie(ACCESS_COOKIE_NAME, baseCookieOptions(true));
+  res.clearCookie(REFRESH_COOKIE_NAME, baseCookieOptions(true));
+  res.clearCookie(CSRF_COOKIE_NAME, baseCookieOptions(false));
+}
+
+function safeTokenEqual(left: string, right: string): boolean {
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function isUnsafeMethod(method: string): boolean {
+  return !["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase());
+}
+
+function verifyCsrfToken(req: express.Request): boolean {
+  if (!isUnsafeMethod(req.method)) return true;
+  const cookies = parseCookies(req);
+  const cookieToken = cookies[CSRF_COOKIE_NAME];
+  const headerToken = req.header("X-CSRF-Token");
+  if (!cookieToken || !headerToken) return false;
+  return safeTokenEqual(cookieToken, headerToken);
+}
 
 app.get("/", (_req, res) => {
   res.json({
@@ -178,15 +268,22 @@ async function fetchCurrentAprs(): Promise<{ aave: number; uniswap: number; orca
 
 function requireAuth(allowedRoles: UserRole[]) {
   return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const cookies = parseCookies(req);
+    const cookieToken = cookies[ACCESS_COOKIE_NAME];
     const authHeader = req.header("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      res.status(401).json({ ok: false, message: "unauthorized: missing bearer token" });
+    const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.replace("Bearer ", "") : undefined;
+    const token = cookieToken ?? bearerToken;
+    if (!token) {
+      res.status(401).json({ ok: false, message: "unauthorized: missing session cookie" });
       return;
     }
-    const token = authHeader.replace("Bearer ", "");
     const verified = verifyToken(token);
     if (!verified.ok || !verified.role || !verified.subject) {
       res.status(401).json({ ok: false, message: "unauthorized: invalid token" });
+      return;
+    }
+    if (cookieToken && !verifyCsrfToken(req)) {
+      res.status(403).json({ ok: false, message: "forbidden: csrf token mismatch" });
       return;
     }
     if (!allowedRoles.includes(verified.role)) {
@@ -234,7 +331,8 @@ app.post("/api/auth/register", registerLimiter, async (req, res) => {
     res.status(500).json({ ok: false, message: "register succeeded but login failed" });
     return;
   }
-  res.json({ ok: true, accessToken: auth.accessToken, refreshToken: auth.refreshToken, role: auth.role });
+  setAuthCookies(res, auth.accessToken, auth.refreshToken);
+  res.json({ ok: true, role: auth.role, username: trimmed });
 });
 
 app.post("/api/auth/login", authLimiter, async (req, res) => {
@@ -253,35 +351,45 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
     res.status(401).json({ ok: false, message: "invalid credentials" });
     return;
   }
-  res.json({ ok: true, accessToken: auth.accessToken, refreshToken: auth.refreshToken, role: auth.role });
+  setAuthCookies(res, auth.accessToken, auth.refreshToken);
+  res.json({ ok: true, role: auth.role, username });
 });
 
 app.post("/api/auth/refresh", async (req, res) => {
-  const body = req.body as { refreshToken?: unknown };
-  if (typeof body.refreshToken !== "string" || body.refreshToken.length === 0 || body.refreshToken.length > 256) {
-    res.status(400).json({ ok: false, message: "refreshToken required" });
-    return;
-  }
-  const refreshed = await refreshAccessToken(body.refreshToken);
-  if (!refreshed.ok || !refreshed.accessToken || !refreshed.role || !refreshed.username) {
+  const refreshToken = parseCookies(req)[REFRESH_COOKIE_NAME];
+  if (!refreshToken || refreshToken.length > 256) {
+    clearAuthCookies(res);
     res.status(401).json({ ok: false, message: "invalid refresh token" });
     return;
   }
+  if (!verifyCsrfToken(req)) {
+    res.status(403).json({ ok: false, message: "forbidden: csrf token mismatch" });
+    return;
+  }
+  const refreshed = await refreshAccessToken(refreshToken);
+  if (!refreshed.ok || !refreshed.accessToken || !refreshed.role || !refreshed.username) {
+    clearAuthCookies(res);
+    res.status(401).json({ ok: false, message: "invalid refresh token" });
+    return;
+  }
+  setAccessAndCsrfCookies(res, refreshed.accessToken);
   res.json({
     ok: true,
-    accessToken: refreshed.accessToken,
     role: refreshed.role,
     username: refreshed.username
   });
 });
 
 app.post("/api/auth/logout", async (req, res) => {
-  const body = req.body as { refreshToken?: unknown };
-  if (typeof body.refreshToken !== "string" || body.refreshToken.length === 0 || body.refreshToken.length > 256) {
-    res.status(400).json({ ok: false, message: "refreshToken required" });
+  const refreshToken = parseCookies(req)[REFRESH_COOKIE_NAME];
+  if (refreshToken && !verifyCsrfToken(req)) {
+    res.status(403).json({ ok: false, message: "forbidden: csrf token mismatch" });
     return;
   }
-  await revokeRefreshToken(body.refreshToken);
+  if (refreshToken && refreshToken.length <= 256) {
+    await revokeRefreshToken(refreshToken);
+  }
+  clearAuthCookies(res);
   res.json({ ok: true });
 });
 
@@ -620,7 +728,11 @@ app.get("/api/orchestrator/execution-events", requireAuth(["orchestrator", "secu
 app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
   const jobIdParam = req.params.jobId;
   const jobId = Array.isArray(jobIdParam) ? jobIdParam[0] : jobIdParam;
-  const idempotencyKey = req.header("Idempotency-Key") ?? undefined;
+  const idempotencyKey = req.header("Idempotency-Key")?.trim();
+  if (!idempotencyKey || idempotencyKey.length > 160) {
+    res.status(400).json({ ok: false, message: "Idempotency-Key header required for execution requests" });
+    return;
+  }
   const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as {
     correlationId?: unknown;
     positionId?: unknown;

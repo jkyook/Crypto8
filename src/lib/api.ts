@@ -62,15 +62,16 @@ async function responseLooksLikeHtml(res: Response): Promise<boolean> {
   }
 }
 
-/** 로컬 스토리지 세션만 지움(리프레시 실패 등). `App`이 이 이벤트로 UI 동기화. */
+/** 로컬 세션 표시만 지움(리프레시 실패 등). `App`이 이 이벤트로 UI 동기화. */
 export const AUTH_CLEARED_EVENT = "crypto8:auth-cleared";
-/** 같은 탭에서 로그인·토큰 갱신 후 JWT를 다시 읽도록(예: 예치 실행 모달). */
+/** 같은 탭에서 로그인·토큰 갱신 후 세션 표시를 다시 읽도록(예: 예치 실행 모달). */
 export const AUTH_UPDATED_EVENT = "crypto8:session-updated";
 
-const TOKEN_KEY = "crypto8_access_token";
-const REFRESH_TOKEN_KEY = "crypto8_refresh_token";
+const LEGACY_TOKEN_KEY = "crypto8_access_token";
+const LEGACY_REFRESH_TOKEN_KEY = "crypto8_refresh_token";
 const ROLE_KEY = "crypto8_role";
 const USERNAME_KEY = "crypto8_username";
+const CSRF_COOKIE_NAME = "csrf_token";
 
 export type JobInput = {
   depositUsd: number;
@@ -92,8 +93,6 @@ export type Job = {
 export type AuthRole = "orchestrator" | "security" | "viewer";
 
 export type AuthSession = {
-  accessToken: string;
-  refreshToken: string;
   role: AuthRole;
   username: string;
 };
@@ -246,31 +245,53 @@ function getProtocolNewsFallback(protocol: string): ProtocolNewsBundle {
   };
 }
 
-function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+function readCookie(name: string): string | null {
+  if (typeof document === "undefined") {
+    return null;
+  }
+  const prefix = `${name}=`;
+  const raw = document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix));
+  if (!raw) {
+    return null;
+  }
+  return decodeURIComponent(raw.slice(prefix.length));
 }
 
-function getRefreshToken(): string | null {
-  return localStorage.getItem(REFRESH_TOKEN_KEY);
+function isUnsafeMethod(method: string | undefined): boolean {
+  const normalized = (method ?? "GET").toUpperCase();
+  return !["GET", "HEAD", "OPTIONS"].includes(normalized);
+}
+
+function addCsrfHeader(headers: Headers, method: string | undefined): void {
+  if (!isUnsafeMethod(method)) {
+    return;
+  }
+  const csrfToken = readCookie(CSRF_COOKIE_NAME);
+  if (csrfToken) {
+    headers.set("X-CSRF-Token", csrfToken);
+  }
 }
 
 export function getSession(): AuthSession | null {
-  const accessToken = localStorage.getItem(TOKEN_KEY);
-  const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
   const role = localStorage.getItem(ROLE_KEY) as AuthRole | null;
   const username = localStorage.getItem(USERNAME_KEY);
-  if (!accessToken || !refreshToken || !role || !username) {
+  if (!role || !username) {
     return null;
   }
-  return { accessToken, refreshToken, role, username };
+  return { role, username };
 }
 
-/** `useSyncExternalStore`용: 액세스 토큰 문자열만 구독합니다. */
+/** `useSyncExternalStore`용: HttpOnly 쿠키 대신 로컬 세션 마커만 구독합니다. */
 export function readAccessTokenSnapshot(): string {
   if (typeof localStorage === "undefined") {
     return "";
   }
-  return localStorage.getItem(TOKEN_KEY) ?? "";
+  const role = localStorage.getItem(ROLE_KEY) ?? "";
+  const username = localStorage.getItem(USERNAME_KEY) ?? "";
+  return role && username ? `${username}:${role}` : "";
 }
 
 export function subscribeLocalAuth(callback: () => void): () => void {
@@ -278,7 +299,13 @@ export function subscribeLocalAuth(callback: () => void): () => void {
     return () => {};
   }
   const onStorage = (e: StorageEvent): void => {
-    if (e.key === TOKEN_KEY || e.key === REFRESH_TOKEN_KEY || e.key === ROLE_KEY || e.key === USERNAME_KEY || e.key === null) {
+    if (
+      e.key === LEGACY_TOKEN_KEY ||
+      e.key === LEGACY_REFRESH_TOKEN_KEY ||
+      e.key === ROLE_KEY ||
+      e.key === USERNAME_KEY ||
+      e.key === null
+    ) {
       callback();
     }
   };
@@ -293,8 +320,8 @@ export function subscribeLocalAuth(callback: () => void): () => void {
 }
 
 function clearAuthStorageSync(): void {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(REFRESH_TOKEN_KEY);
+  localStorage.removeItem(LEGACY_TOKEN_KEY);
+  localStorage.removeItem(LEGACY_REFRESH_TOKEN_KEY);
   localStorage.removeItem(ROLE_KEY);
   localStorage.removeItem(USERNAME_KEY);
   if (typeof window !== "undefined") {
@@ -303,17 +330,17 @@ function clearAuthStorageSync(): void {
 }
 
 export async function clearSession(): Promise<void> {
-  const refreshToken = getRefreshToken();
-  if (refreshToken) {
-    try {
-      await fetch(`${API_BASE}/api/auth/logout`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refreshToken })
-      });
-    } catch {
-      /* 서버 없음·토큰 무효여도 로컬은 정리 */
-    }
+  try {
+    const headers = new Headers({ "Content-Type": "application/json" });
+    addCsrfHeader(headers, "POST");
+    await fetch(`${API_BASE}/api/auth/logout`, {
+      method: "POST",
+      headers,
+      credentials: "include",
+      body: JSON.stringify({})
+    });
+  } catch {
+    /* 서버 없음·토큰 무효여도 로컬은 정리 */
   }
   clearAuthStorageSync();
 }
@@ -337,16 +364,16 @@ export async function login(username: string, password: string): Promise<AuthSes
   const response = await fetch(`${API_BASE}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify({ username, password })
   });
   const data = (await readJsonFromApiResponse(response, "로그인")) as {
     ok: boolean;
-    accessToken?: string;
-    refreshToken?: string;
     role?: AuthRole;
+    username?: string;
     message?: string;
   };
-  if (!response.ok || !data.accessToken || !data.refreshToken || !data.role) {
+  if (!response.ok || !data.role) {
     const raw = data.message ?? "로그인 실패";
     if (response.status === 401 && /invalid credentials/i.test(raw)) {
       throw new Error(
@@ -356,13 +383,11 @@ export async function login(username: string, password: string): Promise<AuthSes
     throw new Error(raw);
   }
   const session: AuthSession = {
-    accessToken: data.accessToken,
-    refreshToken: data.refreshToken,
     role: data.role,
-    username
+    username: data.username ?? username
   };
-  localStorage.setItem(TOKEN_KEY, session.accessToken);
-  localStorage.setItem(REFRESH_TOKEN_KEY, session.refreshToken);
+  localStorage.removeItem(LEGACY_TOKEN_KEY);
+  localStorage.removeItem(LEGACY_REFRESH_TOKEN_KEY);
   localStorage.setItem(ROLE_KEY, session.role);
   localStorage.setItem(USERNAME_KEY, session.username);
   if (typeof window !== "undefined") {
@@ -399,26 +424,24 @@ export async function register(username: string, password: string): Promise<Auth
   const response = await fetch(`${API_BASE}/api/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify({ username: trimmed, password })
   });
   const data = (await readJsonFromApiResponse(response, "회원가입")) as {
     ok?: boolean;
-    accessToken?: string;
-    refreshToken?: string;
     role?: AuthRole;
+    username?: string;
     message?: string;
   };
-  if (!response.ok || !data.accessToken || !data.refreshToken || !data.role) {
+  if (!response.ok || !data.role) {
     throw new Error(mapRegisterError(response.status, typeof data.message === "string" ? data.message : undefined));
   }
   const session: AuthSession = {
-    accessToken: data.accessToken,
-    refreshToken: data.refreshToken,
     role: data.role,
-    username: trimmed
+    username: data.username ?? trimmed
   };
-  localStorage.setItem(TOKEN_KEY, session.accessToken);
-  localStorage.setItem(REFRESH_TOKEN_KEY, session.refreshToken);
+  localStorage.removeItem(LEGACY_TOKEN_KEY);
+  localStorage.removeItem(LEGACY_REFRESH_TOKEN_KEY);
   localStorage.setItem(ROLE_KEY, session.role);
   localStorage.setItem(USERNAME_KEY, session.username);
   if (typeof window !== "undefined") {
@@ -447,19 +470,17 @@ export async function listSelfRegistrations(): Promise<SelfRegistrationRow[]> {
   return Array.isArray(regs) ? regs : [];
 }
 
-async function refreshAccessTokenOrThrow(): Promise<string> {
-  const refreshToken = getRefreshToken();
-  if (!refreshToken) {
-    clearAuthStorageSync();
-    throw new Error("세션이 만료되었습니다. 다시 로그인하세요.");
-  }
+async function refreshAccessTokenOrThrow(): Promise<AuthSession> {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  addCsrfHeader(headers, "POST");
   const response = await fetch(`${API_BASE}/api/auth/refresh`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refreshToken })
+    headers,
+    credentials: "include",
+    body: JSON.stringify({})
   });
-  const data = (await response.json()) as { accessToken?: string; role?: AuthRole; username?: string; message?: string };
-  if (!response.ok || !data.accessToken || !data.role || !data.username) {
+  const data = (await response.json()) as { role?: AuthRole; username?: string; message?: string };
+  if (!response.ok || !data.role || !data.username) {
     clearAuthStorageSync();
     const raw = data.message ?? "토큰 갱신 실패";
     if (/invalid refresh token/i.test(raw)) {
@@ -469,26 +490,26 @@ async function refreshAccessTokenOrThrow(): Promise<string> {
     }
     throw new Error(raw);
   }
-  localStorage.setItem(TOKEN_KEY, data.accessToken);
+  localStorage.removeItem(LEGACY_TOKEN_KEY);
+  localStorage.removeItem(LEGACY_REFRESH_TOKEN_KEY);
   localStorage.setItem(ROLE_KEY, data.role);
   localStorage.setItem(USERNAME_KEY, data.username);
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(AUTH_UPDATED_EVENT));
   }
-  return data.accessToken;
+  return { role: data.role, username: data.username };
 }
 
 async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const currentToken = getToken();
-  if (!currentToken) {
+  if (!getSession()) {
     throw new Error("로그인이 필요합니다.");
   }
 
   const headers = new Headers(init.headers ?? {});
-  headers.set("Authorization", `Bearer ${currentToken}`);
+  addCsrfHeader(headers, init.method);
 
   const fetchOnce = (base: string): Promise<Response> => {
-    return fetch(buildApiUrl(base, path), { ...init, headers: new Headers(headers) });
+    return fetch(buildApiUrl(base, path), { ...init, credentials: "include", headers: new Headers(headers) });
   };
 
   let first = await fetchOnce(API_BASE);
@@ -504,12 +525,12 @@ async function authedFetch(path: string, init: RequestInit = {}): Promise<Respon
     return first;
   }
 
-  const newToken = await refreshAccessTokenOrThrow();
+  await refreshAccessTokenOrThrow();
   const retryHeaders = new Headers(init.headers ?? {});
-  retryHeaders.set("Authorization", `Bearer ${newToken}`);
+  addCsrfHeader(retryHeaders, init.method);
 
   const retryFetch = (base: string): Promise<Response> => {
-    return fetch(buildApiUrl(base, path), { ...init, headers: retryHeaders });
+    return fetch(buildApiUrl(base, path), { ...init, credentials: "include", headers: retryHeaders });
   };
 
   let second = await retryFetch(API_BASE);
@@ -558,8 +579,8 @@ export async function createOrchestratorJob(input: JobInput): Promise<Job> {
   return data.job;
 }
 
-export async function listJobs(): Promise<Job[]> {
-  const response = await authedFetch("/api/orchestrator/jobs");
+export async function listJobs(init: Pick<RequestInit, "signal"> = {}): Promise<Job[]> {
+  const response = await authedFetch("/api/orchestrator/jobs", init);
   if (!response.ok) {
     throw new Error("작업 목록 조회 실패");
   }
@@ -684,9 +705,9 @@ export async function listApprovals(): Promise<ApprovalLog[]> {
   return data.approvals;
 }
 
-export async function listExecutionEvents(jobId?: string): Promise<ExecutionEvent[]> {
+export async function listExecutionEvents(jobId?: string, init: Pick<RequestInit, "signal"> = {}): Promise<ExecutionEvent[]> {
   const query = jobId ? `?jobId=${encodeURIComponent(jobId)}` : "";
-  const response = await authedFetch(`/api/orchestrator/execution-events${query}`);
+  const response = await authedFetch(`/api/orchestrator/execution-events${query}`, init);
   if (!response.ok) {
     throw new Error("실행 이벤트 조회 실패");
   }
@@ -694,8 +715,8 @@ export async function listExecutionEvents(jobId?: string): Promise<ExecutionEven
   return data.events;
 }
 
-export async function listDepositPositions(): Promise<DepositPositionPayload[]> {
-  const response = await authedFetch("/api/portfolio/positions");
+export async function listDepositPositions(init: Pick<RequestInit, "signal"> = {}): Promise<DepositPositionPayload[]> {
+  const response = await authedFetch("/api/portfolio/positions", init);
   if (!response.ok) {
     throw new Error("예치 포지션 조회 실패");
   }
@@ -709,8 +730,8 @@ export type PortfolioWithdrawLine = {
   createdAt: string;
 };
 
-export async function listWithdrawalLedger(): Promise<PortfolioWithdrawLine[]> {
-  const response = await authedFetch("/api/portfolio/withdrawals");
+export async function listWithdrawalLedger(init: Pick<RequestInit, "signal"> = {}): Promise<PortfolioWithdrawLine[]> {
+  const response = await authedFetch("/api/portfolio/withdrawals", init);
   if (!response.ok) {
     throw new Error("출금 내역 조회 실패");
   }

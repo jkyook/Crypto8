@@ -3,6 +3,7 @@ import { createPublicClient, createWalletClient, encodeFunctionData, http, parse
 import { privateKeyToAccount } from "viem/accounts";
 import { arbitrum } from "viem/chains";
 import { getUsdcUsdtPrice } from "./priceFeed";
+import { loadArbitrumExecutorPrivateKey } from "../secrets";
 
 function buildTxId(prefix: string, context: AdapterExecutionContext): string {
   return `${prefix}_${context.jobId}_${Date.now()}`;
@@ -114,6 +115,14 @@ function getDeadlineSec(): number {
   return Math.floor(raw);
 }
 
+function getMaxLiveDepositUsd(): number {
+  const raw = Number(process.env.UNISWAP_MAX_LIVE_DEPOSIT_USD ?? "10000");
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return 10000;
+  }
+  return raw;
+}
+
 function getPoolAddress(): `0x${string}` {
   const addr = (process.env.UNISWAP_USDC_USDT_POOL_ADDRESS ?? USDC_USDT_POOL_ARB).trim();
   return addr as `0x${string}`;
@@ -158,13 +167,17 @@ async function submitUniswapTxsIfLive(
   context: AdapterExecutionContext,
   usdcUsdtAmount: number
 ): Promise<{ approveUsdcTxId: string; approveUsdtTxId: string; mintTxId: string }> {
-  const privateKey = process.env.ARBITRUM_EXECUTOR_PRIVATE_KEY;
   const rpcUrl = process.env.ARBITRUM_RPC_URL;
-  if (!privateKey || !rpcUrl) {
-    throw new Error("live uniswap execution requires ARBITRUM_EXECUTOR_PRIVATE_KEY and ARBITRUM_RPC_URL");
+  if (!rpcUrl) {
+    throw new Error("live uniswap execution requires ARBITRUM_RPC_URL");
+  }
+  const maxLiveDepositUsd = getMaxLiveDepositUsd();
+  if (context.depositUsd > maxLiveDepositUsd) {
+    throw new Error(`live uniswap execution exceeds configured amount cap: ${context.depositUsd} > ${maxLiveDepositUsd}`);
   }
   await assertPoolHealthy(rpcUrl);
 
+  const privateKey = await loadArbitrumExecutorPrivateKey();
   const account = privateKeyToAccount(privateKey as `0x${string}`);
   const walletClient = createWalletClient({
     account,
