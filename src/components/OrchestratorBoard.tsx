@@ -179,29 +179,55 @@ export function OrchestratorBoard({
   const isWalletLoginSession = Boolean(session?.username.startsWith("wallet_"));
   const canUseServerJobs = jwtAccess.length > 0 && allowJobExecutionProp !== false;
   useEffect(() => {
+    const walletAddress = solanaAccount?.address ?? "";
+    const evmAddress = evmWalletAddress ?? "";
+    const hasWalletAddress = Boolean(walletAddress || evmAddress);
+
+    // ── Case 1: 지갑 주소 보유 시 블록체인 잔고 직접 조회 (로그인 불필요, 공개 온체인 데이터)
+    if (hasWallet && hasWalletAddress) {
+      const controller = new AbortController();
+      const requestSeq = assetRequestSeq.current + 1;
+      assetRequestSeq.current = requestSeq;
+      setAssetLoading(true);
+      setAssetError("");
+      void listWalletAssets(walletAddress, { signal: controller.signal }, evmAddress || undefined)
+        .then((rows) => {
+          if (controller.signal.aborted || requestSeq !== assetRequestSeq.current) return;
+          setAccountAssets(rows);
+          setSelectedSourceAsset((current) => (rows.some((row) => row.symbol === current) || !rows[0] ? current : rows[0].symbol));
+        })
+        .catch((error) => {
+          if (controller.signal.aborted || requestSeq !== assetRequestSeq.current) return;
+          setAccountAssets([]);
+          setAssetError(error instanceof Error ? error.message : "연결 지갑 자산을 불러오지 못했습니다.");
+        })
+        .finally(() => {
+          if (!controller.signal.aborted && requestSeq === assetRequestSeq.current) setAssetLoading(false);
+        });
+      return () => controller.abort();
+    }
+
+    // ── Case 2: 지갑 미연결 + 서버 잡 불가 → 빈 목록
     if (!canUseServerJobs) {
       setAccountAssets([]);
       setAssetError("");
       setAssetLoading(false);
       return;
     }
-    const walletAddress = solanaAccount?.address ?? "";
-    const evmAddress = evmWalletAddress;
+
+    // ── Case 3: 지갑 미연결 + 로그인됨 → 서버 계정 자산 (연결된 지갑 DB 조회 or 데모)
+    if (isWalletLoginSession) {
+      setAccountAssets([]);
+      setAssetError("지갑 로그인 세션은 연결 지갑 잔고 확인이 필요합니다.");
+      setAssetLoading(false);
+      return;
+    }
     const controller = new AbortController();
     const requestSeq = assetRequestSeq.current + 1;
     assetRequestSeq.current = requestSeq;
     setAssetLoading(true);
     setAssetError("");
-    const loadAssets = async (): Promise<AccountAssetBalance[]> => {
-      if (hasWallet && (walletAddress || evmAddress)) {
-        return listWalletAssets(walletAddress, { signal: controller.signal }, evmAddress);
-      }
-      if (isWalletLoginSession) {
-        throw new Error("지갑 로그인 세션은 연결 지갑 잔고 확인이 필요합니다.");
-      }
-      return listAccountAssets({ signal: controller.signal });
-    };
-    void loadAssets()
+    void listAccountAssets({ signal: controller.signal })
       .then((rows) => {
         if (controller.signal.aborted || requestSeq !== assetRequestSeq.current) return;
         setAccountAssets(rows);
@@ -210,7 +236,7 @@ export function OrchestratorBoard({
       .catch((error) => {
         if (controller.signal.aborted || requestSeq !== assetRequestSeq.current) return;
         setAccountAssets([]);
-        setAssetError(error instanceof Error ? error.message : "연결 지갑 자산을 불러오지 못했습니다.");
+        setAssetError(error instanceof Error ? error.message : "계정 자산을 불러오지 못했습니다.");
       })
       .finally(() => {
         if (!controller.signal.aborted && requestSeq === assetRequestSeq.current) setAssetLoading(false);

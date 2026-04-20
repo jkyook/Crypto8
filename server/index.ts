@@ -54,6 +54,12 @@ import {
   closePosition,
   getPositionById
 } from "./intentStore";
+import {
+  verifyPosition,
+  verifyAllPositions,
+  enrichPositionsWithOnchain,
+  isPositionStale
+} from "./positionVerifier";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
@@ -503,7 +509,9 @@ app.get("/api/account/assets", requireAuth(["orchestrator", "security", "viewer"
   res.json({ ok: true, assets: await listAccountAssets(username, role) });
 });
 
-app.get("/api/account/wallet-assets", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+// wallet-assets: 지갑 주소는 온체인 공개 데이터이므로 인증 불필요.
+// 로그인 없이 지갑 연결만으로 잔고를 표시할 수 있어야 한다.
+app.get("/api/account/wallet-assets", async (req, res) => {
   const walletAddress = typeof req.query.walletAddress === "string" ? req.query.walletAddress : "";
   const evmAddress = typeof req.query.evmAddress === "string" ? req.query.evmAddress : "";
   if (!walletAddress && !evmAddress) {
@@ -1131,13 +1139,148 @@ app.get("/api/intents", requireAuth, async (req, res) => {
 });
 
 /**
- * GET /api/positions — 현재 사용자의 확정 Position 목록
- * (receipt 확인 후 생성된 온체인 포지션만 포함)
+ * GET /api/positions
+ * 현재 사용자의 확정 Position 목록 + 온체인 검증 데이터.
+ *
+ * Query params:
+ *   verify=true          — 온체인 실시간 재조회 강제 (slow, ~2초)
+ *   wallet=0x...         — EVM 지갑 주소 전달 (Aave 검증에 필요)
+ *   stale_only=true      — last_synced_at 기준 스테일한 포지션만 재검증
+ *
+ * 기본값: 캐시된 onchainDataJson 반환 (5분 캐시).
+ * 스테일하거나 verify=true 이면 온체인 재조회.
  */
 app.get("/api/positions", requireAuth, async (req, res) => {
   const username = res.locals.user.username as string;
+  const forceVerify = req.query["verify"] === "true";
+  const staleOnly = req.query["stale_only"] === "true";
+  const walletAddress = typeof req.query["wallet"] === "string" ? req.query["wallet"] : undefined;
+
   const positions = await listPositionsByUser(username);
-  res.json({ ok: true, positions });
+  if (positions.length === 0) {
+    res.json({ ok: true, positions: [], verificationSummary: null });
+    return;
+  }
+
+  // 검증 대상 필터링
+  const toVerify = forceVerify
+    ? positions
+    : staleOnly
+    ? positions.filter(isPositionStale)
+    : positions.filter(p => isPositionStale(p));  // 기본: 스테일한 것만 재조회
+
+  // 검증 실행 (비동기, 타임아웃 10초)
+  let enriched: Array<(typeof positions)[number] & { verify: Awaited<ReturnType<typeof verifyPosition>> | null }>;
+  try {
+    enriched = await Promise.race([
+      enrichPositionsWithOnchain(positions, walletAddress, forceVerify),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("verification timeout")), 10_000)
+      )
+    ]);
+  } catch {
+    // 타임아웃/에러 시 캐시 데이터만 반환
+    enriched = positions.map(pos => ({
+      ...pos,
+      verify: pos.onchainDataJson
+        ? (() => { try { return JSON.parse(pos.onchainDataJson) as Awaited<ReturnType<typeof verifyPosition>>; } catch { return null; } })()
+        : null
+    }));
+  }
+
+  // 검증 요약
+  const verifyResults = enriched.map(p => p.verify).filter(Boolean) as Awaited<ReturnType<typeof verifyPosition>>[];
+  const summary = {
+    total: positions.length,
+    verified: verifyResults.filter(v => v.status === "verified").length,
+    drift: verifyResults.filter(v => v.status === "drift").length,
+    closed_onchain: verifyResults.filter(v => v.status === "closed_onchain").length,
+    rpc_error: verifyResults.filter(v => v.status === "rpc_error").length,
+    unsupported: verifyResults.filter(v => v.status === "unsupported").length
+  };
+
+  res.json({
+    ok: true,
+    positions: enriched,
+    verificationSummary: summary
+  });
+});
+
+/**
+ * GET /api/positions/:id/verify
+ * 단일 포지션 온체인 즉시 재검증.
+ * 항상 온체인을 새로 조회하며 DB를 갱신한다.
+ *
+ * Query params:
+ *   wallet=0x...  — EVM 지갑 주소 (없으면 aave_usdc_positions에서 자동 조회)
+ */
+app.get("/api/positions/:positionId/verify", requireAuth, async (req, res) => {
+  const { positionId } = req.params as { positionId: string };
+  const walletAddress = typeof req.query["wallet"] === "string" ? req.query["wallet"] : undefined;
+  const username = res.locals.user.username as string;
+
+  const position = await getPositionById(positionId);
+  if (!position || position.username !== username) {
+    res.status(404).json({ ok: false, message: "position not found" });
+    return;
+  }
+
+  const result = await verifyPosition(position, walletAddress);
+
+  res.json({
+    ok: true,
+    positionId,
+    verify: result,
+    // closed_onchain 감지 시 명시적 경고
+    alert: result.status === "closed_onchain"
+      ? "⚠️ 온체인에서 포지션이 감지되지 않습니다. 외부 출금 여부를 확인하세요."
+      : result.status === "drift"
+      ? `⚠️ DB 잔고와 온체인 잔고 차이: ${result.driftPct?.toFixed(1)}%`
+      : null
+  });
+});
+
+/**
+ * POST /api/positions/verify-all
+ * 현재 사용자의 모든 active 포지션을 일괄 온체인 재검증.
+ * Body: { wallet?: string }
+ */
+app.post("/api/positions/verify-all", requireAuth, async (req, res) => {
+  const username = res.locals.user.username as string;
+  const body = req.body as { wallet?: unknown };
+  const walletAddress = typeof body.wallet === "string" ? body.wallet : undefined;
+
+  const positions = await listPositionsByUser(username);
+  if (positions.length === 0) {
+    res.json({ ok: true, results: [], message: "active 포지션 없음" });
+    return;
+  }
+
+  const results = await verifyAllPositions(
+    positions,
+    walletAddress ? { "*": walletAddress } : undefined
+  );
+
+  const closedOnchain = results.filter(r => r.status === "closed_onchain");
+  const drifted = results.filter(r => r.status === "drift");
+  const errors = results.filter(r => r.status === "rpc_error");
+
+  res.json({
+    ok: true,
+    results,
+    summary: {
+      total: results.length,
+      verified: results.filter(r => r.status === "verified").length,
+      drift: drifted.length,
+      closed_onchain: closedOnchain.length,
+      rpc_error: errors.length,
+      unsupported: results.filter(r => r.status === "unsupported").length
+    },
+    alerts: [
+      ...closedOnchain.map(r => `[CLOSED_ONCHAIN] ${r.protocol}/${r.chain} positionId=${r.positionId}: ${r.detail}`),
+      ...drifted.map(r => `[DRIFT] ${r.protocol}/${r.chain} positionId=${r.positionId}: ${r.detail}`)
+    ]
+  });
 });
 
 /**

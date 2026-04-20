@@ -786,6 +786,8 @@ export async function listAccountAssets(init: Pick<RequestInit, "signal"> = {}):
   return Array.isArray(raw.assets) ? raw.assets : [];
 }
 
+// 지갑 잔고는 온체인 공개 데이터 → 인증 없이 직접 fetch (authedFetch 불필요)
+// 로그인 여부와 관계없이 지갑을 연결하면 실제 잔고를 바로 표시한다.
 export async function listWalletAssets(
   walletAddress: string,
   init: Pick<RequestInit, "signal"> = {},
@@ -798,7 +800,8 @@ export async function listWalletAssets(
   if (evmAddress) {
     query.set("evmAddress", evmAddress);
   }
-  const response = await authedFetch(`/api/account/wallet-assets?${query.toString()}`, init);
+  const path = `/api/account/wallet-assets?${query.toString()}`;
+  const response = await fetchWithLocal8787Fallback(path, { signal: init.signal }, "연결 지갑 자산 조회");
   const raw = (await readJsonFromApiResponse(response, "연결 지갑 자산 조회")) as {
     message?: string;
     assets?: AccountAssetBalance[];
