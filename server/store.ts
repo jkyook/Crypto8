@@ -9,7 +9,8 @@ import type {
 } from "./types";
 import type { ExecutionAdapterBundle } from "./executionAdapter";
 import type { ExecutionMode } from "./adapters/types";
-import { getEffectiveExecutionMode, runExecutionAdapter } from "./executionAdapter";
+import { runExecutionAdapter } from "./executionAdapter";
+import { getEffectiveExecutionMode } from "./runtimeMode";
 import { getDb } from "./db";
 import { MAX_DEPOSIT_USD } from "./limits";
 import {
@@ -99,39 +100,96 @@ export async function createJob(input: JobInput, requestedBy: string): Promise<E
     requestedBy
   };
   const db = getDb();
-  await db.job.create({
-    data: {
-      id: job.id,
-      createdAt: job.createdAt,
-      status: job.status,
-      depositUsd: input.depositUsd,
-      isRangeOut: input.isRangeOut ? 1 : 0,
-      isDepegAlert: input.isDepegAlert ? 1 : 0,
-      hasPendingRelease: input.hasPendingRelease ? 1 : 0,
-      riskLevel: job.riskLevel,
-      sourceAsset: input.sourceAsset,
-      productNetwork: input.productNetwork,
-      productSubtype: input.productSubtype,
-      requestedBy
-    }
-  });
+  await db.$executeRawUnsafe(
+    `INSERT INTO jobs
+      (id, created_at, status, deposit_usd, is_range_out, is_depeg_alert, has_pending_release, risk_level, source_asset, product_network, product_subtype, requested_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    job.id,
+    job.createdAt,
+    job.status,
+    input.depositUsd,
+    input.isRangeOut ? 1 : 0,
+    input.isDepegAlert ? 1 : 0,
+    input.hasPendingRelease ? 1 : 0,
+    job.riskLevel,
+    input.sourceAsset ?? null,
+    input.productNetwork ?? null,
+    input.productSubtype ?? null,
+    requestedBy
+  );
   return job;
 }
 
 export async function listJobs(scope: JobListScope): Promise<ExecutionJob[]> {
   const db = getDb();
-  const where = scope.role === "security" ? {} : { requestedBy: scope.username };
-  const rows = await db.job.findMany({ where, orderBy: { createdAt: "desc" } });
+  const rows = scope.role === "security"
+    ? await db.$queryRawUnsafe<Array<{
+        id: string;
+        createdAt: string;
+        status: string;
+        depositUsd: number;
+        isRangeOut: number;
+        isDepegAlert: number;
+        hasPendingRelease: number;
+        riskLevel: string;
+        sourceAsset?: string | null;
+        productNetwork?: string | null;
+        productSubtype?: string | null;
+        requestedBy: string | null;
+      }>>(
+        `SELECT id, created_at AS createdAt, status, deposit_usd AS depositUsd, is_range_out AS isRangeOut, is_depeg_alert AS isDepegAlert, has_pending_release AS hasPendingRelease, risk_level AS riskLevel, source_asset AS sourceAsset, product_network AS productNetwork, product_subtype AS productSubtype, requested_by AS requestedBy
+         FROM jobs
+         ORDER BY created_at DESC`
+      )
+    : await db.$queryRawUnsafe<Array<{
+        id: string;
+        createdAt: string;
+        status: string;
+        depositUsd: number;
+        isRangeOut: number;
+        isDepegAlert: number;
+        hasPendingRelease: number;
+        riskLevel: string;
+        sourceAsset?: string | null;
+        productNetwork?: string | null;
+        productSubtype?: string | null;
+        requestedBy: string | null;
+      }>>(
+        `SELECT id, created_at AS createdAt, status, deposit_usd AS depositUsd, is_range_out AS isRangeOut, is_depeg_alert AS isDepegAlert, has_pending_release AS hasPendingRelease, risk_level AS riskLevel, source_asset AS sourceAsset, product_network AS productNetwork, product_subtype AS productSubtype, requested_by AS requestedBy
+         FROM jobs
+         WHERE requested_by = ?
+         ORDER BY created_at DESC`,
+        scope.username
+      );
   return rows.map(rowToExecutionJob);
 }
 
 export async function getJob(jobId: string): Promise<ExecutionJob | undefined> {
   const db = getDb();
-  const row = await db.job.findUnique({ where: { id: jobId } });
-  if (!row) {
+  const rows = await db.$queryRawUnsafe<Array<{
+    id: string;
+    createdAt: string;
+    status: string;
+    depositUsd: number;
+    isRangeOut: number;
+    isDepegAlert: number;
+    hasPendingRelease: number;
+    riskLevel: string;
+    sourceAsset?: string | null;
+    productNetwork?: string | null;
+    productSubtype?: string | null;
+    requestedBy: string | null;
+  }>>(
+    `SELECT id, created_at AS createdAt, status, deposit_usd AS depositUsd, is_range_out AS isRangeOut, is_depeg_alert AS isDepegAlert, has_pending_release AS hasPendingRelease, risk_level AS riskLevel, source_asset AS sourceAsset, product_network AS productNetwork, product_subtype AS productSubtype, requested_by AS requestedBy
+     FROM jobs
+     WHERE id = ?
+     LIMIT 1`,
+    jobId
+  );
+  if (!rows[0]) {
     return undefined;
   }
-  return rowToExecutionJob(row);
+  return rowToExecutionJob(rows[0]);
 }
 
 export async function cancelJob(jobId: string, auth: JobListScope): Promise<ExecutionJob> {
@@ -146,8 +204,12 @@ export async function cancelJob(jobId: string, auth: JobListScope): Promise<Exec
     throw new Error("executed job cannot be cancelled");
   }
   const db = getDb();
-  const updated = await db.job.update({ where: { id: jobId }, data: { status: "cancelled" } });
-  return rowToExecutionJob(updated);
+  await db.$executeRawUnsafe(`UPDATE jobs SET status = 'cancelled' WHERE id = ?`, jobId);
+  const updated = await getJob(jobId);
+  if (!updated) {
+    throw new Error("job not found after cancel");
+  }
+  return updated;
 }
 
 export async function approveJob(args: {
@@ -377,6 +439,7 @@ export async function executeJob(
   message: string;
   job?: ExecutionJob;
   txId?: string;
+  simulationId?: string;
   summary?: string;
   payload?: ExecutionEventPayloadV1;
 }> {
@@ -395,6 +458,7 @@ export async function executeJob(
       message: `idempotent replay: ${existingIdempotent.message}`,
       job,
       txId: existingIdempotent.txId,
+      simulationId: existingIdempotent.payload?.simulationId,
       summary: existingIdempotent.summary,
       payload: existingIdempotent.payload
     };
@@ -408,6 +472,7 @@ export async function executeJob(
     });
     const replayPayload = snapshotAdapterPayload(meta ?? {}, {
       mode: auditMode,
+      simulationId: latest?.payloadJson ? parsePayloadJson(latest.payloadJson)?.simulationId : undefined,
       adapterResults: latest?.payloadJson ? parsePayloadJson(latest.payloadJson)?.adapterResults : undefined
     });
     await createExecutionEvent({
@@ -418,6 +483,7 @@ export async function executeJob(
       message: "already executed - idempotent skip",
       idempotencyKey,
       txId: latest?.txId ?? undefined,
+      simulationId: parsePayloadJson(latest?.payloadJson)?.simulationId,
       summary: latest?.summary ?? undefined,
       payload: replayPayload
     });
@@ -426,6 +492,7 @@ export async function executeJob(
       message: "already executed - idempotent skip",
       job,
       txId: latest?.txId ?? undefined,
+      simulationId: parsePayloadJson(latest?.payloadJson)?.simulationId,
       summary: latest?.summary ?? undefined,
       payload: replayPayload
     };
@@ -550,6 +617,7 @@ export async function executeJob(
 
   const okPayload = snapshotAdapterPayload(meta ?? {}, {
     mode: execution.mode,
+    simulationId: execution.simulationId,
     adapterResults: execution.adapterResults.map((r) => ({
       protocol: r.protocol,
       chain: r.chain,
@@ -569,6 +637,7 @@ export async function executeJob(
     message: "execution accepted",
     idempotencyKey,
     txId: execution.txId,
+    simulationId: execution.simulationId,
     summary: (execution.summary ?? "") + warningNote,
     payload: okPayload
   });
@@ -577,6 +646,7 @@ export async function executeJob(
     message: "execution accepted",
     job,
     txId: execution.txId,
+    simulationId: execution.simulationId,
     summary: (execution.summary ?? "") + warningNote,
     payload: okPayload
   };

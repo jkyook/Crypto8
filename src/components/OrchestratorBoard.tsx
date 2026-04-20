@@ -19,6 +19,8 @@ import {
   linkAccountWallet,
   readAccessTokenSnapshot,
   subscribeLocalAuth,
+  updateRuntimeExecutionMode,
+  updateRuntimeLiveFlag,
   type AccountAssetBalance,
   type AccountAssetSymbol,
   type AaveUsdcChain,
@@ -90,6 +92,10 @@ export function OrchestratorBoard({
   const [apiMessage, setApiMessage] = useState<string>("");
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
+  const [runtimeModeUpdating, setRuntimeModeUpdating] = useState(false);
+  const [runtimeModeError, setRuntimeModeError] = useState("");
+  const [runtimeFlagUpdating, setRuntimeFlagUpdating] = useState(false);
+  const [runtimeFlagError, setRuntimeFlagError] = useState("");
   const [accountAssets, setAccountAssets] = useState<AccountAssetBalance[]>([]);
   const [assetLoading, setAssetLoading] = useState(false);
   const [assetError, setAssetError] = useState("");
@@ -102,6 +108,8 @@ export function OrchestratorBoard({
   const [aaveLoading, setAaveLoading] = useState(false);
   const [aaveError, setAaveError] = useState("");
   const [aaveTxStatus, setAaveTxStatus] = useState("");
+  const [aaveLiveTxHash, setAaveLiveTxHash] = useState("");
+  const [copiedTxHash, setCopiedTxHash] = useState("");
   const [aaveWithdrawLoading, setAaveWithdrawLoading] = useState(false);
   const [executionModeIntent, setExecutionModeIntent] = useState<"dry-run" | "live">("dry-run");
   const [lastExecution, setLastExecution] = useState<ExecuteJobResponse | null>(null);
@@ -178,6 +186,8 @@ export function OrchestratorBoard({
   const jwtAccess = useSyncExternalStore(subscribeLocalAuth, readAccessTokenSnapshot, () => "");
   const session = useMemo(() => getSession(), [jwtAccess]);
   const isWalletLoginSession = Boolean(session?.username.startsWith("wallet_"));
+  const canToggleServerMode = Boolean(session && (session.role === "orchestrator" || session.role === "security"));
+  const canToggleRuntimeFlags = canToggleServerMode;
   const canUseServerJobs = jwtAccess.length > 0 && allowJobExecutionProp !== false;
   const linkedEvmWalletAddress = useMemo(
     () => linkedWallets.find((wallet) => {
@@ -192,6 +202,35 @@ export function OrchestratorBoard({
     : aaveUsdcChain
       ? `EVM 지갑 ${effectiveEvmWalletAddress ? `${effectiveEvmWalletAddress.slice(0, 6)}...${effectiveEvmWalletAddress.slice(-4)}` : "미연결"} 기준으로 ${aaveUsdcChain} USDC 잔고를 조회합니다.`
       : "";
+
+  const setServerExecutionMode = async (mode: "dry-run" | "live") => {
+    setRuntimeModeUpdating(true);
+    setRuntimeModeError("");
+    try {
+      const info = await updateRuntimeExecutionMode(mode);
+      setRuntime(info);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "서버 실행 모드 변경 실패";
+      setRuntimeModeError(msg);
+      setApiMessage(msg);
+    } finally {
+      setRuntimeModeUpdating(false);
+    }
+  };
+  const setUniswapLiveFlag = async (enabled: boolean) => {
+    setRuntimeFlagUpdating(true);
+    setRuntimeFlagError("");
+    try {
+      const info = await updateRuntimeLiveFlag("uniswap", enabled);
+      setRuntime(info);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "프로토콜 live 플래그 변경 실패";
+      setRuntimeFlagError(msg);
+      setApiMessage(msg);
+    } finally {
+      setRuntimeFlagUpdating(false);
+    }
+  };
   useEffect(() => {
     const walletAddress = solanaAccount?.address ?? "";
     const evmAddress = effectiveEvmWalletAddress ?? "";
@@ -315,8 +354,10 @@ export function OrchestratorBoard({
     return () => controller.abort();
   }, [canUseServerJobs]);
 
+  const serverExecutionMode = runtime?.executionMode ?? "dry-run";
   const displayExecutionMode = executionModeIntent;
   const isLiveExecution = displayExecutionMode === "live";
+  const isLiveExecutionEnabled = serverExecutionMode === "live";
   const [customAllocationPercents, setCustomAllocationPercents] = useState<number[] | null>(null);
   const baseQuoteRows = useMemo(() => {
     const ar = lastExecution?.payload?.adapterResults;
@@ -356,6 +397,48 @@ export function OrchestratorBoard({
     return baseQuoteRows.map((row) => Number(((row.allocationUsd / total) * 100).toFixed(2)));
   }, [baseQuoteRows, depositUsd, job]);
   const isResultQuote = Boolean(lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0));
+  const liveExecutionBlockers = useMemo(() => {
+    if (!isLiveExecution) {
+      return [] as string[];
+    }
+    const blockers = new Set<string>();
+    for (const row of quoteRows) {
+      switch (row.protocol) {
+        case "Aave":
+          blockers.add("Aave 메인 서버 실행은 아직 미구현입니다. Aave 실입금은 아래 Aave 패널에서만 가능합니다.");
+          break;
+        case "Uniswap":
+          if (!runtime?.liveAdapterFlags?.uniswap) {
+            blockers.add(
+              runtime?.configuredLiveAdapterFlags?.uniswap
+                ? "Uniswap live는 현재 설정상 켜져 있지만 LIVE_EXECUTION_CONFIRM=YES가 아직 아닙니다."
+                : "Uniswap live는 현재 OFF입니다. 상단 토글로 켜거나 ENABLE_UNISWAP_LIVE=true + LIVE_EXECUTION_CONFIRM=YES가 필요합니다."
+            );
+          }
+          break;
+        case "Orca":
+          if (!runtime?.liveAdapterFlags?.orca) {
+            blockers.add("Orca live는 ENABLE_ORCA_LIVE=true + LIVE_EXECUTION_CONFIRM=YES + SOLANA_EXECUTOR_PRIVATE_KEY_FILE가 필요합니다.");
+          }
+          break;
+        case "Aerodrome":
+          blockers.add("Aerodrome live는 아직 미구현입니다.");
+          break;
+        case "Curve":
+          blockers.add("Curve live는 아직 미구현입니다.");
+          break;
+        default:
+          break;
+      }
+    }
+    if (serverExecutionMode !== "live") {
+      blockers.add("서버 실행 모드가 dry-run입니다. 아래 토글에서 서버 live로 바꿔야 합니다.");
+    }
+    return Array.from(blockers);
+  }, [isLiveExecution, quoteRows, runtime?.liveAdapterFlags?.uniswap, serverExecutionMode]);
+  const canRunServerLive = isLiveExecution && serverExecutionMode === "live" && liveExecutionBlockers.length === 0;
+  const canRunAaveDirectLive = isLiveExecution && isAaveUsdcProduct && quoteRows.every((row) => row.protocol === "Aave");
+  const canRunActualLive = canRunServerLive || canRunAaveDirectLive;
   const adapterResultStatus = (index: number): string | undefined => lastExecution?.payload?.adapterResults?.[index]?.status;
   const adapterResultStatusClass = (status?: string): string => {
     if (status === "confirmed" || status === "simulated") return "badge badge-low";
@@ -363,6 +446,26 @@ export function OrchestratorBoard({
     if (status === "unsupported") return "badge badge-high";
     if (status === "failed") return "badge badge-critical";
     return "badge badge-medium";
+  };
+  const compactTxIdList = (raw?: string): string => {
+    if (!raw) return "";
+    const ids = Array.from(new Set(raw.split(",").map((item) => item.trim()).filter(Boolean)));
+    const compact = ids
+      .map((id) => (id.length <= 18 ? id : `${id.slice(0, 8)}...${id.slice(-8)}`))
+      .join(" · ");
+    return ids.length > 3 ? `${compact} · +${ids.length - 3}` : compact;
+  };
+  const compactExecutionId = (raw?: string): string => {
+    if (!raw) return "";
+    return raw.length <= 18 ? raw : `${raw.slice(0, 8)}...${raw.slice(-8)}`;
+  };
+  const copyToClipboard = async (value: string) => {
+    if (!value || typeof navigator === "undefined" || !navigator.clipboard) return;
+    await navigator.clipboard.writeText(value);
+    setCopiedTxHash(value);
+    window.setTimeout(() => {
+      setCopiedTxHash((current) => (current === value ? "" : current));
+    }, 1800);
   };
   const adjustedAllocationTotal = quoteRows.reduce((acc, row) => acc + row.allocationUsd, 0);
   const connectedWalletNetwork = useMemo(() => {
@@ -409,7 +512,7 @@ export function OrchestratorBoard({
   const aaveFundingOk = !isAaveUsdcProduct || Boolean(effectiveEvmWalletAddress && aavePosition && aavePosition.walletUsdc >= depositUsd);
   const canFundDeposit = canUseServerJobs && hasWallet && assetReadiness.isSufficient && aaveFundingOk;
   const canStartDepositFlow = canUseServerJobs && hasWallet && canFundDeposit;
-  const canExecute = Boolean(job) && isExecutionConfirmed && canStartDepositFlow;
+  const canExecute = Boolean(job) && isExecutionConfirmed && canStartDepositFlow && (!isLiveExecution || canRunActualLive);
   const quoteTitle = lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0)
     ? "실행 결과 배분"
     : "입금 처리할 항목";
@@ -540,7 +643,13 @@ export function OrchestratorBoard({
     setIsExecutionDone(true);
     setLastExecution(result);
     const rid = result.requestId ? ` · requestId=${result.requestId}` : "";
-    setApiMessage(`실행 결과: ${result.message}${rid}${authNote}`);
+    const executionId =
+      result.simulationId
+        ? ` · simulationId=${result.simulationId}`
+        : result.txId
+          ? ` · txId=${result.txId}`
+          : "";
+    setApiMessage(`실행 결과: ${result.message}${rid}${executionId}${authNote}`);
     await onExecutionComplete?.();
   };
 
@@ -593,8 +702,9 @@ export function OrchestratorBoard({
     };
     setIsExecutionDone(true);
     setLastExecution(result);
-    setApiMessage(`${message} · txId=${supplyHash}`);
-    setAaveTxStatus(result.summary ?? message);
+    setAaveLiveTxHash(supplyHash);
+    setApiMessage(`${message} · txHash=${supplyHash}`);
+    setAaveTxStatus(`${result.summary ?? message} · txHash=${supplyHash}`);
     await fetchAaveUsdcPosition(aaveUsdcChain, effectiveEvmWalletAddress).then(setAavePosition).catch(() => undefined);
     await onExecutionComplete?.();
   };
@@ -646,7 +756,11 @@ export function OrchestratorBoard({
       return;
     }
     try {
-      if (isLiveExecution && isAaveUsdcProduct) {
+      if (isLiveExecution && liveExecutionBlockers.length > 0 && !canRunAaveDirectLive) {
+        setApiMessage(`현재 선택 상품은 live 실행이 아직 지원되지 않습니다. ${liveExecutionBlockers.join(" / ")}`);
+        return;
+      }
+      if (canRunAaveDirectLive) {
         await runAaveLiveSupply();
         return;
       }
@@ -726,12 +840,22 @@ export function OrchestratorBoard({
     setIsExecutionConfirmed(true);
     setApiMessage(
       hasWallet
-        ? "리스크 검토 완료. 5번 버튼으로 내 입금 실행을 요청하세요."
+        ? isLiveExecution
+          ? canRunAaveDirectLive
+            ? "리스크 검토 완료. 5번 버튼을 누르면 Aave는 실제 네트워크로 입금됩니다."
+            : canRunServerLive
+              ? "리스크 검토 완료. 5번 버튼으로 내 입금 실행을 요청하세요."
+              : `리스크 검토 완료. 현재 선택 상품은 live 미지원입니다. ${liveExecutionBlockers.join(" / ")}`
+          : "리스크 검토 완료. 5번 버튼으로 내 입금 실행을 요청하세요."
         : "리스크 검토 완료. dry-run은 지갑 없이 내 실행 기록을 남길 수 있고, live는 Phantom(Solana) 서명이 필요합니다."
     );
   };
 
-  const executionButtonLabel = isLiveExecution ? "4. 실제 입금 실행" : "4. 내 입금 실행 (dry-run)";
+  const executionButtonLabel = isLiveExecution
+    ? canRunActualLive
+      ? "4. 실제 입금 실행"
+      : "4. 실제 입금 불가 (live 미지원)"
+    : "4. 내 입금 실행 (dry-run)";
 
   return (
     <section className="card orchestrator-card">
@@ -739,6 +863,77 @@ export function OrchestratorBoard({
       {runtime?.serverExecutionNote || !canUseServerJobs ? (
         <div className="runtime-scope-notice" role="note">
           {runtime?.serverExecutionNote ? <p className="runtime-scope-sub">{runtime.serverExecutionNote}</p> : null}
+          {runtimeModeError ? <p className="runtime-scope-sub runtime-scope-sub--error">{runtimeModeError}</p> : null}
+          <div className="runtime-mode-switcher" role="group" aria-label="서버 실행 모드 토글">
+            <span className="runtime-mode-switcher-label">
+              현재 서버 모드: <strong>{runtime?.executionMode?.toUpperCase() ?? "조회 중"}</strong>
+              {runtime?.executionModeOverride ? ` · 오버라이드 ${runtime.executionModeOverride.toUpperCase()}` : ""}
+            </span>
+            {canToggleServerMode ? (
+              <div className="button-row">
+                <button
+                  type="button"
+                  className={runtime?.executionMode === "dry-run" ? "ghost-btn active" : "ghost-btn"}
+                  onClick={() => void setServerExecutionMode("dry-run")}
+                  disabled={runtimeModeUpdating}
+                >
+                  서버 dry-run
+                </button>
+                <button
+                  type="button"
+                  className={runtime?.executionMode === "live" ? "ghost-btn active" : "ghost-btn"}
+                  onClick={() => void setServerExecutionMode("live")}
+                  disabled={runtimeModeUpdating}
+                >
+                  서버 live
+                </button>
+              </div>
+            ) : (
+              <p className="runtime-scope-sub">
+                서버 모드 토글은 orchestrator 또는 security 권한이 있는 계정만 사용할 수 있습니다.
+              </p>
+            )}
+            <div className="runtime-live-flag-switcher" role="group" aria-label="Uniswap live 플래그 토글">
+              <span className="runtime-mode-switcher-label">
+                Uniswap live 설정: <strong>{runtime?.configuredLiveAdapterFlags?.uniswap ? "ON" : "OFF"}</strong>
+                {runtime?.liveAdapterFlagSources?.uniswap ? ` · ${runtime.liveAdapterFlagSources.uniswap}` : ""}
+              </span>
+              {canToggleRuntimeFlags ? (
+                <div className="button-row">
+                  <button
+                    type="button"
+                    className={runtime?.configuredLiveAdapterFlags?.uniswap ? "ghost-btn active" : "ghost-btn"}
+                    onClick={() => void setUniswapLiveFlag(true)}
+                    disabled={runtimeFlagUpdating}
+                  >
+                    Uniswap live ON
+                  </button>
+                  <button
+                    type="button"
+                    className={!runtime?.configuredLiveAdapterFlags?.uniswap ? "ghost-btn active" : "ghost-btn"}
+                    onClick={() => void setUniswapLiveFlag(false)}
+                    disabled={runtimeFlagUpdating}
+                  >
+                    Uniswap live OFF
+                  </button>
+                </div>
+              ) : (
+                <p className="runtime-scope-sub">Uniswap live 플래그 변경은 orchestrator 또는 security 권한이 있는 계정만 사용할 수 있습니다.</p>
+              )}
+              <p className="runtime-scope-sub">
+                현재 live 실행 가능한 Uniswap 경로는 Arbitrum USDC-USDT뿐입니다. 실효 상태는{" "}
+                <strong>{runtime?.liveAdapterFlags?.uniswap ? "ON" : "OFF"}</strong>이며, LIVE_EXECUTION_CONFIRM=YES가 추가로 필요합니다.
+              </p>
+              {runtimeFlagError ? <p className="runtime-scope-sub runtime-scope-sub--error">{runtimeFlagError}</p> : null}
+            </div>
+            {isLiveExecution && liveExecutionBlockers.length > 0 ? (
+              <ul className="runtime-live-blockers">
+                {liveExecutionBlockers.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
           {!canUseServerJobs ? (
             <p className="runtime-scope-sub" role="status">
           1~3단계는 <strong>로그인 · 계정</strong> 메뉴에서 아이디·비밀번호(JWT)로 로그인(또는 이용자 가입)한 뒤에 사용할 수 있습니다. dry-run은 Phantom 서명 없이도 내 실행 기록을 남길 수 있습니다.
@@ -755,6 +950,16 @@ export function OrchestratorBoard({
         <p>금액: ${depositUsd.toFixed(2)}</p>
         <p>예상 수익: ${initialEstYieldUsd.toFixed(2)}</p>
         <p>예상 수수료: ${initialEstFeeUsd.toFixed(2)}</p>
+        <p>
+          실행 모드: <strong>{isLiveExecution ? "실제 입금" : "dry-run"}</strong>
+          {isLiveExecution && isAaveUsdcProduct
+            ? " · Aave는 Phantom EVM 서명 후 실제 네트워크로 전송"
+            : isLiveExecution
+              ? isLiveExecutionEnabled
+                ? " · 서버 live 모드로 실제 실행"
+                : " · 현재 서버는 dry-run"
+              : ""}
+        </p>
       </div>
 
       <div className="deposit-asset-routing-card" role="region" aria-label="계정 자산 및 스왑 준비">
@@ -843,6 +1048,11 @@ export function OrchestratorBoard({
               <strong>{needsEvmWalletForAave ? "연결 필요" : "준비 완료"}</strong>
               <em>{aaveWalletNotice}</em>
             </div>
+            {isLiveExecution && isAaveUsdcProduct ? (
+              <p className="deposit-asset-muted">
+                실입금은 서버 모드와 무관하게 Phantom EVM 서명으로 실제 Arbitrum/Base 네트워크에 전송됩니다.
+              </p>
+            ) : null}
             {aaveLoading ? <p className="deposit-asset-muted">Aave 포지션 조회 중...</p> : null}
             {aaveError ? <p className="deposit-asset-error">{aaveError}</p> : null}
             {aavePosition ? (
@@ -863,6 +1073,24 @@ export function OrchestratorBoard({
                   <em>aToken</em>
                   <code>{`${aavePosition.aTokenAddress.slice(0, 6)}...${aavePosition.aTokenAddress.slice(-4)}`}</code>
                 </span>
+              </div>
+            ) : null}
+            {isLiveExecution && isAaveUsdcProduct && aaveLiveTxHash ? (
+              <div className="deposit-aave-live-result" role="status">
+                <span className={`badge ${adapterResultStatusClass(lastExecution?.payload?.adapterResults?.[0]?.status)}`}>
+                  {lastExecution?.payload?.adapterResults?.[0]?.status ?? "submitted"}
+                </span>
+                <span className="deposit-aave-live-result-label">실제 txHash</span>
+                <code className="execution-summary-code deposit-aave-live-result-code" title={aaveLiveTxHash}>
+                  {compactExecutionId(aaveLiveTxHash)}
+                </code>
+                <button
+                  type="button"
+                  className="ghost-btn deposit-aave-copy-btn"
+                  onClick={() => void copyToClipboard(aaveLiveTxHash)}
+                >
+                  {copiedTxHash === aaveLiveTxHash ? "복사됨" : "복사"}
+                </button>
               </div>
             ) : null}
             <div className="button-row">
@@ -986,12 +1214,16 @@ export function OrchestratorBoard({
                 setApiMessage(
                   executionModeIntent === "dry-run"
                     ? "실제 입금 실행 모드로 전환했습니다. 리스크 검토 후 Phantom 서명이 필요합니다."
-                    : "dry-run 모드로 전환했습니다. 지갑 서명 없이 시뮬레이션 기록이 가능합니다."
+                    : canRunAaveDirectLive
+                      ? "실제 입금 실행 모드로 전환했습니다. Aave는 Phantom EVM 서명 후 실제 네트워크로 입금됩니다."
+                      : canRunServerLive
+                        ? "실제 입금 실행 모드로 전환했습니다."
+                        : `현재 선택 상품은 live 미지원입니다. ${liveExecutionBlockers.join(" / ")}`
                 );
               }}
               title="dry-run과 실제 입금 실행 요청 모드를 전환합니다."
             >
-              {isLiveExecution ? "실제 입금 실행" : "DRY-RUN"}
+              {isLiveExecution ? (canRunActualLive ? "실제 입금 실행" : "실제 입금 불가") : "DRY-RUN"}
             </button>
           </div>
         </div>
@@ -1067,9 +1299,28 @@ export function OrchestratorBoard({
           <p className="execution-summary-line">
             <span className="execution-summary-k">ok</span> {String(lastExecution.ok)}
           </p>
+          {lastExecution.payload?.adapterResults?.[0]?.status ? (
+            <p className="execution-summary-line execution-summary-status-line">
+              <span className="execution-summary-k">status</span>{" "}
+              <span className={`execution-summary-status-pill ${adapterResultStatusClass(lastExecution.payload.adapterResults[0].status)}`}>
+                {lastExecution.payload.adapterResults[0].status}
+              </span>
+            </p>
+          ) : null}
+          {lastExecution.simulationId ? (
+            <p className="execution-summary-line">
+              <span className="execution-summary-k">simulationId</span>{" "}
+              <code className="execution-summary-code" title={lastExecution.simulationId}>
+                {compactExecutionId(lastExecution.simulationId)}
+              </code>
+            </p>
+          ) : null}
           {lastExecution.txId ? (
             <p className="execution-summary-line">
-              <span className="execution-summary-k">txId</span> <code className="execution-summary-code">{lastExecution.txId}</code>
+              <span className="execution-summary-k">txId</span>{" "}
+              <code className="execution-summary-code" title={lastExecution.txId}>
+                {compactTxIdList(lastExecution.txId)}
+              </code>
             </p>
           ) : null}
           {lastExecution.summary ? <p className="execution-summary-line">{lastExecution.summary}</p> : null}
@@ -1178,7 +1429,9 @@ export function OrchestratorBoard({
         <div className="kpi-item">
           <p className="kpi-label">내 입금 실행 상태</p>
           <p className="kpi-value">{job?.id ? `Job ${job.id.slice(-8)}` : "작업 없음"}</p>
-          <p className="kpi-label">{apiMessage || (job ? "상태: 내 입금 실행 대기" : "상태: 대기 중")}</p>
+          <p className="kpi-label">
+            {apiMessage || (job ? "상태: 내 입금 실행 대기" : "상태: 대기 중")}
+          </p>
         </div>
       </div>
 
@@ -1192,8 +1445,13 @@ export function OrchestratorBoard({
         <div className="orchestrator-section">
           <h3>상세 옵션</h3>
           <p className="kpi-label">
-            서버 실효 모드: {runtime ? runtime.executionMode.toUpperCase() : "조회 중"} (요청 {runtime?.executionModeRequested ?? "—"}) · 화면 선택:{" "}
+            서버 실효 모드: {runtime ? runtime.executionMode.toUpperCase() : "조회 중"} (요청 {runtime?.executionModeRequested ?? "—"}
+            {runtime?.executionModeOverride ? ` · override ${runtime.executionModeOverride.toUpperCase()}` : ""}
+            ) · 화면 선택:{" "}
             {displayExecutionMode === "live" ? "실제 입금 실행" : "dry-run"}
+          </p>
+          <p className="kpi-label">
+            실제 전송 기준: Aave는 Phantom EVM 서명으로 바로 전송, 그 외 상품은 서버 live 모드가 있어야 실제 실행됩니다.
           </p>
           <div className="orchestrator-auto-checks">
             {autoChecks.map((item) => (

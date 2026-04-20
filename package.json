@@ -16,12 +16,17 @@
     "prisma:seed": "prisma db seed"
   },
   "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@orca-so/common-sdk": "^0.7.0",
+    "@orca-so/whirlpools-sdk": "^0.20.0",
     "@phantom/browser-sdk": "latest",
     "@phantom/react-sdk": "latest",
     "@prisma/client": "^6.19.3",
+    "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "latest",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
+    "decimal.js": "^10.6.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "express-rate-limit": "^8.3.2",

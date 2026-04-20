@@ -163,6 +163,7 @@ export type ExecutionEventPayload = {
   mode: "dry-run" | "live";
   correlationId?: string;
   positionId?: string;
+  simulationId?: string;
   adapterResults?: Array<{
     protocol: string;
     chain: string;
@@ -348,7 +349,33 @@ export type MarketPriceSnapshot = {
 export type RuntimeInfo = {
   executionMode: "dry-run" | "live";
   executionModeRequested: string;
+  executionModeOverride?: "dry-run" | "live" | null;
+  executionModeSource?: "env" | "override";
   liveExecutionConfirmed: boolean;
+  liveAdapterFlags?: {
+    aave: boolean;
+    uniswap: boolean;
+    orca: boolean;
+    aerodrome: boolean;
+    raydium: boolean;
+    curve: boolean;
+  };
+  configuredLiveAdapterFlags?: {
+    aave: boolean;
+    uniswap: boolean;
+    orca: boolean;
+    aerodrome: boolean;
+    raydium: boolean;
+    curve: boolean;
+  };
+  liveAdapterFlagSources?: {
+    aave: "env" | "override";
+    uniswap: "env" | "override";
+    orca: "env" | "override";
+    aerodrome: "env" | "override";
+    raydium: "env" | "override";
+    curve: "env" | "override";
+  };
   walletUiPolicy: string;
   serverExecutionNote: string;
 };
@@ -1071,6 +1098,7 @@ export type ExecuteJobResponse = {
   message: string;
   requestId?: string;
   txId?: string;
+  simulationId?: string;
   summary?: string;
   payload?: ExecutionEventPayload;
 };
@@ -1431,10 +1459,62 @@ export async function fetchRuntimeInfo(): Promise<RuntimeInfo> {
   return {
     executionMode: "dry-run",
     executionModeRequested: "dry-run",
+    executionModeOverride: null,
+    executionModeSource: "env",
     liveExecutionConfirmed: false,
+    liveAdapterFlags: {
+      aave: false,
+      uniswap: false,
+      orca: false,
+      aerodrome: false,
+      raydium: false,
+      curve: false
+    },
+    configuredLiveAdapterFlags: {
+      aave: false,
+      uniswap: false,
+      orca: false,
+      aerodrome: false,
+      raydium: false,
+      curve: false
+    },
+    liveAdapterFlagSources: {
+      aave: "env",
+      uniswap: "env",
+      orca: "env",
+      aerodrome: "env",
+      raydium: "env",
+      curve: "env"
+    },
     walletUiPolicy: "phantom-solana",
     serverExecutionNote: "서버에 연결할 수 없어 실행 모드를 확인하지 못했습니다. 기본값은 dry-run으로 간주합니다."
   };
+}
+
+export async function updateRuntimeExecutionMode(mode: "dry-run" | "live"): Promise<RuntimeInfo> {
+  const response = await authedFetch("/api/runtime/execution-mode", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode })
+  });
+  const raw = (await readJsonFromApiResponse(response, "서버 실행 모드 변경")) as RuntimeInfo & { message?: string };
+  if (!response.ok || !raw.executionMode) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "서버 실행 모드 변경 실패");
+  }
+  return raw;
+}
+
+export async function updateRuntimeLiveFlag(protocol: "uniswap", enabled: boolean): Promise<RuntimeInfo> {
+  const response = await authedFetch("/api/runtime/live-flags", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ protocol, enabled })
+  });
+  const raw = (await readJsonFromApiResponse(response, "프로토콜 live 플래그 변경")) as RuntimeInfo & { message?: string };
+  if (!response.ok || !raw.executionMode) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "프로토콜 live 플래그 변경 실패");
+  }
+  return raw;
 }
 
 export async function fetchMarketAprSnapshot(): Promise<MarketAprSnapshot> {

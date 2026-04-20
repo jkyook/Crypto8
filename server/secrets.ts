@@ -1,4 +1,5 @@
 import { readFileSync } from "fs";
+import { Keypair } from "@solana/web3.js";
 
 function normalizePrivateKey(value: string, source: string): `0x${string}` {
   const key = value.trim();
@@ -6,6 +7,32 @@ function normalizePrivateKey(value: string, source: string): `0x${string}` {
     throw new Error(`${source} must be a 32-byte hex private key with 0x prefix`);
   }
   return key as `0x${string}`;
+}
+
+function normalizeSolanaSecretKey(value: string, source: string): Keypair {
+  const trimmed = value.trim();
+  let bytes: number[] | null = null;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed) && parsed.every((item) => typeof item === "number" && Number.isInteger(item) && item >= 0 && item <= 255)) {
+      bytes = parsed as number[];
+    }
+  } catch {
+    // fall through
+  }
+  if (!bytes && trimmed.includes(",")) {
+    const parsed = trimmed
+      .split(",")
+      .map((item) => Number(item.trim()))
+      .filter((item) => Number.isInteger(item) && item >= 0 && item <= 255);
+    if (parsed.length >= 32) {
+      bytes = parsed;
+    }
+  }
+  if (!bytes) {
+    throw new Error(`${source} must be a JSON array or comma-separated byte list for a Solana secret key`);
+  }
+  return Keypair.fromSecretKey(Uint8Array.from(bytes));
 }
 
 /**
@@ -30,5 +57,25 @@ export async function loadArbitrumExecutorPrivateKey(): Promise<`0x${string}`> {
 
   throw new Error(
     "live uniswap execution requires ARBITRUM_EXECUTOR_PRIVATE_KEY_FILE backed by a secret manager or ALLOW_INSECURE_ENV_PRIVATE_KEY=true"
+  );
+}
+
+export async function loadSolanaExecutorKeypair(): Promise<Keypair> {
+  const filePath = process.env.SOLANA_EXECUTOR_PRIVATE_KEY_FILE?.trim();
+  if (filePath) {
+    return normalizeSolanaSecretKey(readFileSync(filePath, "utf8"), "SOLANA_EXECUTOR_PRIVATE_KEY_FILE");
+  }
+
+  const envKey = process.env.SOLANA_EXECUTOR_PRIVATE_KEY_JSON ?? process.env.SOLANA_EXECUTOR_PRIVATE_KEY;
+  const allowInsecureEnvKey = process.env.ALLOW_INSECURE_ENV_PRIVATE_KEY === "true" || process.env.NODE_ENV !== "production";
+  if (envKey && allowInsecureEnvKey) {
+    if (process.env.NODE_ENV === "production") {
+      console.warn("[secrets] ALLOW_INSECURE_ENV_PRIVATE_KEY=true: production is reading Solana executor key from env");
+    }
+    return normalizeSolanaSecretKey(envKey, "SOLANA_EXECUTOR_PRIVATE_KEY_JSON");
+  }
+
+  throw new Error(
+    "live orca execution requires SOLANA_EXECUTOR_PRIVATE_KEY_FILE backed by a secret manager or ALLOW_INSECURE_ENV_PRIVATE_KEY=true"
   );
 }

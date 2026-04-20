@@ -1,3 +1,5 @@
+import { isProtocolLiveExecutionEnabled } from "../runtimeMode";
+
 export type ExecutionMode = "dry-run" | "live";
 
 export type ProductNetwork = "Ethereum" | "Arbitrum" | "Base" | "Solana" | "Multi";
@@ -69,16 +71,7 @@ export type AdapterExecutionResult = {
 export function isAdapterLiveEnabled(
   protocol: "Aave" | "Uniswap" | "Orca" | "Aerodrome" | "Raydium" | "Curve"
 ): boolean {
-  if (process.env.LIVE_EXECUTION_CONFIRM !== "YES") return false;
-  const flagMap: Record<string, string> = {
-    Aave: "ENABLE_AAVE_LIVE",
-    Uniswap: "ENABLE_UNISWAP_LIVE",
-    Orca: "ENABLE_ORCA_LIVE",
-    Aerodrome: "ENABLE_AERODROME_LIVE",
-    Raydium: "ENABLE_RAYDIUM_LIVE",
-    Curve: "ENABLE_CURVE_LIVE"
-  };
-  return process.env[flagMap[protocol]] === "true";
+  return isProtocolLiveExecutionEnabled(protocol);
 }
 
 /**

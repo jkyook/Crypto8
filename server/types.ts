@@ -62,6 +62,7 @@ export type ExecutionEventPayloadV1 = {
   mode: "dry-run" | "live";
   correlationId?: string;
   positionId?: string;
+  simulationId?: string;
   adapterResults?: AdapterResultSnapshot[];
   retries?: number;
   errorMessage?: string;

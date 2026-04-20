@@ -12,30 +12,17 @@ import type {
   ProductNetwork
 } from "./adapters/types";
 import { executeUniswapPlan } from "./adapters/uniswapAdapter";
+import { getEffectiveExecutionMode } from "./runtimeMode";
 
 export type ExecutionAdapterBundle = {
-  txId: string;
+  txId?: string;
+  simulationId?: string;
   summary: string;
   mode: ExecutionMode;
   adapterResults: AdapterExecutionResult[];
   /** unsupported/failed 어댑터가 있을 때 집계된 경고 목록 */
   warnings: string[];
 };
-
-/**
- * 런타임 정보 API와 동일한 기준의 "실효" 실행 모드.
- * live 실행은 EXECUTION_MODE=live + LIVE_EXECUTION_CONFIRM=YES 가 모두 필요.
- * 그 외 모든 경우는 dry-run 으로 강제.
- */
-export function getEffectiveExecutionMode(): ExecutionMode {
-  if (
-    process.env.EXECUTION_MODE === "live" &&
-    process.env.LIVE_EXECUTION_CONFIRM === "YES"
-  ) {
-    return "live";
-  }
-  return "dry-run";
-}
 
 /**
  * 요청된 모드를 안전하게 결정.
@@ -66,6 +53,26 @@ function buildSummary(results: AdapterExecutionResult[], mode: ExecutionMode): s
   return `[${mode.toUpperCase()}] total=$${total.toFixed(2)} | ${lines.join(", ")}`;
 }
 
+function uniqueTxIds(results: AdapterExecutionResult[]): string[] {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const result of results) {
+    if (result.status !== "submitted" && result.status !== "confirmed" && result.status !== "dry-run" && result.status !== "simulated") {
+      continue;
+    }
+    const txId = result.txId.trim();
+    if (!txId || seen.has(txId)) {
+      continue;
+    }
+    seen.add(txId);
+    ids.push(txId);
+  }
+  if (ids.length > 0) {
+    return ids;
+  }
+  return Array.from(new Set(results.map((r) => r.txId.trim()).filter(Boolean)));
+}
+
 function collectWarnings(results: AdapterExecutionResult[]): string[] {
   return results
     .filter((r) => r.status === "unsupported" || r.status === "failed")
@@ -74,6 +81,10 @@ function collectWarnings(results: AdapterExecutionResult[]): string[] {
       const base = `[${label}] ${r.protocol}/${r.chain}/${r.action}`;
       return r.errorMessage ? `${base}: ${r.errorMessage}` : base;
     });
+}
+
+function buildSimulationId(job: ExecutionJob): string {
+  return `sim_${job.id}`;
 }
 
 /**
@@ -156,18 +167,12 @@ export async function runExecutionAdapter(
 
   const adapterResults = await runAdaptersByNetwork(context);
 
-  // submitted/confirmed 결과만 txId 연결 (unsupported/failed/dry-run은 제외)
-  const liveTxIds = adapterResults
-    .filter((r) => r.status === "submitted" || r.status === "confirmed")
-    .map((r) => r.txId)
-    .filter(Boolean);
-
-  const txId = liveTxIds.length > 0
-    ? liveTxIds.join(",")
-    : adapterResults.map((r) => r.txId).filter(Boolean).join(",");
+  // live 실행만 txId 연결하고, dry-run은 별도 simulationId로 구분
+  const txId = mode === "live" ? uniqueTxIds(adapterResults).join(",") : undefined;
+  const simulationId = mode === "dry-run" ? buildSimulationId(job) : undefined;
 
   const summary = buildSummary(adapterResults, mode);
   const warnings = collectWarnings(adapterResults);
 
-  return { txId, summary, mode, adapterResults, warnings };
+  return { txId, simulationId, summary, mode, adapterResults, warnings };
 }

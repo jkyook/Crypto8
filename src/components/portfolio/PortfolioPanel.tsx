@@ -178,7 +178,7 @@ export function PortfolioPanel() {
           </div>
         </div>
       </div>
-      <table className="protocol-detail-table">
+      <table className="protocol-detail-table portfolio-onchain-table">
         <thead>
           <tr>
             <th>프로토콜</th>
@@ -197,18 +197,18 @@ export function PortfolioPanel() {
             const status = verify?.status ?? position.status;
             return (
               <tr key={position.id}>
-                <td>{position.protocol}</td>
-                <td>{position.chain}</td>
-                <td>
+                <td data-label="프로토콜">{position.protocol}</td>
+                <td data-label="체인">{position.chain}</td>
+                <td data-label="상태">
                   <span className={positionStatusBadge(status)}>
                     {positionStatusLabel(status)}
                   </span>
                 </td>
-                <td>${position.amountUsd.toFixed(2)}</td>
-                <td>{verify?.onchainAmountUsd == null ? "—" : `$${verify.onchainAmountUsd.toFixed(2)}`}</td>
-                <td>{verify?.driftPct == null ? "—" : `${verify.driftPct.toFixed(1)}%`}</td>
-                <td>{verify?.verifiedAt ? new Date(verify.verifiedAt).toLocaleString() : "—"}</td>
-                <td>{verify?.detail ?? "—"}</td>
+                <td data-label="DB 금액">${position.amountUsd.toFixed(2)}</td>
+                <td data-label="온체인 금액">{verify?.onchainAmountUsd == null ? "—" : `$${verify.onchainAmountUsd.toFixed(2)}`}</td>
+                <td data-label="drift">{verify?.driftPct == null ? "—" : `${verify.driftPct.toFixed(1)}%`}</td>
+                <td data-label="검증 시각">{verify?.verifiedAt ? new Date(verify.verifiedAt).toLocaleString() : "—"}</td>
+                <td data-label="메모">{verify?.detail ?? "—"}</td>
               </tr>
             );
           })}

@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { hydrateRuntimeModeOverride } from "./runtimeMode";
 
 let prisma: PrismaClient | null = null;
 
@@ -8,6 +9,13 @@ export async function initDb(): Promise<void> {
   }
   prisma = new PrismaClient();
   await prisma.$connect();
+
+  async function ensureColumn(table: string, column: string, definition: string): Promise<void> {
+    const rows = await prisma.$queryRawUnsafe<Array<{ name: string }>>(`PRAGMA table_info("${table}")`);
+    if (!rows.some((row) => row.name === column)) {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "${table}" ADD COLUMN "${column}" ${definition}`);
+    }
+  }
 
   // ── 레거시 user_wallets 테이블 (스키마 밖 생성) ──────────────────────────
   await prisma.$executeRawUnsafe(`
@@ -23,6 +31,22 @@ export async function initDb(): Promise<void> {
   `);
   await prisma.$executeRawUnsafe(
     "CREATE INDEX IF NOT EXISTS idx_user_wallets_username ON user_wallets(username)"
+  );
+
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS runtime_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  await ensureColumn("jobs", "requested_by", "TEXT");
+  await ensureColumn("jobs", "source_asset", "TEXT");
+  await ensureColumn("jobs", "product_network", "TEXT");
+  await ensureColumn("jobs", "product_subtype", "TEXT");
+  await prisma.$executeRawUnsafe(
+    `CREATE INDEX IF NOT EXISTS "jobs_requested_by_created_at_idx" ON "jobs"("requested_by", "created_at")`
   );
 
   // ── Migration 0012: Intent / Execution / Position 모델 ───────────────────
@@ -165,6 +189,8 @@ export async function initDb(): Promise<void> {
   await prisma.$executeRawUnsafe(
     `CREATE INDEX IF NOT EXISTS "withdrawal_executions_tx_hash_idx" ON "withdrawal_executions"("tx_hash")`
   );
+
+  await hydrateRuntimeModeOverride(prisma);
 }
 
 export function getDb(): PrismaClient {
