@@ -1123,7 +1123,7 @@ function ProductsPanel({
               type="button"
               className="product-action-btn btn-primary"
               onClick={() => onQuickDepositProduct(selected, depositAmount)}
-              title="입금 처리 화면을 열고 입금내역 확인, 리스크 검토, 최종 입금처리를 진행합니다."
+              title="입금 처리 화면을 열고 내 입금 작업 생성, 리스크 검토, 실행 요청을 진행합니다."
             >
               입금
             </button>
@@ -1589,7 +1589,7 @@ function PortfolioPanel({
                       setProtocolDepositDraft({ ...row, amount: input });
                       setProtocolDepositKey((prev) => prev + 1);
                     }}
-                    title="조정한 금액으로 입금 처리 팝업을 엽니다. 포지션은 최종 입금처리 후에만 변경됩니다."
+                    title="조정한 금액으로 입금 처리 팝업을 엽니다. 포지션은 내 계정 기준으로 기록됩니다."
                   >
                     입금
                   </button>
@@ -1947,9 +1947,9 @@ function ExecutionPage({
       <section className="mission-hero mission-hero--execution card">
         <div>
           <p className="section-eyebrow">Execution</p>
-          <h1>승인, 서명, dry-run, 감사 로그를 한 흐름으로 추적합니다</h1>
+          <h1>내 입금 실행, 서명, dry-run, 감사 로그를 한 흐름으로 추적합니다</h1>
           <p>
-            실행은 단순 버튼이 아니라 계획, 승인, 서명, 제출, 확인, 기록으로 나뉩니다. 실패와 재실행은 운영 이력에서 추적합니다.
+            실행은 계획, 본인 확인, 서명, 제출, 확인, 기록으로 나뉩니다. 실패와 재실행은 운영 이력에서 추적합니다.
           </p>
         </div>
       </section>

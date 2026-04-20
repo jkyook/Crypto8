@@ -612,7 +612,7 @@ app.get("/api/runtime/info", (_req, res) => {
     liveExecutionConfirmed: liveConfirmed,
     walletUiPolicy: "phantom-solana",
     serverExecutionNote:
-      "Phantom signMessage in the browser records user intent only. Protocol movements are performed by server-side adapters according to EXECUTION_MODE."
+      "현재 MVP는 로그인한 사용자가 본인 Job을 직접 실행 요청하는 구조입니다. Phantom signMessage는 실행 의사 확인용이며, 프로토콜 전송은 EXECUTION_MODE에 따라 서버 어댑터가 처리합니다."
   });
 });
 

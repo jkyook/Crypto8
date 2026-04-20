@@ -939,7 +939,7 @@ export async function approveJob(jobId: string): Promise<void> {
     })
   });
   if (!response.ok) {
-    throw new Error(await readErrorFromApiResponse(response, "보안 승인 실패"));
+    throw new Error(await readErrorFromApiResponse(response, "승인 로그 기록 실패"));
   }
 }
 
