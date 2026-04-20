@@ -44,14 +44,16 @@ export type AuthUser = {
 
 export type JobListScope = Pick<AuthUser, "username" | "role">;
 
-/** 어댑터별 시뮬/제출 한 줄(실행 페이로드에 JSON으로 저장). */
+/** 어댑터별 실행 결과 한 줄(실행 페이로드에 JSON으로 저장). */
 export type AdapterResultSnapshot = {
   protocol: string;
   chain: string;
   action: string;
   allocationUsd: number;
   txId: string;
-  status: "simulated" | "submitted";
+  /** dry-run | simulated | unsupported | submitted | confirmed | failed */
+  status: string;
+  errorMessage?: string;
 };
 
 /** 실행 이벤트에 저장되는 구조화 페이로드(v1). */

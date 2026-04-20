@@ -19,10 +19,17 @@ model User {
   depositPositions  DepositPosition[]
   withdrawalLedgers WithdrawalLedger[]
   aaveUsdcPositions AaveUsdcPosition[]
+  depositIntents    DepositIntent[]
+  positions         Position[]
+  withdrawalIntents WithdrawalIntent[]
 
   @@index([registeredAt])
   @@map("users")
 }
+
+// ─────────────────────────────────────────────
+//  레거시 모델 (기존 MVP 호환 유지)
+// ─────────────────────────────────────────────
 
 model DepositPosition {
   id          String @id
@@ -63,11 +70,11 @@ model Job {
   sourceAsset       String? @map("source_asset")
   productNetwork    String? @map("product_network")
   productSubtype    String? @map("product_subtype")
-  /** 예치 실행 요청을 만든 로그인 사용자(이용자별 격리). */
   requestedBy       String? @map("requested_by")
 
-  approvals Approval[]
+  approvals       Approval[]
   executionEvents ExecutionEvent[]
+  depositIntents  DepositIntent[]
 
   @@index([requestedBy, createdAt])
   @@map("jobs")
@@ -85,6 +92,24 @@ model Approval {
   job Job @relation(fields: [jobId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@map("approvals")
+}
+
+model ExecutionEvent {
+  id             String  @id
+  jobId          String  @map("job_id")
+  requestedAt    String  @map("requested_at")
+  status         String
+  message        String
+  idempotencyKey String? @map("idempotency_key")
+  txId           String? @map("tx_id")
+  summary        String?
+  payloadJson    String? @map("payload_json")
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([jobId, requestedAt])
+  @@unique([jobId, idempotencyKey])
+  @@map("execution_events")
 }
 
 model AaveUsdcPosition {
@@ -122,26 +147,6 @@ model RefreshSession {
   @@map("refresh_sessions")
 }
 
-model ExecutionEvent {
-  id             String @id
-  jobId          String @map("job_id")
-  requestedAt    String @map("requested_at")
-  status         String
-  message        String
-  idempotencyKey String? @map("idempotency_key")
-  txId           String? @map("tx_id")
-  summary        String?
-  /** JSON: 어댑터 견적/모드/상관 id 등 (P1 구조화 페이로드) */
-  payloadJson    String? @map("payload_json")
-
-  job Job @relation(fields: [jobId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-
-  @@index([jobId, requestedAt])
-  @@unique([jobId, idempotencyKey])
-  @@map("execution_events")
-}
-
-/** DefiLlama 기반 시장 APR 스냅샷(시간 경과 그래프용). */
 model MarketRatesSnapshot {
   id        String @id
   sampledAt String @map("sampled_at")
@@ -151,4 +156,170 @@ model MarketRatesSnapshot {
 
   @@index([sampledAt])
   @@map("market_rates_snapshots")
+}
+
+// ─────────────────────────────────────────────
+//  새 데이터 모델: Intent → Execution → Position
+// ─────────────────────────────────────────────
+
+/**
+ * DepositIntent — 사용자가 예치하기로 한 의도.
+ * Job이 생성된 후 어댑터 라우팅이 결정되면 기록된다.
+ * 실제 온체인 실행 전 단계이므로 position과 독립적.
+ *
+ * status: draft | approved | executing | completed | cancelled | failed
+ */
+model DepositIntent {
+  id              String  @id
+  jobId           String  @map("job_id")
+  username        String
+  protocol        String  // Aave | Uniswap | Orca | Aerodrome | Raydium | Curve
+  chain           String  // Arbitrum | Base | Solana | Ethereum
+  asset           String  // USDC | USDT | ETH | SOL | WETH
+  amountUsd       Float   @map("amount_usd")
+  amountRaw       String? @map("amount_raw")   // 온체인 단위 금액 (소수점 고려)
+  poolAddress     String? @map("pool_address")
+  action          String  // USDC Supply (eMode) 등 어댑터 action 문자열
+  /** quote snapshot — 실행 전 견적 (JSON: price, apy, slippage, expiresAt 등) */
+  quoteSnapshot   String? @map("quote_snapshot")
+  /** quote 만료 시각 (ISO). 만료 후 live 실행 금지. */
+  quoteExpiresAt  String? @map("quote_expires_at")
+  status          String  @default("draft")
+  createdAt       String  @map("created_at")
+  updatedAt       String  @map("updated_at")
+
+  job        Job          @relation(fields: [jobId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  user       User         @relation(fields: [username], references: [username], onDelete: Cascade, onUpdate: Cascade)
+  executions Execution[]
+
+  @@index([username, createdAt])
+  @@index([jobId])
+  @@map("deposit_intents")
+}
+
+/**
+ * Execution — 실제 트랜잭션 실행 시도.
+ * 하나의 DepositIntent에 여러 Execution이 생길 수 있다 (retry 포함).
+ *
+ * status: pending | submitted | confirmed | failed
+ */
+model Execution {
+  id              String  @id
+  intentId        String  @map("intent_id")
+  protocol        String
+  chain           String
+  action          String
+  txHash          String? @map("tx_hash")
+  blockNumber     Int?    @map("block_number")
+  /** receipt JSON (이벤트 로그 포함) */
+  receiptJson     String? @map("receipt_json")
+  status          String  @default("pending")  // pending | submitted | confirmed | failed
+  errorMessage    String? @map("error_message")
+  idempotencyKey  String? @map("idempotency_key")
+  submittedAt     String? @map("submitted_at")
+  confirmedAt     String? @map("confirmed_at")
+  createdAt       String  @map("created_at")
+
+  intent   DepositIntent @relation(fields: [intentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  position Position?
+
+  @@index([intentId])
+  @@index([txHash])
+  @@map("executions")
+}
+
+/**
+ * Position — 온체인 receipt 확인 후 확정된 실제 포지션.
+ * Execution.status = "confirmed" 인 경우에만 생성된다.
+ * DB 포지션은 캐시로 사용하며, 원천 데이터는 온체인 조회로 보정.
+ *
+ * status: active | closed | liquidated
+ */
+model Position {
+  id              String  @id
+  executionId     String  @unique @map("execution_id")
+  username        String
+  protocol        String
+  chain           String
+  asset           String
+  poolAddress     String? @map("pool_address")
+  /** 포지션 토큰 주소 (aToken, NFT tokenId, LP token 등) */
+  positionToken   String? @map("position_token")
+  /** 포지션 토큰 수량 (raw) */
+  positionRaw     String? @map("position_raw")
+  amountUsd       Float   @map("amount_usd")
+  /** 입금 tx hash */
+  depositTxHash   String  @map("deposit_tx_hash")
+  /** 마지막 온체인 조회 시각 */
+  lastSyncedAt    String? @map("last_synced_at")
+  status          String  @default("active")
+  openedAt        String  @map("opened_at")
+  closedAt        String? @map("closed_at")
+  /** 조회 어댑터가 갱신한 최신 온체인 데이터 (JSON) */
+  onchainDataJson String? @map("onchain_data_json")
+
+  execution Execution @relation(fields: [executionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  user      User      @relation(fields: [username], references: [username], onDelete: Cascade, onUpdate: Cascade)
+
+  withdrawalExecutions WithdrawalExecution[]
+
+  @@index([username, openedAt])
+  @@index([protocol, chain])
+  @@map("positions")
+}
+
+/**
+ * WithdrawalIntent — 출금 요청.
+ * 사용자가 포지션 출금을 요청할 때 기록된다.
+ *
+ * status: draft | executing | completed | failed
+ */
+model WithdrawalIntent {
+  id            String  @id
+  username      String
+  positionId    String  @map("position_id")
+  amountUsd     Float   @map("amount_usd")
+  amountRaw     String? @map("amount_raw")
+  /** 전체 포지션 출금 여부 */
+  isFullClose   Int     @default(0) @map("is_full_close")
+  status        String  @default("draft")
+  createdAt     String  @map("created_at")
+  updatedAt     String  @map("updated_at")
+
+  user                 User                  @relation(fields: [username], references: [username], onDelete: Cascade, onUpdate: Cascade)
+  withdrawalExecutions WithdrawalExecution[]
+
+  @@index([username, createdAt])
+  @@map("withdrawal_intents")
+}
+
+/**
+ * WithdrawalExecution — 출금 트랜잭션 및 receipt.
+ * receipt 확인 후 Position.status를 closed로 갱신한다.
+ *
+ * status: pending | submitted | confirmed | failed
+ */
+model WithdrawalExecution {
+  id              String  @id
+  intentId        String  @map("intent_id")
+  positionId      String  @map("position_id")
+  protocol        String
+  chain           String
+  action          String  // Pool.withdraw | decreaseLiquidity | closePosition 등
+  txHash          String? @map("tx_hash")
+  blockNumber     Int?    @map("block_number")
+  receiptJson     String? @map("receipt_json")
+  status          String  @default("pending")
+  errorMessage    String? @map("error_message")
+  amountReturnedUsd Float? @map("amount_returned_usd")
+  submittedAt     String? @map("submitted_at")
+  confirmedAt     String? @map("confirmed_at")
+  createdAt       String  @map("created_at")
+
+  intent   WithdrawalIntent @relation(fields: [intentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  position Position         @relation(fields: [positionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([intentId])
+  @@index([txHash])
+  @@map("withdrawal_executions")
 }

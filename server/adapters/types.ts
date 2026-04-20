@@ -22,6 +22,24 @@ export type ProductSubtype =
   | "eth-stable"
   | "eth-bluechip";
 
+/**
+ * 어댑터 실행 결과 상태.
+ *
+ * dry-run     : EXECUTION_MODE=dry-run 에서 반환된 시뮬레이션 결과 (온체인 의도 없음)
+ * simulated   : live 모드 요청됐으나 어댑터가 시뮬레이션으로 폴백한 결과
+ * unsupported : live 모드 요청됐으나 해당 어댑터/체인이 live 실행을 지원하지 않음
+ * submitted   : 트랜잭션이 체인에 제출됨 (미확정)
+ * confirmed   : receipt 확인 완료
+ * failed      : 트랜잭션 제출 또는 실행 실패
+ */
+export type AdapterResultStatus =
+  | "dry-run"
+  | "simulated"
+  | "unsupported"
+  | "submitted"
+  | "confirmed"
+  | "failed";
+
 export type AdapterExecutionContext = {
   jobId: string;
   mode: ExecutionMode;
@@ -39,5 +57,42 @@ export type AdapterExecutionResult = {
   action: string;
   allocationUsd: number;
   txId: string;
-  status: "simulated" | "submitted";
+  status: AdapterResultStatus;
+  /** status가 "failed" 또는 "unsupported"일 때 원문 에러 또는 사유 */
+  errorMessage?: string;
 };
+
+/**
+ * 어댑터별 live 실행 지원 여부를 환경변수에서 읽는다.
+ * 반드시 LIVE_EXECUTION_CONFIRM=YES 와 함께 설정해야 한다.
+ */
+export function isAdapterLiveEnabled(
+  protocol: "Aave" | "Uniswap" | "Orca" | "Aerodrome" | "Raydium" | "Curve"
+): boolean {
+  if (process.env.LIVE_EXECUTION_CONFIRM !== "YES") return false;
+  const flagMap: Record<string, string> = {
+    Aave: "ENABLE_AAVE_LIVE",
+    Uniswap: "ENABLE_UNISWAP_LIVE",
+    Orca: "ENABLE_ORCA_LIVE",
+    Aerodrome: "ENABLE_AERODROME_LIVE",
+    Raydium: "ENABLE_RAYDIUM_LIVE",
+    Curve: "ENABLE_CURVE_LIVE"
+  };
+  return process.env[flagMap[protocol]] === "true";
+}
+
+/**
+ * 어댑터가 live 실행을 지원하지 않을 때 unsupported 결과를 생성.
+ * live 모드 요청 시 가짜 txId를 반환하지 않고 명시적으로 실패 처리한다.
+ */
+export function buildUnsupportedResult(
+  params: Pick<AdapterExecutionResult, "protocol" | "chain" | "action" | "allocationUsd">,
+  reason?: string
+): AdapterExecutionResult {
+  return {
+    ...params,
+    txId: "",
+    status: "unsupported",
+    errorMessage: reason ?? `${params.protocol} live execution is not yet supported on ${params.chain}`
+  };
+}

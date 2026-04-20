@@ -41,6 +41,19 @@ import {
   confirmAaveUsdcTransaction,
   getAaveUsdcPosition
 } from "./aaveUsdc";
+import {
+  createPositionFromExecution,
+  getExecution,
+  listPositionsByUser,
+  updateExecutionConfirmed,
+  updateExecutionFailed,
+  listDepositIntentsByUser,
+  createWithdrawalIntent,
+  createWithdrawalExecution,
+  updateWithdrawalExecutionConfirmed,
+  closePosition,
+  getPositionById
+} from "./intentStore";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
@@ -648,14 +661,37 @@ app.get("/api/runtime/info", (_req, res) => {
   const requested = process.env.EXECUTION_MODE === "live" ? "live" : "dry-run";
   const liveConfirmed = process.env.LIVE_EXECUTION_CONFIRM === "YES";
   const executionMode = requested === "live" && liveConfirmed ? "live" : "dry-run";
+
+  // 프로토콜별 live 실행 feature flag 상태
+  const liveAdapterFlags = {
+    aave: process.env.ENABLE_AAVE_LIVE === "true",
+    uniswap: process.env.ENABLE_UNISWAP_LIVE === "true",
+    orca: process.env.ENABLE_ORCA_LIVE === "true",
+    aerodrome: process.env.ENABLE_AERODROME_LIVE === "true",
+    raydium: process.env.ENABLE_RAYDIUM_LIVE === "true",
+    curve: process.env.ENABLE_CURVE_LIVE === "true"
+  };
+
+  // RPC 설정 여부 (URL 값은 노출하지 않음)
+  const rpcConfigured = {
+    ethereum: Boolean(process.env.ETHEREUM_RPC_URL),
+    arbitrum: Boolean(process.env.ARBITRUM_RPC_URL),
+    base: Boolean(process.env.BASE_RPC_URL),
+    solana: Boolean(process.env.SOLANA_RPC_URL)
+  };
+
   res.json({
     ok: true,
     executionMode,
     executionModeRequested: requested,
     liveExecutionConfirmed: liveConfirmed,
+    liveAdapterFlags,
+    rpcConfigured,
     walletUiPolicy: "phantom-solana",
     serverExecutionNote:
-      "현재 MVP는 로그인한 사용자가 본인 Job을 직접 실행 요청하는 구조입니다. Phantom signMessage는 실행 의사 확인용이며, 프로토콜 전송은 EXECUTION_MODE에 따라 서버 어댑터가 처리합니다."
+      "현재 MVP는 로그인한 사용자가 본인 Job을 직접 실행 요청하는 구조입니다. " +
+      "dry-run 모드에서는 모든 어댑터가 시뮬레이션 결과를 반환합니다. " +
+      "live 모드는 LIVE_EXECUTION_CONFIRM=YES + ENABLE_<PROTOCOL>_LIVE=true 가 모두 필요합니다."
   });
 });
 
@@ -1079,6 +1115,220 @@ app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orche
     console.warn(JSON.stringify({ level: "warn", msg: "execution_position_record_failed", jobId, error: String(error) }));
   }
   res.json({ ...result, requestId });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  새 Intent / Execution / Position API
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/intents — 현재 사용자의 DepositIntent 목록
+ */
+app.get("/api/intents", requireAuth, async (req, res) => {
+  const username = res.locals.user.username as string;
+  const intents = await listDepositIntentsByUser(username);
+  res.json({ ok: true, intents });
+});
+
+/**
+ * GET /api/positions — 현재 사용자의 확정 Position 목록
+ * (receipt 확인 후 생성된 온체인 포지션만 포함)
+ */
+app.get("/api/positions", requireAuth, async (req, res) => {
+  const username = res.locals.user.username as string;
+  const positions = await listPositionsByUser(username);
+  res.json({ ok: true, positions });
+});
+
+/**
+ * POST /api/executions/:executionId/confirm
+ * 프론트엔드가 지갑으로 서명 후 tx hash를 제출하면,
+ * 서버가 receipt를 확인하고 Execution + Position을 확정한다.
+ *
+ * Body: { txHash: string, blockNumber?: number, receiptJson: string }
+ */
+app.post("/api/executions/:executionId/confirm", requireAuth, async (req, res) => {
+  const { executionId } = req.params as { executionId: string };
+  const body = req.body as {
+    txHash?: unknown;
+    blockNumber?: unknown;
+    receiptJson?: unknown;
+    amountUsd?: unknown;
+    asset?: unknown;
+    positionToken?: unknown;
+    positionRaw?: unknown;
+    poolAddress?: unknown;
+  };
+
+  if (typeof body.txHash !== "string" || !body.txHash) {
+    res.status(400).json({ ok: false, message: "txHash is required" });
+    return;
+  }
+  if (typeof body.receiptJson !== "string" || !body.receiptJson) {
+    res.status(400).json({ ok: false, message: "receiptJson is required (tx receipt without receipt is not allowed)" });
+    return;
+  }
+
+  const execution = await getExecution(executionId);
+  if (!execution) {
+    res.status(404).json({ ok: false, message: "execution not found" });
+    return;
+  }
+
+  const username = res.locals.user.username as string;
+
+  // 이미 confirmed인 경우 idempotent 처리
+  if (execution.status === "confirmed") {
+    res.json({ ok: true, message: "already confirmed (idempotent)", executionId });
+    return;
+  }
+
+  // receipt 확인 — 현재는 제출된 데이터를 신뢰 (추후 RPC 검증 강화)
+  await updateExecutionConfirmed({
+    executionId,
+    txHash: body.txHash,
+    blockNumber: typeof body.blockNumber === "number" ? body.blockNumber : undefined,
+    receiptJson: body.receiptJson
+  });
+
+  // Position 생성 (receipt 확인 후에만 허용)
+  const confirmedExecution = await getExecution(executionId);
+  if (!confirmedExecution) {
+    res.status(500).json({ ok: false, message: "execution not found after update" });
+    return;
+  }
+
+  try {
+    const position = await createPositionFromExecution({
+      execution: confirmedExecution,
+      username,
+      asset: typeof body.asset === "string" ? body.asset : "USDC",
+      amountUsd: typeof body.amountUsd === "number" ? body.amountUsd : 0,
+      poolAddress: typeof body.poolAddress === "string" ? body.poolAddress : undefined,
+      positionToken: typeof body.positionToken === "string" ? body.positionToken : undefined,
+      positionRaw: typeof body.positionRaw === "string" ? body.positionRaw : undefined
+    });
+    res.json({ ok: true, message: "execution confirmed and position created", executionId, positionId: position.id });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ ok: false, message: msg });
+  }
+});
+
+/**
+ * POST /api/executions/:executionId/fail
+ * 실행 실패 보고 — 사용자가 서명 거부하거나 tx가 revert된 경우
+ */
+app.post("/api/executions/:executionId/fail", requireAuth, async (req, res) => {
+  const { executionId } = req.params as { executionId: string };
+  const body = req.body as { errorMessage?: unknown };
+  const errorMessage = typeof body.errorMessage === "string"
+    ? body.errorMessage
+    : "execution failed (no error message provided)";
+
+  await updateExecutionFailed({ executionId, errorMessage });
+  res.json({ ok: true, message: "execution marked as failed", executionId });
+});
+
+/**
+ * POST /api/withdrawals/intent
+ * 출금 요청 생성
+ */
+app.post("/api/withdrawals/intent", requireAuth, async (req, res) => {
+  const body = req.body as {
+    positionId?: unknown;
+    amountUsd?: unknown;
+    isFullClose?: unknown;
+  };
+  const username = res.locals.user.username as string;
+
+  if (typeof body.positionId !== "string") {
+    res.status(400).json({ ok: false, message: "positionId is required" });
+    return;
+  }
+
+  const position = await getPositionById(body.positionId);
+  if (!position || position.username !== username) {
+    res.status(404).json({ ok: false, message: "position not found" });
+    return;
+  }
+  if (position.status !== "active") {
+    res.status(400).json({ ok: false, message: `position is already ${position.status}` });
+    return;
+  }
+
+  const isFullClose = Boolean(body.isFullClose);
+  const amountUsd = isFullClose
+    ? position.amountUsd
+    : (typeof body.amountUsd === "number" ? body.amountUsd : 0);
+
+  if (amountUsd <= 0) {
+    res.status(400).json({ ok: false, message: "amountUsd must be > 0" });
+    return;
+  }
+
+  const intent = await createWithdrawalIntent({ username, positionId: position.id, amountUsd, isFullClose });
+  res.json({ ok: true, intent });
+});
+
+/**
+ * POST /api/withdrawals/:intentId/confirm
+ * 출금 tx receipt 제출 → WithdrawalExecution 확정 → Position 닫기
+ */
+app.post("/api/withdrawals/:intentId/confirm", requireAuth, async (req, res) => {
+  const { intentId } = req.params as { intentId: string };
+  const body = req.body as {
+    positionId?: unknown;
+    txHash?: unknown;
+    blockNumber?: unknown;
+    receiptJson?: unknown;
+    action?: unknown;
+    protocol?: unknown;
+    chain?: unknown;
+    amountReturnedUsd?: unknown;
+  };
+  const username = res.locals.user.username as string;
+
+  if (typeof body.txHash !== "string" || !body.txHash) {
+    res.status(400).json({ ok: false, message: "txHash is required" });
+    return;
+  }
+  if (typeof body.receiptJson !== "string" || !body.receiptJson) {
+    res.status(400).json({ ok: false, message: "receiptJson is required" });
+    return;
+  }
+  if (typeof body.positionId !== "string") {
+    res.status(400).json({ ok: false, message: "positionId is required" });
+    return;
+  }
+
+  const position = await getPositionById(body.positionId);
+  if (!position || position.username !== username) {
+    res.status(404).json({ ok: false, message: "position not found" });
+    return;
+  }
+
+  const wExec = await createWithdrawalExecution({
+    intentId,
+    positionId: position.id,
+    protocol: typeof body.protocol === "string" ? body.protocol : position.protocol,
+    chain: typeof body.chain === "string" ? body.chain : position.chain,
+    action: typeof body.action === "string" ? body.action : "withdraw",
+    txHash: body.txHash,
+    status: "submitted"
+  });
+
+  await updateWithdrawalExecutionConfirmed({
+    withdrawalExecutionId: wExec.id,
+    txHash: body.txHash,
+    blockNumber: typeof body.blockNumber === "number" ? body.blockNumber : undefined,
+    receiptJson: body.receiptJson,
+    amountReturnedUsd: typeof body.amountReturnedUsd === "number" ? body.amountReturnedUsd : undefined
+  });
+
+  await closePosition(position.id, body.txHash);
+
+  res.json({ ok: true, message: "withdrawal confirmed and position closed", positionId: position.id });
 });
 
 /** 모든 라우트 등록 직후(부트스트랩·listen 전)에 두어 경로 누락을 방지합니다. */

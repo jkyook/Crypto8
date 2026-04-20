@@ -1,10 +1,15 @@
 /**
- * Raydium AMM adapter — Solana chain (simulation only).
- * Raydium는 Solana 대표 AMM으로 SOL-USDC, BOME-SOL 등 고유동성 풀을 보유한다.
+ * Raydium AMM adapter — Solana chain.
+ *
+ * ■ live 실행: 미지원 (unsupported 반환)
+ *   공식 Raydium SDK, CPMM/CLMM 풀 타입 구분,
+ *   add/remove liquidity quote 연동 후 활성화 예정.
+ *
  * defi_anal.py 분석 기준: SOL-USDC 연평균 APY ~18%, mSOL-SOL ~7%.
- * 현재는 dry-run 시뮬레이션만 지원한다.
+ * Solana Alpha: SOL-USDC AMM LP 35%
  */
 import type { AdapterExecutionContext, AdapterExecutionResult } from "./types";
+import { buildUnsupportedResult } from "./types";
 
 function buildTxId(prefix: string, context: AdapterExecutionContext): string {
   return `${prefix}_${context.jobId}_${Date.now()}`;
@@ -12,30 +17,37 @@ function buildTxId(prefix: string, context: AdapterExecutionContext): string {
 
 export async function executeRaydiumPlan(context: AdapterExecutionContext): Promise<AdapterExecutionResult[]> {
   const network = context.productNetwork ?? "Multi";
-  const status = "simulated" as const; // Raydium live 실행은 추후 구현
 
-  let solUsdcAmount: number;
-
+  let solUsdcWeight: number;
   if (network === "Solana") {
-    // Solana Alpha: SOL-USDC에 35% 배정
-    solUsdcAmount = Number((context.depositUsd * 0.35).toFixed(2));
+    solUsdcWeight = 0.35;
   } else {
-    // Multi-chain에서 Raydium 비중 없음 (Orca가 Solana 담당)
-    solUsdcAmount = 0;
+    solUsdcWeight = 0; // Multi-chain에서 Raydium 비중 없음
   }
 
-  if (solUsdcAmount <= 0) {
-    return [];
-  }
+  if (solUsdcWeight <= 0) return [];
 
-  return [
-    {
-      protocol: "Raydium",
-      chain: "Solana",
-      action: "SOL-USDC AMM LP",
-      allocationUsd: solUsdcAmount,
+  const solUsdcAmount = Number((context.depositUsd * solUsdcWeight).toFixed(2));
+
+  const baseResult = {
+    protocol: "Raydium" as const,
+    chain: "Solana" as const,
+    action: "SOL-USDC AMM LP",
+    allocationUsd: solUsdcAmount
+  };
+
+  // dry-run 모드
+  if (context.mode === "dry-run") {
+    return [{
+      ...baseResult,
       txId: buildTxId("ray_sim", context),
-      status
-    }
-  ];
+      status: "dry-run" as const
+    }];
+  }
+
+  // live 모드: 미지원
+  return [buildUnsupportedResult(
+    baseResult,
+    "Raydium live execution requires official SDK with CPMM/CLMM pool type detection (not yet implemented)"
+  )];
 }

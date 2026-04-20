@@ -12,6 +12,11 @@ import type { ExecutionMode } from "./adapters/types";
 import { getEffectiveExecutionMode, runExecutionAdapter } from "./executionAdapter";
 import { getDb } from "./db";
 import { MAX_DEPOSIT_USD } from "./limits";
+import {
+  createDepositIntentsFromAdapterResults,
+  createExecution,
+  updateDepositIntentStatus
+} from "./intentStore";
 
 function evaluateRisk(input: JobInput): RiskLevel {
   if (input.isDepegAlert) {
@@ -457,7 +462,9 @@ export async function executeJob(
     execution = ran.bundle;
     attemptsUsed = ran.attempts;
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : "execution adapter failed";
+    const errorMessage = error instanceof Error
+      ? `[${error.name}] ${error.message}`
+      : `execution adapter error: ${String(error)}`;
     const failPayload = snapshotAdapterPayload(meta ?? {}, {
       mode: auditMode,
       adapterResults: [],
@@ -477,6 +484,70 @@ export async function executeJob(
   }
   await db.job.update({ where: { id: jobId }, data: { status: "executed" } });
   job.status = "executed";
+
+  // ── 새 모델: DepositIntent + Execution 레코드 생성 ───────────────────────
+  // 어댑터 결과 중 allocationUsd > 0 인 항목만 기록
+  const username = job.requestedBy ?? "unknown";
+  try {
+    const intents = await createDepositIntentsFromAdapterResults(
+      jobId,
+      username,
+      execution.adapterResults,
+      job.input.sourceAsset
+    );
+
+    // 각 intent에 대해 어댑터 결과 기반 Execution 레코드 생성
+    for (let i = 0; i < intents.length; i++) {
+      const intent = intents[i];
+      const result = execution.adapterResults.find(
+        (r) => r.protocol === intent.protocol && r.chain === intent.chain && r.action === intent.action
+      );
+      if (!result) continue;
+
+      if (result.status === "submitted") {
+        await createExecution({
+          intentId: intent.id,
+          protocol: result.protocol,
+          chain: result.chain,
+          action: result.action,
+          txHash: result.txId,
+          status: "submitted",
+          idempotencyKey
+        });
+        await updateDepositIntentStatus(intent.id, "executing");
+      } else if (result.status === "failed") {
+        await createExecution({
+          intentId: intent.id,
+          protocol: result.protocol,
+          chain: result.chain,
+          action: result.action,
+          status: "failed",
+          errorMessage: result.errorMessage
+        });
+        await updateDepositIntentStatus(intent.id, "failed");
+      } else {
+        // dry-run / unsupported / simulated: Execution 레코드를 남기되 status=pending
+        await createExecution({
+          intentId: intent.id,
+          protocol: result.protocol,
+          chain: result.chain,
+          action: result.action,
+          status: "pending",
+          errorMessage: result.status === "unsupported" ? result.errorMessage : undefined
+        });
+      }
+    }
+  } catch (intentErr) {
+    // intent/execution 기록 실패는 non-fatal — 기존 실행 결과는 유지
+    console.error("intent store error (non-fatal):", intentErr);
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // warnings(unsupported/failed 어댑터)를 summary에 포함
+  const warningNote = execution.warnings.length > 0
+    ? ` | ⚠ ${execution.warnings.length} unsupported/failed: ${execution.warnings.join("; ")}`
+    : "";
+
   const okPayload = snapshotAdapterPayload(meta ?? {}, {
     mode: execution.mode,
     adapterResults: execution.adapterResults.map((r) => ({
@@ -485,7 +556,8 @@ export async function executeJob(
       action: r.action,
       allocationUsd: r.allocationUsd,
       txId: r.txId,
-      status: r.status
+      status: r.status,
+      errorMessage: r.errorMessage
     })),
     retries: attemptsUsed
   });
@@ -497,8 +569,15 @@ export async function executeJob(
     message: "execution accepted",
     idempotencyKey,
     txId: execution.txId,
-    summary: execution.summary,
+    summary: (execution.summary ?? "") + warningNote,
     payload: okPayload
   });
-  return { ok: true, message: "execution accepted", job, txId: execution.txId, summary: execution.summary, payload: okPayload };
+  return {
+    ok: true,
+    message: "execution accepted",
+    job,
+    txId: execution.txId,
+    summary: (execution.summary ?? "") + warningNote,
+    payload: okPayload
+  };
 }

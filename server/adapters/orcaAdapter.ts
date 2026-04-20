@@ -2,6 +2,9 @@
  * Orca Whirlpool adapter — Solana chain.
  * (network + subtype) 조합으로 배분 비율을 결정한다.
  *
+ * ■ live 실행: 미지원 (ENABLE_ORCA_LIVE 플래그 있어도 unsupported 반환)
+ *   공식 Whirlpools SDK 연동 후 활성화 예정.
+ *
  *   multi-stable    USDC-USDT Whirlpool 20%
  *   multi-balanced  mSOL-SOL Whirlpool 20%
  *   arb-stable      0%
@@ -9,6 +12,7 @@
  *   sol-stable      USDC-USDT 40% + SOL-USDC 35% + mSOL-SOL 25%
  */
 import type { AdapterExecutionContext, AdapterExecutionResult } from "./types";
+import { buildUnsupportedResult } from "./types";
 
 function buildTxId(prefix: string, context: AdapterExecutionContext): string {
   return `${prefix}_${context.jobId}_${Date.now()}`;
@@ -39,20 +43,32 @@ const ORCA_MULTI_FALLBACK: OrcaAlloc[] = [
 export async function executeOrcaPlan(context: AdapterExecutionContext): Promise<AdapterExecutionResult[]> {
   const network = context.productNetwork ?? "Multi";
   const subtype = context.productSubtype ?? "";
-  const status = context.mode === "live" ? "submitted" : "simulated";
-  const txPrefix = context.mode === "live" ? "orca_live" : "orca_sim";
 
   const tableKey = `${network}:${subtype}`;
   const allocs = ORCA_ALLOC_TABLE[tableKey] ?? ORCA_MULTI_FALLBACK;
 
   if (allocs.length === 0) return [];
 
-  return allocs.map((a) => ({
-    protocol: "Orca" as const,
-    chain: "Solana" as const,
-    action: a.action,
-    allocationUsd: Number((context.depositUsd * a.weight).toFixed(2)),
-    txId: buildTxId(txPrefix, context),
-    status
-  }));
+  // dry-run 모드
+  if (context.mode === "dry-run") {
+    return allocs.map((a) => ({
+      protocol: "Orca" as const,
+      chain: "Solana" as const,
+      action: a.action,
+      allocationUsd: Number((context.depositUsd * a.weight).toFixed(2)),
+      txId: buildTxId("orca_sim", context),
+      status: "dry-run" as const
+    }));
+  }
+
+  // live 모드: Orca live 실행 미지원 (공식 Whirlpools SDK 연동 필요)
+  return allocs.map((a) => buildUnsupportedResult(
+    {
+      protocol: "Orca",
+      chain: "Solana",
+      action: a.action,
+      allocationUsd: Number((context.depositUsd * a.weight).toFixed(2))
+    },
+    "Orca Whirlpools live execution requires official SDK integration (not yet implemented)"
+  ));
 }
