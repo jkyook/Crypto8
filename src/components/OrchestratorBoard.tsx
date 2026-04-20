@@ -10,7 +10,9 @@ import {
   createDepositPositionRemote,
   estimateProtocolFees,
   executeJob,
+  fetchMarketPrices,
   fetchRuntimeInfo,
+  linkAccountWallet,
   readAccessTokenSnapshot,
   subscribeLocalAuth,
   type AccountAssetBalance,
@@ -26,6 +28,7 @@ import {
 import { buildDepositAssetReadiness } from "../lib/depositAssetPlan";
 import { buildExecutionPreviewRows } from "../lib/executionPreview";
 import { buildAgentTasks, evaluateRisk } from "../lib/orchestrator";
+import { fetchOnChainPortfolioWithFallback, getSolanaRpcCandidates } from "../lib/solanaChainAssets";
 import { checkGuardrails } from "../lib/strategyEngine";
 import type { ExecutionPreviewRow } from "../lib/executionPreview";
 
@@ -47,6 +50,51 @@ type OrchestratorBoardProps = {
   onOpenOperationsWithJob?: (jobId: string) => void;
   onExecutionComplete?: () => void | Promise<void>;
 };
+
+function normalizeOnChainAssetSymbol(symbol: string): AccountAssetSymbol | null {
+  const upper = symbol.toUpperCase();
+  if (upper.includes("USDC")) return "USDC";
+  if (upper.includes("USDT")) return "USDT";
+  if (upper.includes("ETH")) return "ETH";
+  if (upper.includes("SOL")) return "SOL";
+  return null;
+}
+
+function buildConnectedWalletAssets(args: {
+  sol: number | null;
+  tokens: Array<{ symbol: string; amount: number }>;
+  prices: Record<AccountAssetSymbol, number>;
+  priceSource: string;
+  priceUpdatedAt: string;
+}): AccountAssetBalance[] {
+  const amounts: Partial<Record<AccountAssetSymbol, number>> = {};
+  if (typeof args.sol === "number" && Number.isFinite(args.sol) && args.sol > 0) {
+    amounts.SOL = args.sol;
+  }
+  for (const token of args.tokens) {
+    const symbol = normalizeOnChainAssetSymbol(token.symbol);
+    if (!symbol || !Number.isFinite(token.amount) || token.amount <= 0) {
+      continue;
+    }
+    amounts[symbol] = (amounts[symbol] ?? 0) + token.amount;
+  }
+  const order: AccountAssetSymbol[] = ["USDC", "USDT", "ETH", "SOL"];
+  return order
+    .map((symbol) => {
+      const amount = amounts[symbol] ?? 0;
+      const usdPrice = args.prices[symbol] ?? 0;
+      return {
+        symbol,
+        chain: "Solana",
+        amount,
+        usdPrice,
+        usdValue: Number((amount * usdPrice).toFixed(2)),
+        priceSource: args.priceSource,
+        priceUpdatedAt: args.priceUpdatedAt
+      };
+    })
+    .filter((asset) => asset.amount > 0);
+}
 
 export function OrchestratorBoard({
   initialDepositUsd = 10000,
@@ -124,6 +172,8 @@ export function OrchestratorBoard({
   const riskClass = `badge badge-${risk.toLowerCase()}`;
   const hasWallet = Boolean(isConnected && solanaAccount?.address);
   const jwtAccess = useSyncExternalStore(subscribeLocalAuth, readAccessTokenSnapshot, () => "");
+  const session = useMemo(() => getSession(), [jwtAccess]);
+  const isWalletLoginSession = Boolean(session?.username.startsWith("wallet_"));
   const canUseServerJobs = jwtAccess.length > 0 && allowJobExecutionProp !== false;
   useEffect(() => {
     if (!canUseServerJobs) {
@@ -132,10 +182,30 @@ export function OrchestratorBoard({
       setAssetLoading(false);
       return;
     }
+    const walletAddress = solanaAccount?.address;
     const controller = new AbortController();
     setAssetLoading(true);
     setAssetError("");
-    void listAccountAssets({ signal: controller.signal })
+    const loadAssets = async (): Promise<AccountAssetBalance[]> => {
+      if (hasWallet && walletAddress) {
+        const [prices, walletPortfolio] = await Promise.all([
+          fetchMarketPrices({ signal: controller.signal }),
+          fetchOnChainPortfolioWithFallback(getSolanaRpcCandidates("mainnet"), walletAddress, "mainnet")
+        ]);
+        return buildConnectedWalletAssets({
+          sol: walletPortfolio.portfolio.sol,
+          tokens: walletPortfolio.portfolio.tokens,
+          prices: prices.prices,
+          priceSource: prices.source,
+          priceUpdatedAt: prices.updatedAt
+        });
+      }
+      if (isWalletLoginSession) {
+        throw new Error("지갑 로그인 세션은 연결 지갑 잔고 확인이 필요합니다.");
+      }
+      return listAccountAssets({ signal: controller.signal });
+    };
+    void loadAssets()
       .then((rows) => {
         if (controller.signal.aborted) return;
         setAccountAssets(rows);
@@ -146,13 +216,13 @@ export function OrchestratorBoard({
       .catch((error) => {
         if (controller.signal.aborted) return;
         setAccountAssets([]);
-        setAssetError(error instanceof Error ? error.message : "계정 자산을 불러오지 못했습니다.");
+        setAssetError(error instanceof Error ? error.message : "연결 지갑 자산을 불러오지 못했습니다.");
       })
       .finally(() => {
         if (!controller.signal.aborted) setAssetLoading(false);
       });
     return () => controller.abort();
-  }, [canUseServerJobs, selectedSourceAsset]);
+  }, [canUseServerJobs, hasWallet, isWalletLoginSession, selectedSourceAsset, solanaAccount?.address]);
   // 로그인 상태가 바뀔 때마다 계정에 연결된 지갑 목록을 가져옴
   useEffect(() => {
     if (!canUseServerJobs) {
@@ -241,8 +311,9 @@ export function OrchestratorBoard({
       });
     return () => controller.abort();
   }, [canUseServerJobs, isResultQuote, quoteRows]);
-  const canFundDeposit = !canUseServerJobs || assetReadiness.isSufficient;
-  const canExecute = Boolean(job) && isExecutionConfirmed && canUseServerJobs && canFundDeposit && (!isLiveExecution || hasWallet);
+  const canFundDeposit = canUseServerJobs && hasWallet && assetReadiness.isSufficient;
+  const canStartDepositFlow = canUseServerJobs && hasWallet && canFundDeposit;
+  const canExecute = Boolean(job) && isExecutionConfirmed && canStartDepositFlow;
   const quoteTitle = lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0)
     ? "실행 결과 배분"
     : "입금 처리할 항목";
@@ -281,6 +352,10 @@ export function OrchestratorBoard({
       setApiMessage("내 계정에 입금 작업을 남기려면 먼저 로그인하세요.");
       return;
     }
+    if (!hasWallet || !solanaAccount?.address) {
+      setApiMessage("내 입금 작업을 만들려면 먼저 Phantom 지갑을 연결하세요.");
+      return;
+    }
     if (!assetReadiness.isSufficient) {
       setApiMessage(
         `${selectedSourceAsset} 가용액이 부족합니다. 가용 $${assetReadiness.availableUsd.toLocaleString()} / 요청 $${depositUsd.toLocaleString()}`
@@ -288,6 +363,10 @@ export function OrchestratorBoard({
       return;
     }
     try {
+      if (!linkedWallets.some((wallet) => wallet.walletAddress.toLowerCase() === solanaAccount.address.toLowerCase())) {
+        const linked = await linkAccountWallet(solanaAccount.address);
+        setLinkedWallets((prev) => [linked, ...prev.filter((wallet) => wallet.walletAddress !== linked.walletAddress)]);
+      }
       const created = await createOrchestratorJob({
         depositUsd,
         isRangeOut,
@@ -773,7 +852,7 @@ export function OrchestratorBoard({
         <button
           className={job ? "flow-step-btn done" : "flow-step-btn waiting"}
           onClick={onCreateJob}
-          disabled={!canUseServerJobs || !canFundDeposit}
+          disabled={!canStartDepositFlow}
         >
           3. 내 입금 작업 생성
         </button>
@@ -793,7 +872,7 @@ export function OrchestratorBoard({
         <div className="kpi-item">
           <p className="kpi-label">지갑 상태</p>
           <p className="kpi-value">{hasWallet ? `${solanaAccount?.address?.slice(0, 6)}...${solanaAccount?.address?.slice(-4)}` : "미연결"}</p>
-          <p className="kpi-label">{hasWallet ? "서명·연결용 (Solana)" : "연결 후 진행 가능"}</p>
+          <p className="kpi-label">{hasWallet ? "입금 잔고·서명 확인용" : "지갑 연결 후 진행 가능"}</p>
         </div>
         <div className="kpi-item">
           <p className="kpi-label">현재 위험도</p>
