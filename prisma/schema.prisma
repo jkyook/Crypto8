@@ -18,6 +18,7 @@ model User {
 
   depositPositions  DepositPosition[]
   withdrawalLedgers WithdrawalLedger[]
+  aaveUsdcPositions AaveUsdcPosition[]
 
   @@index([registeredAt])
   @@map("users")
@@ -59,6 +60,9 @@ model Job {
   isDepegAlert      Int     @map("is_depeg_alert")
   hasPendingRelease Int     @map("has_pending_release")
   riskLevel         String  @map("risk_level")
+  sourceAsset       String? @map("source_asset")
+  productNetwork    String? @map("product_network")
+  productSubtype    String? @map("product_subtype")
   /** 예치 실행 요청을 만든 로그인 사용자(이용자별 격리). */
   requestedBy       String? @map("requested_by")
 
@@ -81,6 +85,31 @@ model Approval {
   job Job @relation(fields: [jobId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@map("approvals")
+}
+
+model AaveUsdcPosition {
+  id                String  @id
+  username          String
+  walletAddress     String  @map("wallet_address")
+  chain             String
+  asset             String
+  poolAddress       String  @map("pool_address")
+  underlyingAddress String  @map("underlying_address")
+  aTokenAddress     String  @map("a_token_address")
+  amountRaw         String  @map("amount_raw")
+  amountUsd         Float   @map("amount_usd")
+  depositTxHash     String  @unique @map("deposit_tx_hash")
+  withdrawTxHash    String? @map("withdraw_tx_hash")
+  status            String
+  depositPositionId String? @map("deposit_position_id")
+  createdAt         String  @map("created_at")
+  updatedAt         String  @map("updated_at")
+
+  user User @relation(fields: [username], references: [username], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([username, createdAt])
+  @@index([walletAddress, chain])
+  @@map("aave_usdc_positions")
 }
 
 model RefreshSession {

@@ -35,8 +35,33 @@ function rowToExecutionJob(row: {
   isDepegAlert: number;
   hasPendingRelease: number;
   riskLevel: string;
+  sourceAsset?: string | null;
+  productNetwork?: string | null;
+  productSubtype?: string | null;
   requestedBy: string | null;
 }): ExecutionJob {
+  const sourceAsset =
+    row.sourceAsset === "USDC" || row.sourceAsset === "USDT" || row.sourceAsset === "ETH" || row.sourceAsset === "SOL"
+      ? row.sourceAsset
+      : undefined;
+  const productNetwork =
+    row.productNetwork === "Ethereum" ||
+    row.productNetwork === "Arbitrum" ||
+    row.productNetwork === "Base" ||
+    row.productNetwork === "Solana" ||
+    row.productNetwork === "Multi"
+      ? row.productNetwork
+      : undefined;
+  const productSubtype =
+    row.productSubtype === "multi-stable" ||
+    row.productSubtype === "multi-balanced" ||
+    row.productSubtype === "arb-stable" ||
+    row.productSubtype === "base-stable" ||
+    row.productSubtype === "sol-stable" ||
+    row.productSubtype === "eth-stable" ||
+    row.productSubtype === "eth-bluechip"
+      ? row.productSubtype
+      : undefined;
   return {
     id: row.id,
     createdAt: row.createdAt,
@@ -45,7 +70,10 @@ function rowToExecutionJob(row: {
       depositUsd: row.depositUsd,
       isRangeOut: Boolean(row.isRangeOut),
       isDepegAlert: Boolean(row.isDepegAlert),
-      hasPendingRelease: Boolean(row.hasPendingRelease)
+      hasPendingRelease: Boolean(row.hasPendingRelease),
+      sourceAsset,
+      productNetwork,
+      productSubtype
     },
     riskLevel: row.riskLevel as RiskLevel,
     requestedBy: row.requestedBy
@@ -76,6 +104,9 @@ export async function createJob(input: JobInput, requestedBy: string): Promise<E
       isDepegAlert: input.isDepegAlert ? 1 : 0,
       hasPendingRelease: input.hasPendingRelease ? 1 : 0,
       riskLevel: job.riskLevel,
+      sourceAsset: input.sourceAsset,
+      productNetwork: input.productNetwork,
+      productSubtype: input.productSubtype,
       requestedBy
     }
   });
@@ -426,21 +457,23 @@ export async function executeJob(
     execution = ran.bundle;
     attemptsUsed = ran.attempts;
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "execution adapter failed";
     const failPayload = snapshotAdapterPayload(meta ?? {}, {
       mode: auditMode,
       adapterResults: [],
-      retries: maxAttempts
+      retries: maxAttempts,
+      errorMessage
     });
     await createExecutionEvent({
       id: `evt_${Date.now()}`,
       jobId,
       requestedAt,
       status: "failed",
-      message: error instanceof Error ? error.message : "execution adapter failed",
+      message: errorMessage,
       idempotencyKey,
       payload: failPayload
     });
-    return { ok: false, message: "execution adapter failed", job, payload: failPayload };
+    return { ok: false, message: errorMessage, job, payload: failPayload };
   }
   await db.job.update({ where: { id: jobId }, data: { status: "executed" } });
   job.status = "executed";

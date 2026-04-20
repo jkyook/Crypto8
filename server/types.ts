@@ -62,6 +62,7 @@ export type ExecutionEventPayloadV1 = {
   positionId?: string;
   adapterResults?: AdapterResultSnapshot[];
   retries?: number;
+  errorMessage?: string;
 };
 
 export type ExecutionEvent = {

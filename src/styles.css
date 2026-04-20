@@ -2824,6 +2824,57 @@ body[data-theme="light"] .market-apr-ts-chart--empty {
   font-size: 1.05rem;
 }
 
+.deposit-aave-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(123, 232, 195, 0.24);
+  background: rgba(3, 18, 20, 0.44);
+}
+
+.deposit-aave-panel h3 {
+  margin: 0;
+  color: #f3f8ff;
+  font-size: 1rem;
+}
+
+.deposit-aave-panel p:not(.section-eyebrow) {
+  margin: 6px 0 0;
+  color: var(--c8-text-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.deposit-aave-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.deposit-aave-metrics span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.deposit-aave-metrics em {
+  color: var(--c8-text-muted);
+  font-size: 0.72rem;
+  font-style: normal;
+}
+
+.deposit-aave-metrics strong,
+.deposit-aave-metrics code {
+  overflow-wrap: anywhere;
+  color: #f3f8ff;
+  font-size: 0.86rem;
+}
+
 .deposit-swap-route-list {
   display: grid;
   gap: 8px;
@@ -4079,6 +4130,8 @@ body[data-theme="light"] .selected-product-ticket,
 body[data-theme="light"] .deposit-risk-check,
 body[data-theme="light"] .deposit-asset-summary,
 body[data-theme="light"] .deposit-swap-route-row,
+body[data-theme="light"] .deposit-aave-panel,
+body[data-theme="light"] .deposit-aave-metrics span,
 body[data-theme="light"] .portfolio-overview-metrics div,
 body[data-theme="light"] .portfolio-overview-risk,
 body[data-theme="light"] .chain-exposure-card,

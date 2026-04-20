@@ -31,10 +31,16 @@ import { ensureDemoUsersIfEmpty } from "./ensureDemoUsers";
 import rateLimit from "express-rate-limit";
 import { gatherProtocolInsightsNews } from "./protocolNews";
 import { getDailyApySeriesFromCsv, getPoolApySeriesFromCsv, listMarketRatesHistory, maybeAppendMarketRatesSnapshot } from "./marketAprHistory";
-import { listAccountAssets } from "./accountAssets";
+import { listAccountAssets, listWalletAssets } from "./accountAssets";
 import { estimateProtocolFees, type FeeEstimateInputRow } from "./feeEstimator";
 import { getMarketPriceSnapshot } from "./marketPricing";
 import { linkUserWallet, listUserWallets } from "./userWallets";
+import {
+  buildAaveUsdcSupplyTransactions,
+  buildAaveUsdcWithdrawTransaction,
+  confirmAaveUsdcTransaction,
+  getAaveUsdcPosition
+} from "./aaveUsdc";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
@@ -484,6 +490,20 @@ app.get("/api/account/assets", requireAuth(["orchestrator", "security", "viewer"
   res.json({ ok: true, assets: await listAccountAssets(username, role) });
 });
 
+app.get("/api/account/wallet-assets", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+  const walletAddress = typeof req.query.walletAddress === "string" ? req.query.walletAddress : "";
+  const evmAddress = typeof req.query.evmAddress === "string" ? req.query.evmAddress : "";
+  if (!walletAddress && !evmAddress) {
+    res.status(400).json({ ok: false, message: "walletAddress or evmAddress required" });
+    return;
+  }
+  try {
+    res.json({ ok: true, assets: await listWalletAssets(walletAddress, evmAddress) });
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "wallet asset lookup failed" });
+  }
+});
+
 app.get("/api/account/wallets", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {
   const username = res.locals.user.username as string;
   res.json({ ok: true, wallets: await listUserWallets(username) });
@@ -789,6 +809,83 @@ app.post("/api/portfolio/withdraw-protocol", requireAuth(["orchestrator", "secur
     res.json({ ok: true, withdrawnUsd });
   } catch (error) {
     res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "withdraw failed" });
+  }
+});
+
+app.get("/api/aave/usdc/position", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+  const chain = req.query.chain;
+  const walletAddress = req.query.walletAddress;
+  if (typeof chain !== "string" || typeof walletAddress !== "string") {
+    res.status(400).json({ ok: false, message: "chain and walletAddress required" });
+    return;
+  }
+  try {
+    const position = await getAaveUsdcPosition(chain, walletAddress);
+    res.json({ ok: true, position });
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "Aave position lookup failed" });
+  }
+});
+
+app.post("/api/aave/usdc/supply-tx", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+  const body = req.body as { chain?: unknown; walletAddress?: unknown; amountUsdc?: unknown };
+  if (typeof body.walletAddress !== "string" || typeof body.amountUsdc !== "number") {
+    res.status(400).json({ ok: false, message: "walletAddress and amountUsdc required" });
+    return;
+  }
+  try {
+    const result = await buildAaveUsdcSupplyTransactions({
+      chain: body.chain,
+      walletAddress: body.walletAddress,
+      amountUsdc: body.amountUsdc
+    });
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "Aave supply tx build failed" });
+  }
+});
+
+app.post("/api/aave/usdc/withdraw-tx", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+  const body = req.body as { chain?: unknown; walletAddress?: unknown; amountUsdc?: unknown };
+  if (typeof body.walletAddress !== "string" || typeof body.amountUsdc !== "number") {
+    res.status(400).json({ ok: false, message: "walletAddress and amountUsdc required" });
+    return;
+  }
+  try {
+    const result = await buildAaveUsdcWithdrawTransaction({
+      chain: body.chain,
+      walletAddress: body.walletAddress,
+      amountUsdc: body.amountUsdc
+    });
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "Aave withdraw tx build failed" });
+  }
+});
+
+app.post("/api/aave/usdc/confirm", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+  const body = req.body as { chain?: unknown; walletAddress?: unknown; txHash?: unknown; kind?: unknown; amountUsdc?: unknown };
+  const username = res.locals.user.username as string;
+  if (
+    typeof body.walletAddress !== "string" ||
+    typeof body.txHash !== "string" ||
+    (body.kind !== "supply" && body.kind !== "withdraw") ||
+    typeof body.amountUsdc !== "number"
+  ) {
+    res.status(400).json({ ok: false, message: "chain, walletAddress, txHash, kind and amountUsdc required" });
+    return;
+  }
+  try {
+    const result = await confirmAaveUsdcTransaction(username, {
+      chain: body.chain,
+      walletAddress: body.walletAddress,
+      txHash: body.txHash,
+      kind: body.kind,
+      amountUsdc: body.amountUsdc
+    });
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "Aave tx confirm failed" });
   }
 });
 
