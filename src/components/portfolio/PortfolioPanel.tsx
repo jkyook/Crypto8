@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChainExposureDonut } from "../common/ChainExposureDonut";
 import { TradeControls } from "../common/TradeControls";
 import { OrchestratorBoard } from "../OrchestratorBoard";
@@ -12,10 +12,12 @@ import { usePortfolioContext } from "../../contexts/PortfolioContext";
 export function PortfolioPanel() {
   const {
     positions,
+    onchainPositions,
     canPersistPortfolio,
     handleWithdrawProtocolExposure,
     refreshPositions,
-    refreshWithdrawLedgerFromServer
+    refreshWithdrawLedgerFromServer,
+    refreshOnchainPositions
   } = usePortfolioContext();
   const [protocolAmounts, setProtocolAmounts] = useState<Record<string, number>>({});
   const [protocolDepositDraft, setProtocolDepositDraft] = useState<ProtocolDetailRow | null>(null);
@@ -99,6 +101,38 @@ export function PortfolioPanel() {
     return a.pool.localeCompare(b.pool, "ko-KR", { sensitivity: "base" });
   });
   const annualYield = estimateAnnualYieldUsd(positions);
+  const verificationCounts = onchainPositions.reduce(
+    (acc, position) => {
+      const status = position.verify?.status ?? "rpc_error";
+      if (status === "verified") acc.verified += 1;
+      else if (status === "drift") acc.drift += 1;
+      else if (status === "closed_onchain") acc.closed += 1;
+      else if (status === "rpc_error") acc.rpcError += 1;
+      else acc.unsupported += 1;
+      return acc;
+    },
+    { verified: 0, drift: 0, closed: 0, rpcError: 0, unsupported: 0 }
+  );
+
+  useEffect(() => {
+    void refreshOnchainPositions();
+  }, [refreshOnchainPositions]);
+
+  const positionStatusBadge = (status: string) => {
+    if (status === "verified") return "badge badge-low";
+    if (status === "drift") return "badge badge-medium";
+    if (status === "closed_onchain") return "badge badge-high";
+    if (status === "rpc_error") return "badge badge-critical";
+    return "badge badge-medium";
+  };
+
+  const positionStatusLabel = (status: string) => {
+    if (status === "verified") return "확인됨";
+    if (status === "drift") return "차이 있음";
+    if (status === "closed_onchain") return "온체인 종료";
+    if (status === "rpc_error") return "조회 실패";
+    return "미지원";
+  };
 
   return (
     <section className="card portfolio-panel-card">
@@ -124,6 +158,67 @@ export function PortfolioPanel() {
         </div>
         <ChainExposureDonut positions={positions} compact />
       </div>
+      <div className="portfolio-section-head">
+        <div>
+          <h3>온체인 검증 포지션</h3>
+          <p>새 positions 테이블 기준으로 DB 금액과 온체인 잔고를 함께 보여줍니다.</p>
+        </div>
+        <div className="portfolio-overview-metrics">
+          <div>
+            <span>확인됨</span>
+            <strong>{verificationCounts.verified}건</strong>
+          </div>
+          <div>
+            <span>차이 있음</span>
+            <strong>{verificationCounts.drift}건</strong>
+          </div>
+          <div>
+            <span>조회 실패</span>
+            <strong>{verificationCounts.rpcError}건</strong>
+          </div>
+        </div>
+      </div>
+      <table className="protocol-detail-table">
+        <thead>
+          <tr>
+            <th>프로토콜</th>
+            <th>체인</th>
+            <th>상태</th>
+            <th>DB 금액</th>
+            <th>온체인 금액</th>
+            <th>drift</th>
+            <th>검증 시각</th>
+            <th>메모</th>
+          </tr>
+        </thead>
+        <tbody>
+          {onchainPositions.map((position) => {
+            const verify = position.verify ?? undefined;
+            const status = verify?.status ?? position.status;
+            return (
+              <tr key={position.id}>
+                <td>{position.protocol}</td>
+                <td>{position.chain}</td>
+                <td>
+                  <span className={positionStatusBadge(status)}>
+                    {positionStatusLabel(status)}
+                  </span>
+                </td>
+                <td>${position.amountUsd.toFixed(2)}</td>
+                <td>{verify?.onchainAmountUsd == null ? "—" : `$${verify.onchainAmountUsd.toFixed(2)}`}</td>
+                <td>{verify?.driftPct == null ? "—" : `${verify.driftPct.toFixed(1)}%`}</td>
+                <td>{verify?.verifiedAt ? new Date(verify.verifiedAt).toLocaleString() : "—"}</td>
+                <td>{verify?.detail ?? "—"}</td>
+              </tr>
+            );
+          })}
+          {onchainPositions.length === 0 ? (
+            <tr>
+              <td colSpan={8}>아직 온체인 검증 포지션이 없습니다.</td>
+            </tr>
+          ) : null}
+        </tbody>
+      </table>
       <h3>프로토콜별 예치 상세</h3>
       <table className="protocol-detail-table">
         <thead>
@@ -320,6 +415,7 @@ export function PortfolioPanel() {
               ]}
               onExecutionComplete={async () => {
                 await refreshPositions();
+                await refreshOnchainPositions();
                 await refreshWithdrawLedgerFromServer();
               }}
             />

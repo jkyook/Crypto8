@@ -2847,6 +2847,28 @@ body[data-theme="light"] .market-apr-ts-chart--empty {
   line-height: 1.45;
 }
 
+.deposit-aave-panel .deposit-asset-summary {
+  background:
+    linear-gradient(180deg, rgba(123, 232, 195, 0.08), rgba(0, 0, 0, 0.16)),
+    rgba(0, 0, 0, 0.22);
+}
+
+.deposit-aave-panel .deposit-asset-summary.ok {
+  border-color: rgba(123, 232, 195, 0.38);
+}
+
+.deposit-aave-panel .deposit-asset-summary.warn {
+  border-color: rgba(255, 184, 107, 0.46);
+}
+
+.deposit-aave-panel .deposit-asset-summary strong {
+  font-size: 1rem;
+}
+
+.deposit-aave-panel .deposit-asset-summary em {
+  line-height: 1.45;
+}
+
 .deposit-aave-metrics {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -2978,6 +3000,35 @@ body[data-theme="light"] .market-apr-ts-chart--empty {
 .portfolio-overview-metrics strong,
 .portfolio-overview-risk strong {
   font-size: 1.25rem;
+}
+
+.portfolio-section-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: end;
+  margin-top: 18px;
+  margin-bottom: 10px;
+}
+
+.portfolio-section-head h3 {
+  margin: 0;
+  font-size: 1.08rem;
+}
+
+.portfolio-section-head p {
+  margin: 6px 0 0;
+  color: var(--c8-text-muted);
+  font-size: 0.84rem;
+}
+
+.portfolio-section-head .portfolio-overview-metrics {
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(120px, 1fr);
+}
+
+.portfolio-section-head .portfolio-overview-metrics div {
+  padding: 12px 14px;
 }
 
 .chain-exposure-card {
@@ -3217,6 +3268,35 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
 .protocol-detail-table th:nth-child(6),
 .protocol-detail-table td:nth-child(6) {
   width: 32%;
+}
+
+.protocol-detail-table th:nth-child(7),
+.protocol-detail-table td:nth-child(7) {
+  width: 13%;
+}
+
+.protocol-detail-table th:nth-child(8),
+.protocol-detail-table td:nth-child(8) {
+  width: 18%;
+  text-align: left;
+}
+
+.protocol-detail-table td .badge {
+  white-space: nowrap;
+}
+
+.protocol-detail-table td:nth-child(8) {
+  color: var(--c8-text-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.protocol-detail-table td:nth-child(8) {
+  padding-inline: 10px 12px;
+}
+
+.protocol-detail-table td:nth-child(8) {
+  word-break: break-word;
 }
 
 .protocol-detail-table .protocol-inline-transfer {
@@ -4144,6 +4224,22 @@ body[data-theme="light"] .product-pool-item {
 
 body[data-theme="light"] .deposit-risk-check strong {
   color: #142438;
+}
+
+body[data-theme="light"] .portfolio-section-head p,
+body[data-theme="light"] .deposit-aave-panel p:not(.section-eyebrow),
+body[data-theme="light"] .deposit-aave-panel .deposit-asset-summary em {
+  color: #577390;
+}
+
+body[data-theme="light"] .deposit-aave-panel .deposit-asset-summary {
+  background:
+    linear-gradient(180deg, rgba(123, 232, 195, 0.12), rgba(255, 255, 255, 0.74)),
+    rgba(230, 240, 252, 0.76);
+}
+
+body[data-theme="light"] .portfolio-section-head .portfolio-overview-metrics div {
+  background: rgba(230, 240, 252, 0.82);
 }
 
 body[data-theme="light"] .flow-step {

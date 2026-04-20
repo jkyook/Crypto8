@@ -114,6 +114,11 @@ function getEvmRpcCandidates(chainKey: EvmChainKey): string[] {
   return [...envUrls, ...config.fallbackRpcUrls.filter((url) => !envUrls.includes(url))];
 }
 
+function isEvmWalletChain(chain: string): boolean {
+  const normalized = chain.toLowerCase();
+  return normalized === "ethereum" || normalized === "evm" || normalized === "arbitrum" || normalized === "base";
+}
+
 type RpcJson = { result?: unknown; error?: { message?: string } };
 
 function assertSolanaWalletAddress(walletAddress: string): string {
@@ -318,7 +323,7 @@ export async function listAccountAssets(username: string, role: UserRole): Promi
           const amounts = await fetchSolanaWalletAmounts(assertSolanaWalletAddress(wallet.walletAddress));
           return { source: "solana", rows: amountsToAssetBalances(amounts, priceSnapshot) };
         }
-        if (chain === "ethereum" || chain === "evm") {
+        if (isEvmWalletChain(chain)) {
           return { source: "evm", rows: await fetchEvmWalletAssets(wallet.walletAddress, priceSnapshot) };
         }
         return { source: "solana", rows: [] };
@@ -326,8 +331,7 @@ export async function listAccountAssets(username: string, role: UserRole): Promi
     );
     const rows = results.flatMap((result) => (result.status === "fulfilled" ? result.value.rows : []));
     const hasLinkedEvmWallet = linkedWallets.some((wallet) => {
-      const chain = wallet.chain.toLowerCase();
-      return chain === "ethereum" || chain === "evm";
+      return isEvmWalletChain(wallet.chain);
     });
     const hasFulfilledEvm = results.some((result) => result.status === "fulfilled" && result.value.source === "evm");
     if (rows.length === 0 && hasLinkedEvmWallet && !hasFulfilledEvm) {

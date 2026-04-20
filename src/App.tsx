@@ -45,6 +45,7 @@ function AppShell() {
     portfolioNotice,
     setPortfolioNotice,
     portfolioTotalUsd,
+    refreshOnchainPositions,
     refreshPositions,
     refreshWithdrawLedgerFromServer
   } = usePortfolioContext();
@@ -123,11 +124,11 @@ function AppShell() {
       if (signal.aborted) return;
       setRecentJobs(jobsResult.status === "fulfilled" ? jobsResult.value.slice(0, 6) : []);
       setRecentEvents(eventsResult.status === "fulfilled" ? eventsResult.value.slice(0, 6) : []);
-      await Promise.all([refreshPositions(), refreshWithdrawLedgerFromServer()]);
+      await Promise.all([refreshPositions(), refreshOnchainPositions(), refreshWithdrawLedgerFromServer()]);
     };
     void loadRecent();
     return () => controller.abort();
-  }, [session, refreshPositions, refreshWithdrawLedgerFromServer, setPositions, setWithdrawLedger]);
+  }, [session, refreshOnchainPositions, refreshPositions, refreshWithdrawLedgerFromServer, setPositions, setWithdrawLedger]);
 
   useEffect(() => {
     const allowed = availableMenus.some((item) => item.key === activeMenu);
@@ -210,6 +211,7 @@ function AppShell() {
             }}
             onExecutionComplete={async () => {
               await refreshPositions();
+              await refreshOnchainPositions();
               await refreshWithdrawLedgerFromServer();
             }}
           />

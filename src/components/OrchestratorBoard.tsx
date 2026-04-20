@@ -79,7 +79,6 @@ export function OrchestratorBoard({
   const solanaAccount = accounts?.find((account) => account.addressType === AddressType.solana);
   const ethereumAccount = accounts?.find((account) => account.addressType === AddressType.ethereum);
   const [ethereumProviderAddress, setEthereumProviderAddress] = useState("");
-  const ethereumConnectAttempted = useRef(false);
   const isIdentityConfirmed = true;
   const [depositUsd, setDepositUsd] = useState(initialDepositUsd);
   useEffect(() => {
@@ -144,7 +143,6 @@ export function OrchestratorBoard({
   useEffect(() => {
     if (!isConnected || !isEthereumAvailable) {
       setEthereumProviderAddress("");
-      ethereumConnectAttempted.current = false;
       return;
     }
     let disposed = false;
@@ -159,10 +157,6 @@ export function OrchestratorBoard({
       try {
         const existing = await ethereum.getAccounts();
         setFirstAddress(existing);
-        if (existing.length === 0 && !ethereumConnectAttempted.current) {
-          ethereumConnectAttempted.current = true;
-          setFirstAddress(await ethereum.connect());
-        }
       } catch {
         setFirstAddress(ethereum.accounts);
       }
@@ -179,14 +173,28 @@ export function OrchestratorBoard({
   const aaveUsdcChain =
     initialProductNetwork === "Base" || initialProductNetwork === "Arbitrum" ? (initialProductNetwork as AaveUsdcChain) : null;
   const isAaveUsdcProduct = Boolean(aaveUsdcChain && selectedSourceAsset === "USDC");
+  const needsEvmWalletForAave = isAaveUsdcProduct && !evmWalletAddress;
   const hasWallet = Boolean(isConnected && (solanaAccount?.address || evmWalletAddress));
   const jwtAccess = useSyncExternalStore(subscribeLocalAuth, readAccessTokenSnapshot, () => "");
   const session = useMemo(() => getSession(), [jwtAccess]);
   const isWalletLoginSession = Boolean(session?.username.startsWith("wallet_"));
   const canUseServerJobs = jwtAccess.length > 0 && allowJobExecutionProp !== false;
+  const linkedEvmWalletAddress = useMemo(
+    () => linkedWallets.find((wallet) => {
+      const chain = wallet.chain.toLowerCase();
+      return chain === "ethereum" || chain === "evm" || chain === "arbitrum" || chain === "base";
+    })?.walletAddress ?? "",
+    [linkedWallets]
+  );
+  const effectiveEvmWalletAddress = evmWalletAddress || linkedEvmWalletAddress;
+  const aaveWalletNotice = needsEvmWalletForAave
+    ? `${aaveUsdcChain ?? "Aave"} USDC 상품은 EVM 지갑이 필요합니다. Phantom의 EVM 계정을 연결하면 잔고 조회와 입금 버튼이 활성화됩니다.`
+    : aaveUsdcChain
+      ? `EVM 지갑 ${effectiveEvmWalletAddress ? `${effectiveEvmWalletAddress.slice(0, 6)}...${effectiveEvmWalletAddress.slice(-4)}` : "미연결"} 기준으로 ${aaveUsdcChain} USDC 잔고를 조회합니다.`
+      : "";
   useEffect(() => {
     const walletAddress = solanaAccount?.address ?? "";
-    const evmAddress = evmWalletAddress ?? "";
+    const evmAddress = effectiveEvmWalletAddress ?? "";
     const hasWalletAddress = Boolean(walletAddress || evmAddress);
 
     // ── Case 1: 지갑 주소 보유 시 블록체인 잔고 직접 조회 (로그인 불필요, 공개 온체인 데이터)
@@ -265,9 +273,9 @@ export function OrchestratorBoard({
         if (!controller.signal.aborted && requestSeq === assetRequestSeq.current) setAssetLoading(false);
       });
     return () => controller.abort();
-  }, [canUseServerJobs, evmWalletAddress, hasWallet, isWalletLoginSession, solanaAccount?.address]);
+  }, [canUseServerJobs, effectiveEvmWalletAddress, hasWallet, isWalletLoginSession, solanaAccount?.address]);
   useEffect(() => {
-    if (!canUseServerJobs || !aaveUsdcChain || !evmWalletAddress) {
+    if (!canUseServerJobs || !aaveUsdcChain || !effectiveEvmWalletAddress) {
       setAavePosition(null);
       setAaveError("");
       setAaveLoading(false);
@@ -276,7 +284,7 @@ export function OrchestratorBoard({
     const controller = new AbortController();
     setAaveLoading(true);
     setAaveError("");
-    void fetchAaveUsdcPosition(aaveUsdcChain, evmWalletAddress, { signal: controller.signal })
+    void fetchAaveUsdcPosition(aaveUsdcChain, effectiveEvmWalletAddress, { signal: controller.signal })
       .then((position) => {
         if (!controller.signal.aborted) setAavePosition(position);
       })
@@ -289,7 +297,7 @@ export function OrchestratorBoard({
         if (!controller.signal.aborted) setAaveLoading(false);
       });
     return () => controller.abort();
-  }, [aaveUsdcChain, canUseServerJobs, evmWalletAddress]);
+  }, [aaveUsdcChain, canUseServerJobs, effectiveEvmWalletAddress]);
   // 로그인 상태가 바뀔 때마다 계정에 연결된 지갑 목록을 가져옴
   useEffect(() => {
     if (!canUseServerJobs) {
@@ -348,6 +356,14 @@ export function OrchestratorBoard({
     return baseQuoteRows.map((row) => Number(((row.allocationUsd / total) * 100).toFixed(2)));
   }, [baseQuoteRows, depositUsd, job]);
   const isResultQuote = Boolean(lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0));
+  const adapterResultStatus = (index: number): string | undefined => lastExecution?.payload?.adapterResults?.[index]?.status;
+  const adapterResultStatusClass = (status?: string): string => {
+    if (status === "confirmed" || status === "simulated") return "badge badge-low";
+    if (status === "submitted") return "badge badge-medium";
+    if (status === "unsupported") return "badge badge-high";
+    if (status === "failed") return "badge badge-critical";
+    return "badge badge-medium";
+  };
   const adjustedAllocationTotal = quoteRows.reduce((acc, row) => acc + row.allocationUsd, 0);
   const connectedWalletNetwork = useMemo(() => {
     const assetChains = Array.from(new Set(accountAssets.map((asset) => asset.chain)));
@@ -390,7 +406,7 @@ export function OrchestratorBoard({
       });
     return () => controller.abort();
   }, [canUseServerJobs, isResultQuote, quoteRows]);
-  const aaveFundingOk = !isAaveUsdcProduct || Boolean(evmWalletAddress && aavePosition && aavePosition.walletUsdc >= depositUsd);
+  const aaveFundingOk = !isAaveUsdcProduct || Boolean(effectiveEvmWalletAddress && aavePosition && aavePosition.walletUsdc >= depositUsd);
   const canFundDeposit = canUseServerJobs && hasWallet && assetReadiness.isSufficient && aaveFundingOk;
   const canStartDepositFlow = canUseServerJobs && hasWallet && canFundDeposit;
   const canExecute = Boolean(job) && isExecutionConfirmed && canStartDepositFlow;
@@ -406,7 +422,9 @@ export function OrchestratorBoard({
       label: "계정 자산",
       ok: assetReadiness.isSufficient && aaveFundingOk,
       detail:
-        isAaveUsdcProduct && !aaveFundingOk
+        needsEvmWalletForAave
+          ? "Aave USDC는 Arbitrum/Base EVM 지갑 연결이 필요합니다."
+          : isAaveUsdcProduct && !aaveFundingOk
           ? `${aaveUsdcChain ?? ""} USDC 온체인 잔고 부족`
           : assetReadiness.isSufficient
             ? `${selectedSourceAsset} 잔고 충분`
@@ -419,12 +437,12 @@ export function OrchestratorBoard({
   const findFeeForRoute = (route: (typeof assetReadiness.swapRows)[number]) =>
     feeEstimate?.rows.find((fee) => fee.protocol === route.protocol && fee.chain === route.chain && fee.action === route.action);
   const sendAaveTransaction = async (tx: AaveTxRequest): Promise<string> => {
-    if (!ethereum || !evmWalletAddress) {
+    if (!ethereum || !effectiveEvmWalletAddress) {
       throw new Error("Aave 입금·출금은 Phantom EVM 지갑 연결이 필요합니다.");
     }
     await ethereum.switchChain(tx.chainId);
     return ethereum.sendTransaction({
-      from: evmWalletAddress,
+      from: effectiveEvmWalletAddress,
       to: tx.to,
       data: tx.data,
       value: tx.value,
@@ -462,6 +480,10 @@ export function OrchestratorBoard({
       );
       return;
     }
+    if (needsEvmWalletForAave) {
+      setApiMessage("Aave 단일 상품은 Arbitrum/Base EVM 지갑 연결이 필요합니다.");
+      return;
+    }
     if (!aaveFundingOk) {
       setApiMessage(
         `${aaveUsdcChain ?? "Aave"} USDC 온체인 잔고가 부족합니다. 가용 ${aavePosition?.walletUsdc.toLocaleString(undefined, {
@@ -473,7 +495,7 @@ export function OrchestratorBoard({
     try {
       const walletsToLink = [
         solanaAccount?.address ? { address: solanaAccount.address, chain: "Solana" } : null,
-        evmWalletAddress ? { address: evmWalletAddress, chain: "Ethereum" } : null
+        evmWalletAddress ? { address: evmWalletAddress, chain: aaveUsdcChain ?? "Ethereum" } : null
       ].filter((wallet): wallet is { address: string; chain: string } => Boolean(wallet));
       for (const wallet of walletsToLink) {
         if (!linkedWallets.some((linked) => linked.walletAddress.toLowerCase() === wallet.address.toLowerCase())) {
@@ -523,7 +545,11 @@ export function OrchestratorBoard({
   };
 
   const runAaveLiveSupply = async () => {
-    if (!job || !aaveUsdcChain || !evmWalletAddress) return;
+    if (!job || !aaveUsdcChain) return;
+    if (!evmWalletAddress) {
+      setApiMessage("Aave 실제 입금 실행에는 Phantom EVM 지갑 연결이 필요합니다.");
+      return;
+    }
     setAaveTxStatus("Aave V3 입금 트랜잭션 생성 중...");
     const built = await buildAaveUsdcSupplyTx(aaveUsdcChain, evmWalletAddress, depositUsd);
     let supplyHash = "";
@@ -560,7 +586,7 @@ export function OrchestratorBoard({
             action: "USDC supply",
             allocationUsd: depositUsd,
             txId: supplyHash,
-            status: "submitted"
+            status: confirmed.status === "confirmed" ? "confirmed" : "submitted"
           }
         ]
       }
@@ -569,12 +595,12 @@ export function OrchestratorBoard({
     setLastExecution(result);
     setApiMessage(`${message} · txId=${supplyHash}`);
     setAaveTxStatus(result.summary ?? message);
-    await fetchAaveUsdcPosition(aaveUsdcChain, evmWalletAddress).then(setAavePosition).catch(() => undefined);
+    await fetchAaveUsdcPosition(aaveUsdcChain, effectiveEvmWalletAddress).then(setAavePosition).catch(() => undefined);
     await onExecutionComplete?.();
   };
 
   const onAaveWithdraw = async () => {
-    if (!aaveUsdcChain || !evmWalletAddress) {
+    if (!aaveUsdcChain || !effectiveEvmWalletAddress) {
       setApiMessage("Aave 출금은 Phantom EVM 지갑 연결이 필요합니다.");
       return;
     }
@@ -586,11 +612,11 @@ export function OrchestratorBoard({
     setAaveWithdrawLoading(true);
     setAaveTxStatus("Aave V3 출금 트랜잭션 생성 중...");
     try {
-      const built = await buildAaveUsdcWithdrawTx(aaveUsdcChain, evmWalletAddress, amountUsdc);
+      const built = await buildAaveUsdcWithdrawTx(aaveUsdcChain, effectiveEvmWalletAddress, amountUsdc);
       setAaveTxStatus(`${built.transaction.description} · 지갑 서명 대기`);
       const txHash = await sendAaveTransaction(built.transaction);
       setAaveTxStatus(`출금 제출됨: ${txHash} · 영수증 확인 중...`);
-      const confirmed = await waitForAaveConfirmation(aaveUsdcChain, evmWalletAddress, txHash, "withdraw", amountUsdc);
+      const confirmed = await waitForAaveConfirmation(aaveUsdcChain, effectiveEvmWalletAddress, txHash, "withdraw", amountUsdc);
       const message = confirmed.status === "confirmed" ? "Aave V3 USDC 출금 확정" : "Aave V3 USDC 출금 제출됨";
       setApiMessage(`${message} · txId=${txHash}`);
       setAaveTxStatus(
@@ -598,7 +624,7 @@ export function OrchestratorBoard({
           ? "온체인 receipt 확인 후 포트폴리오와 출금 장부를 갱신했습니다."
           : "트랜잭션이 아직 pending입니다. 잠시 뒤 포지션 조회를 다시 확인하세요."
       );
-      await fetchAaveUsdcPosition(aaveUsdcChain, evmWalletAddress).then(setAavePosition).catch(() => undefined);
+      await fetchAaveUsdcPosition(aaveUsdcChain, effectiveEvmWalletAddress).then(setAavePosition).catch(() => undefined);
       await onExecutionComplete?.();
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Aave 출금 실패";
@@ -751,7 +777,7 @@ export function OrchestratorBoard({
                 setIsExecutionConfirmed(false);
                 setIsExecutionDone(false);
               }}
-              disabled={!canUseServerJobs || accountAssets.length === 0}
+              disabled={accountAssets.length === 0}
             >
               {accountAssets.length > 0 ? (
                 accountAssets.map((asset) => (
@@ -812,6 +838,11 @@ export function OrchestratorBoard({
                 USDC 승인, Aave Pool 공급, aUSDC 잔고 조회, Pool 출금을 같은 지갑 주소 기준으로 처리합니다.
               </p>
             </div>
+            <div className={`deposit-asset-summary ${needsEvmWalletForAave ? "warn" : "ok"}`}>
+              <span>{needsEvmWalletForAave ? "EVM 지갑 필요" : "EVM 지갑 상태"}</span>
+              <strong>{needsEvmWalletForAave ? "연결 필요" : "준비 완료"}</strong>
+              <em>{aaveWalletNotice}</em>
+            </div>
             {aaveLoading ? <p className="deposit-asset-muted">Aave 포지션 조회 중...</p> : null}
             {aaveError ? <p className="deposit-asset-error">{aaveError}</p> : null}
             {aavePosition ? (
@@ -839,27 +870,32 @@ export function OrchestratorBoard({
                 type="button"
                 className="ghost-btn"
                 onClick={() => {
-                  if (!aaveUsdcChain || !evmWalletAddress) return;
+                  if (!aaveUsdcChain || !effectiveEvmWalletAddress) return;
                   setAaveLoading(true);
                   setAaveError("");
-                  void fetchAaveUsdcPosition(aaveUsdcChain, evmWalletAddress)
+                  void fetchAaveUsdcPosition(aaveUsdcChain, effectiveEvmWalletAddress)
                     .then(setAavePosition)
                     .catch((error) => setAaveError(error instanceof Error ? error.message : "Aave 포지션 조회 실패"))
                     .finally(() => setAaveLoading(false));
                 }}
-                disabled={!evmWalletAddress || aaveLoading}
+                disabled={!effectiveEvmWalletAddress || aaveLoading}
               >
-                Aave 잔고 새로고침
+                {effectiveEvmWalletAddress ? "Aave 잔고 새로고침" : "EVM 지갑 먼저 연결"}
               </button>
               <button
                 type="button"
                 className="ghost-btn"
                 onClick={() => void onAaveWithdraw()}
-                disabled={!evmWalletAddress || !aavePosition || aavePosition.suppliedUsdc <= 0 || aaveWithdrawLoading}
+                disabled={!effectiveEvmWalletAddress || !aavePosition || aavePosition.suppliedUsdc <= 0 || aaveWithdrawLoading}
               >
-                {aaveWithdrawLoading ? "출금 처리 중..." : `Aave에서 ${Math.min(depositUsd, aavePosition?.suppliedUsdc ?? 0).toLocaleString()} USDC 출금`}
+                {aaveWithdrawLoading
+                  ? "출금 처리 중..."
+                  : effectiveEvmWalletAddress
+                    ? `Aave에서 ${Math.min(depositUsd, aavePosition?.suppliedUsdc ?? 0).toLocaleString()} USDC 출금`
+                    : "EVM 지갑 연결 후 출금"}
               </button>
             </div>
+            {needsEvmWalletForAave ? <p className="deposit-asset-error">Aave 입금/출금은 Arbitrum 또는 Base EVM 지갑 연결이 필요합니다.</p> : null}
             {aaveTxStatus ? <p className="deposit-asset-muted">{aaveTxStatus}</p> : null}
           </div>
         ) : null}
@@ -967,6 +1003,13 @@ export function OrchestratorBoard({
                 <span className="quote-card-cell quote-card-chain">{row.chain}</span>
                 <span className="quote-card-cell quote-card-action">{row.action}</span>
                 <span className="quote-card-cell quote-card-usd">${row.allocationUsd.toFixed(2)}</span>
+                {isResultQuote ? (
+                  <span className="quote-card-cell quote-card-status">
+                    <span className={adapterResultStatusClass(adapterResultStatus(idx))}>
+                      {adapterResultStatus(idx) ?? "simulated"}
+                    </span>
+                  </span>
+                ) : null}
                 {!isResultQuote ? (
                   <label className="quote-card-slider" aria-label={`${row.protocol} 배분 조율`}>
                     <input

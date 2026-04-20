@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   listDepositPositions,
+  listOnchainPositions,
   listWithdrawalLedger,
   withdrawDepositRemote,
   withdrawProductDepositRemote,
   withdrawProtocolExposureRemote,
-  type AuthSession
+  type AuthSession,
+  type OnchainPositionPayload
 } from "../lib/api";
 import {
   GUEST_WITHDRAW_LEDGER_KEY,
@@ -30,6 +32,7 @@ export type PortfolioNotice = { variant: "error" | "info"; text: string };
  */
 export function usePortfolio(session: AuthSession | null) {
   const [positions, setPositions] = useState<DepositPosition[]>([]);
+  const [onchainPositions, setOnchainPositions] = useState<OnchainPositionPayload[]>([]);
   const [withdrawLedger, setWithdrawLedger] = useState<WalletWithdrawLedgerLine[]>([]);
   const [portfolioNotice, setPortfolioNotice] = useState<PortfolioNotice | null>(null);
 
@@ -56,6 +59,16 @@ export function usePortfolio(session: AuthSession | null) {
       setPositions(rows);
     } catch {
       setPositions([]);
+    }
+  }, [session]);
+
+  const refreshOnchainPositions = useCallback(async () => {
+    if (!session) return;
+    try {
+      const rows = await listOnchainPositions();
+      setOnchainPositions(rows);
+    } catch {
+      setOnchainPositions([]);
     }
   }, [session]);
 
@@ -178,6 +191,8 @@ export function usePortfolio(session: AuthSession | null) {
   return {
     positions,
     setPositions,
+    onchainPositions,
+    setOnchainPositions,
     withdrawLedger,
     setWithdrawLedger,
     portfolioNotice,
@@ -185,6 +200,7 @@ export function usePortfolio(session: AuthSession | null) {
     canPersistPortfolio,
     portfolioTotalUsd,
     refreshPositions,
+    refreshOnchainPositions,
     refreshWithdrawLedgerFromServer,
     handleWithdrawPosition,
     handleWithdrawProtocolExposure,

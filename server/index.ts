@@ -728,25 +728,45 @@ function buildProtocolMixFromExecutionPayload(
   }));
 }
 
+function estimateExpectedAprForJob(job: Awaited<ReturnType<typeof getJob>>): number {
+  switch (job.input.productSubtype) {
+    case "multi-stable":
+      return 0.04718;
+    case "multi-balanced":
+      return 0.14285;
+    case "arb-stable":
+      return 0.10922;
+    case "base-stable":
+      return 0.1173;
+    case "sol-stable":
+      return 0.07882;
+    case "eth-stable":
+      return 0.03325;
+    case "eth-bluechip":
+      return 0.0554;
+    default:
+      return 0.08;
+  }
+}
+
 async function recordExecutionPositionIfNeeded(args: {
   username: string;
   job: Awaited<ReturnType<typeof getJob>>;
   result: Awaited<ReturnType<typeof executeJob>>;
   positionId?: string;
 }): Promise<void> {
-  if (!args.job || args.positionId || args.result.message !== "execution accepted") {
+  if (!args.job || args.positionId || args.result.message !== "execution accepted" || args.result.payload?.mode !== "live") {
     return;
   }
   const depositUsd = args.job.input.depositUsd;
   if (!Number.isFinite(depositUsd) || depositUsd <= 0) {
     return;
   }
-  const mode = args.result.payload?.mode ?? "dry-run";
   const protocolMix = buildProtocolMixFromExecutionPayload(args.result.payload, depositUsd);
   await createDepositPosition(args.username, {
-    productName: `${mode === "live" ? "Server execution" : "Dry-run execution"} ${args.job.id.slice(-6)}`,
+    productName: `Server execution ${args.job.id.slice(-6)}`,
     amountUsd: depositUsd,
-    expectedApr: 0.08,
+    expectedApr: estimateExpectedAprForJob(args.job),
     protocolMix
   });
 }

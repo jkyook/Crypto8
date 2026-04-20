@@ -169,7 +169,7 @@ export type ExecutionEventPayload = {
     action: string;
     allocationUsd: number;
     txId: string;
-    status: "simulated" | "submitted";
+    status: "simulated" | "submitted" | "confirmed" | "unsupported" | "failed";
   }>;
   retries?: number;
   errorMessage?: string;
@@ -235,6 +235,36 @@ export type DepositPositionPayload = {
   expectedApr: number;
   protocolMix: Array<{ name: string; weight: number; pool?: string }>;
   createdAt: string;
+};
+
+export type OnchainPositionVerifySnapshot = {
+  status: "verified" | "drift" | "closed_onchain" | "rpc_error" | "unsupported";
+  onchainAmountUsd: number | null;
+  onchainRaw: string | null;
+  driftPct: number | null;
+  detail: string;
+  verifiedAt: string;
+  walletAddress: string | null;
+};
+
+export type OnchainPositionPayload = {
+  id: string;
+  executionId: string;
+  username: string;
+  protocol: string;
+  chain: string;
+  asset: string;
+  poolAddress: string | null;
+  positionToken: string | null;
+  positionRaw: string | null;
+  amountUsd: number;
+  depositTxHash: string;
+  lastSyncedAt: string | null;
+  status: "active" | "closed" | "liquidated";
+  openedAt: string;
+  closedAt: string | null;
+  onchainDataJson: string | null;
+  verify?: OnchainPositionVerifySnapshot | null;
 };
 
 export type AccountAssetSymbol = "USDC" | "USDT" | "ETH" | "SOL";
@@ -1137,6 +1167,15 @@ export async function listDepositPositions(init: Pick<RequestInit, "signal"> = {
     throw new Error("예치 포지션 조회 실패");
   }
   const data = (await response.json()) as { positions?: DepositPositionPayload[] };
+  return data.positions ?? [];
+}
+
+export async function listOnchainPositions(init: Pick<RequestInit, "signal"> = {}): Promise<OnchainPositionPayload[]> {
+  const response = await authedFetch("/api/positions", init);
+  if (!response.ok) {
+    throw new Error("온체인 포지션 조회 실패");
+  }
+  const data = (await response.json()) as { positions?: OnchainPositionPayload[] };
   return data.positions ?? [];
 }
 
