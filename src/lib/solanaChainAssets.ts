@@ -1,3 +1,5 @@
+import type { AccountAssetBalance, AccountAssetSymbol } from "./api";
+
 /** SPL Token 프로그램 (Solana). */
 export const SPL_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 
@@ -59,6 +61,15 @@ export type OnChainPortfolio = {
   sol: number;
   tokens: OnChainTokenRow[];
 };
+
+function normalizeAccountAssetSymbol(symbol: string): AccountAssetSymbol | null {
+  const upper = symbol.toUpperCase();
+  if (upper.includes("USDC")) return "USDC";
+  if (upper.includes("USDT")) return "USDT";
+  if (upper.includes("SOL")) return "SOL";
+  if (upper.includes("ETH")) return "ETH";
+  return null;
+}
 
 /** Solana JSON-RPC로 네이티브 SOL + SPL 잔고 조회(단일 엔드포인트). */
 export async function fetchOnChainPortfolio(rpcUrl: string, owner: string, network: "mainnet" | "devnet"): Promise<OnChainPortfolio> {
@@ -142,6 +153,44 @@ export async function fetchOnChainPortfolioWithFallback(
     console.warn("[solanaChainAssets] on-chain balance fetch failed after fallbacks:", lastDetail);
   }
   throw new Error("지금은 블록체인 잔고를 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.");
+}
+
+export function portfolioToAccountAssetBalances(
+  portfolio: OnChainPortfolio,
+  prices: Partial<Record<AccountAssetSymbol, number>>,
+  priceSource: string,
+  priceUpdatedAt: string
+): AccountAssetBalance[] {
+  const rows: AccountAssetBalance[] = [];
+  if (Number.isFinite(portfolio.sol) && portfolio.sol > 0) {
+    const solPrice = prices.SOL ?? 0;
+    rows.push({
+      symbol: "SOL",
+      chain: "Solana",
+      amount: portfolio.sol,
+      usdPrice: solPrice,
+      usdValue: Number((portfolio.sol * solPrice).toFixed(2)),
+      priceSource,
+      priceUpdatedAt
+    });
+  }
+  for (const token of portfolio.tokens) {
+    const symbol = normalizeAccountAssetSymbol(token.symbol);
+    if (!symbol || token.amount <= 0) {
+      continue;
+    }
+    const usdPrice = prices[symbol] ?? 0;
+    rows.push({
+      symbol,
+      chain: "Solana",
+      amount: token.amount,
+      usdPrice,
+      usdValue: Number((token.amount * usdPrice).toFixed(2)),
+      priceSource,
+      priceUpdatedAt
+    });
+  }
+  return rows;
 }
 
 export function solscanTokenUrl(mint: string, network: "mainnet" | "devnet"): string {

@@ -6,6 +6,7 @@ import {
   buildAaveUsdcWithdrawTx,
   confirmAaveUsdcTx,
   fetchAaveUsdcPosition,
+  fetchMarketPrices,
   listAccountAssets,
   listAccountWallets,
   listWalletAssets,
@@ -36,6 +37,11 @@ import { buildExecutionPreviewRows } from "../lib/executionPreview";
 import { buildAgentTasks, evaluateRisk } from "../lib/orchestrator";
 import { checkGuardrails } from "../lib/strategyEngine";
 import type { ExecutionPreviewRow } from "../lib/executionPreview";
+import {
+  fetchOnChainPortfolioWithFallback,
+  getSolanaRpcCandidates,
+  portfolioToAccountAssetBalances
+} from "../lib/solanaChainAssets";
 
 type OrchestratorBoardProps = {
   initialDepositUsd?: number;
@@ -191,8 +197,25 @@ export function OrchestratorBoard({
       setAssetLoading(true);
       setAssetError("");
       void listWalletAssets(walletAddress, { signal: controller.signal }, evmAddress || undefined)
-        .then((rows) => {
+        .then(async (rows) => {
           if (controller.signal.aborted || requestSeq !== assetRequestSeq.current) return;
+          if (rows.length === 0 && walletAddress) {
+            try {
+              const [priceSnapshot, onChain] = await Promise.all([
+                fetchMarketPrices({ signal: controller.signal }),
+                fetchOnChainPortfolioWithFallback(getSolanaRpcCandidates("mainnet"), walletAddress, "mainnet")
+              ]);
+              if (controller.signal.aborted || requestSeq !== assetRequestSeq.current) return;
+              rows = portfolioToAccountAssetBalances(
+                onChain.portfolio,
+                priceSnapshot.prices,
+                priceSnapshot.source,
+                priceSnapshot.updatedAt
+              );
+            } catch {
+              // 서버 경로가 비어 있어도 그대로 이어서 아래에서 빈 상태를 반영한다.
+            }
+          }
           setAccountAssets(rows);
           setSelectedSourceAsset((current) => (rows.some((row) => row.symbol === current) || !rows[0] ? current : rows[0].symbol));
         })
@@ -326,8 +349,19 @@ export function OrchestratorBoard({
   }, [baseQuoteRows, depositUsd, job]);
   const isResultQuote = Boolean(lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0));
   const adjustedAllocationTotal = quoteRows.reduce((acc, row) => acc + row.allocationUsd, 0);
-  const connectedWalletNetwork =
-    solanaAccount?.address && evmWalletAddress ? "Multi" : solanaAccount?.address ? "Solana" : evmWalletAddress ? "EVM" : undefined;
+  const connectedWalletNetwork = useMemo(() => {
+    const assetChains = Array.from(new Set(accountAssets.map((asset) => asset.chain)));
+    if (assetChains.length === 1) {
+      return assetChains[0];
+    }
+    if (assetChains.length > 1) {
+      return "Multi";
+    }
+    if (solanaAccount?.address && evmWalletAddress) return "Multi";
+    if (solanaAccount?.address) return "Solana";
+    if (evmWalletAddress) return "EVM";
+    return undefined;
+  }, [accountAssets, evmWalletAddress, solanaAccount?.address]);
   const assetReadiness = useMemo(
     () => buildDepositAssetReadiness(accountAssets, selectedSourceAsset, depositUsd, quoteRows, connectedWalletNetwork),
     [accountAssets, connectedWalletNetwork, depositUsd, quoteRows, selectedSourceAsset]

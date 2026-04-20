@@ -18,7 +18,13 @@ import {
   type DepositPositionPayload,
   type UserWallet
 } from "../lib/api";
-import { fetchOnChainPortfolioWithFallback, getSolanaRpcCandidates, solscanTokenUrl, type OnChainTokenRow } from "../lib/solanaChainAssets";
+import {
+  fetchOnChainPortfolioWithFallback,
+  getSolanaRpcCandidates,
+  portfolioToAccountAssetBalances,
+  solscanTokenUrl,
+  type OnChainTokenRow
+} from "../lib/solanaChainAssets";
 
 export type WalletWithdrawLedgerLine = {
   id: string;
@@ -245,17 +251,43 @@ export function WalletPanel({
     }
     const controller = new AbortController();
     setAccountMenuError("");
-    void Promise.allSettled([listAccountWallets({ signal: controller.signal }), listAccountAssets({ signal: controller.signal })])
-      .then(([walletsResult, assetsResult]) => {
+    void Promise.allSettled([listAccountWallets({ signal: controller.signal }), listAccountAssets({ signal: controller.signal })]).then(
+      async ([walletsResult, assetsResult]) => {
         if (controller.signal.aborted) return;
         setLinkedWallets(walletsResult.status === "fulfilled" ? walletsResult.value : []);
-        setAccountAssets(assetsResult.status === "fulfilled" ? assetsResult.value : []);
+
+        const serverAssets = assetsResult.status === "fulfilled" ? assetsResult.value : [];
+        if (serverAssets.length > 0) {
+          setAccountAssets(serverAssets);
+        } else {
+          const walletAddress = solanaAccount?.address ?? "";
+          if (walletAddress) {
+            try {
+              const [priceSnapshot, onChain] = await Promise.all([
+                fetchMarketPrices({ signal: controller.signal }),
+                fetchOnChainPortfolioWithFallback(getSolanaRpcCandidates(network), walletAddress, network)
+              ]);
+              if (controller.signal.aborted) return;
+              setAccountAssets(
+                portfolioToAccountAssetBalances(onChain.portfolio, priceSnapshot.prices, priceSnapshot.source, priceSnapshot.updatedAt)
+              );
+            } catch {
+              setAccountAssets([]);
+            }
+          } else {
+            setAccountAssets([]);
+          }
+        }
+
         if (walletsResult.status === "rejected") {
           setAccountMenuError("연결 지갑 정보를 불러오지 못했습니다. API 서버를 새 코드로 재시작하면 복구됩니다.");
+        } else if (assetsResult.status === "rejected" && !solanaAccount?.address) {
+          setAccountMenuError("계정 자산을 불러오지 못했습니다.");
         }
-      });
+      }
+    );
     return () => controller.abort();
-  }, [appUsername]);
+  }, [appUsername, network, solanaAccount?.address]);
 
   useEffect(() => {
     const controller = new AbortController();
