@@ -16,7 +16,16 @@ import {
 } from "./positions";
 import { approveJob, cancelJob, createJob, executeJob, getJob, listApprovals, listExecutionEvents, listJobs } from "./store";
 import type { ApprovalLog, JobInput } from "./types";
-import { authenticate, authenticateWallet, refreshAccessToken, registerUser, revokeRefreshToken, type UserRole, verifyToken } from "./auth";
+import {
+  authenticate,
+  authenticateWallet,
+  createWalletLoginChallenge,
+  refreshAccessToken,
+  registerUser,
+  revokeRefreshToken,
+  type UserRole,
+  verifyToken
+} from "./auth";
 import { getDb, initDb } from "./db";
 import { ensureDemoUsersIfEmpty } from "./ensureDemoUsers";
 import rateLimit from "express-rate-limit";
@@ -378,13 +387,27 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
   res.json({ ok: true, role: auth.role, username, csrfToken });
 });
 
-app.post("/api/auth/wallet", authLimiter, async (req, res) => {
+app.post("/api/auth/wallet/challenge", authLimiter, async (req, res) => {
   const body = req.body as { walletAddress?: unknown };
   if (typeof body.walletAddress !== "string") {
     res.status(400).json({ ok: false, message: "walletAddress required" });
     return;
   }
-  const auth = await authenticateWallet(body.walletAddress);
+  const challenge = createWalletLoginChallenge(body.walletAddress);
+  if (!challenge.ok || !challenge.nonce || !challenge.message || !challenge.expiresAt) {
+    res.status(400).json({ ok: false, message: challenge.message ?? "wallet challenge failed" });
+    return;
+  }
+  res.json({ ok: true, nonce: challenge.nonce, message: challenge.message, expiresAt: challenge.expiresAt });
+});
+
+app.post("/api/auth/wallet", authLimiter, async (req, res) => {
+  const body = req.body as { walletAddress?: unknown; nonce?: unknown; signature?: unknown };
+  if (typeof body.walletAddress !== "string" || typeof body.nonce !== "string" || typeof body.signature !== "string") {
+    res.status(400).json({ ok: false, message: "walletAddress, nonce, signature required" });
+    return;
+  }
+  const auth = await authenticateWallet(body.walletAddress, body.nonce, body.signature);
   if (!auth.ok || !auth.accessToken || !auth.refreshToken || !auth.role || !auth.username) {
     res.status(400).json({ ok: false, message: auth.message ?? "wallet login failed" });
     return;

@@ -3,6 +3,8 @@ import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getDb } from "./db";
+import { PublicKey } from "@solana/web3.js";
+import nacl from "tweetnacl";
 
 export type UserRole = "orchestrator" | "security" | "viewer";
 
@@ -31,6 +33,15 @@ const JWT_SECRET = resolveJwtSecret();
 /** 예: `15m`, `8h`, `7d` — 짧으면 입금 등 API 호출 시 갱신이 잦아집니다. */
 const ACCESS_EXPIRES_IN = process.env.JWT_ACCESS_EXPIRES_IN ?? "15m";
 const REFRESH_EXPIRES_DAYS = 7;
+const WALLET_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+
+type WalletLoginChallenge = {
+  walletAddress: string;
+  message: string;
+  expiresAt: number;
+};
+
+const walletLoginChallenges = new Map<string, WalletLoginChallenge>();
 
 /** bcrypt cost factor. 최신 권장(2024~)은 12 이상. 환경변수로 조정 가능. */
 const BCRYPT_ROUNDS = (() => {
@@ -60,6 +71,39 @@ function signAccessToken(username: string, role: UserRole): string {
 
 function hashToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function isValidSolanaAddress(address: string): boolean {
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,64}$/.test(address)) {
+    return false;
+  }
+  try {
+    new PublicKey(address);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function buildWalletChallengeMessage(walletAddress: string, nonce: string, expiresAt: number): string {
+  return [
+    "Crypto8 wallet login",
+    `Wallet: ${walletAddress}`,
+    `Nonce: ${nonce}`,
+    `Expires: ${new Date(expiresAt).toISOString()}`
+  ].join("\n");
+}
+
+export function createWalletLoginChallenge(walletAddress: string): { ok: boolean; message?: string; nonce?: string; expiresAt?: string } {
+  const address = walletAddress.trim();
+  if (!isValidSolanaAddress(address)) {
+    return { ok: false, message: "wallet address invalid" };
+  }
+  const nonce = crypto.randomBytes(24).toString("hex");
+  const expiresAt = Date.now() + WALLET_CHALLENGE_TTL_MS;
+  const message = buildWalletChallengeMessage(address, nonce, expiresAt);
+  walletLoginChallenges.set(nonce, { walletAddress: address, message, expiresAt });
+  return { ok: true, nonce, message, expiresAt: new Date(expiresAt).toISOString() };
 }
 
 async function issueRefreshToken(username: string): Promise<string> {
@@ -132,11 +176,38 @@ export async function authenticate(
 }
 
 export async function authenticateWallet(
-  walletAddress: string
+  walletAddress: string,
+  nonce: string,
+  signatureBase64: string
 ): Promise<{ ok: boolean; username?: string; role?: UserRole; accessToken?: string; refreshToken?: string; message?: string }> {
   const address = walletAddress.trim();
-  if (!/^[1-9A-HJ-NP-Za-km-z]{32,64}$/.test(address)) {
+  if (!isValidSolanaAddress(address)) {
     return { ok: false, message: "wallet address invalid" };
+  }
+  const challenge = walletLoginChallenges.get(nonce);
+  walletLoginChallenges.delete(nonce);
+  if (!challenge || challenge.walletAddress !== address) {
+    return { ok: false, message: "wallet challenge invalid" };
+  }
+  if (challenge.expiresAt < Date.now()) {
+    return { ok: false, message: "wallet challenge expired" };
+  }
+  let signature: Buffer;
+  try {
+    signature = Buffer.from(signatureBase64, "base64");
+  } catch {
+    return { ok: false, message: "wallet signature invalid" };
+  }
+  if (signature.length !== 64) {
+    return { ok: false, message: "wallet signature invalid" };
+  }
+  const verified = nacl.sign.detached.verify(
+    new TextEncoder().encode(challenge.message),
+    new Uint8Array(signature),
+    new PublicKey(address).toBytes()
+  );
+  if (!verified) {
+    return { ok: false, message: "wallet signature verification failed" };
   }
   const username = `wallet_${address.slice(0, 8)}_${address.slice(-6)}`;
   const db = getDb();

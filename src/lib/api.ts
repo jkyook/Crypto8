@@ -594,12 +594,53 @@ export async function login(username: string, password: string): Promise<AuthSes
 }
 
 export async function loginWithWallet(walletAddress: string): Promise<AuthSession> {
+  const challengeResponse = await fetchWithLocal8787Fallback(
+    "/api/auth/wallet/challenge",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ walletAddress })
+    },
+    "지갑 로그인 메시지 생성"
+  );
+  const challenge = (await readJsonFromApiResponse(challengeResponse, "지갑 로그인 메시지 생성")) as {
+    ok?: boolean;
+    nonce?: string;
+    message?: string;
+  };
+  if (!challengeResponse.ok || !challenge.nonce || !challenge.message) {
+    throw new Error(typeof challenge.message === "string" ? challenge.message : "지갑 로그인 메시지 생성 실패");
+  }
+  const provider = (window as {
+    phantom?: {
+      solana?: {
+        isPhantom?: boolean;
+        signMessage?: (message: Uint8Array) => Promise<Uint8Array | { signature?: Uint8Array | number[] }>;
+      };
+    };
+  }).phantom?.solana;
+  if (!provider?.isPhantom || typeof provider.signMessage !== "function") {
+    throw new Error("Phantom 지갑 서명이 필요합니다.");
+  }
+  const signed = await provider.signMessage(new TextEncoder().encode(challenge.message));
+  const signatureBytes =
+    signed instanceof Uint8Array
+      ? signed
+      : signed.signature instanceof Uint8Array
+        ? signed.signature
+        : Array.isArray(signed.signature)
+          ? new Uint8Array(signed.signature)
+          : null;
+  if (!signatureBytes) {
+    throw new Error("지갑 서명 결과를 읽지 못했습니다.");
+  }
+  const signature = btoa(String.fromCharCode(...signatureBytes));
   const response = await fetchWithLocal8787Fallback(
     "/api/auth/wallet",
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ walletAddress })
+      body: JSON.stringify({ walletAddress, nonce: challenge.nonce, signature })
     },
     "지갑 로그인"
   );

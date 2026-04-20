@@ -7,7 +7,6 @@ import {
   login,
   getSession,
   createOrchestratorJob,
-  createDepositPositionRemote,
   estimateProtocolFees,
   executeJob,
   fetchMarketPrices,
@@ -43,8 +42,6 @@ type OrchestratorBoardProps = {
   initialProductSubtype?: ProductSubtype;
   /** `false`이면 서버 예치 실행 단계를 막습니다(비로그인 상품 체험 등). JWT는 `localStorage` 구독으로 판별합니다. */
   allowJobExecution?: boolean;
-  /** 직전 예치 저장으로 생성된 포지션 id(실행 이벤트 페이로드에 연결). */
-  linkedPositionId?: string;
   previewRowsOverride?: ExecutionPreviewRow[];
   onActionNotice?: (notice: { variant: "error" | "info"; text: string }) => void;
   onOpenOperationsWithJob?: (jobId: string) => void;
@@ -104,7 +101,6 @@ export function OrchestratorBoard({
   initialProductNetwork,
   initialProductSubtype,
   allowJobExecution: allowJobExecutionProp,
-  linkedPositionId,
   previewRowsOverride,
   onActionNotice,
   onOpenOperationsWithJob,
@@ -133,8 +129,6 @@ export function OrchestratorBoard({
   const [feeEstimateLoading, setFeeEstimateLoading] = useState(false);
   const [executionModeIntent, setExecutionModeIntent] = useState<"dry-run" | "live">("dry-run");
   const [lastExecution, setLastExecution] = useState<ExecuteJobResponse | null>(null);
-  /** Job 생성 시 quoteRows로 미리 만들어 둔 포지션 ID (서버 중복 생성 방지용) */
-  const [preCreatedPositionId, setPreCreatedPositionId] = useState<string | undefined>(undefined);
   /** 현재 로그인 계정에 등록된 지갑 목록 (계정 연동 검증용) */
   const [linkedWallets, setLinkedWallets] = useState<UserWallet[]>([]);
   /** 실행 요청 전 비밀번호 확인 다이얼로그 표시 여부 */
@@ -333,20 +327,6 @@ export function OrchestratorBoard({
   ] as const;
   const findFeeForRoute = (route: (typeof assetReadiness.swapRows)[number]) =>
     feeEstimate?.rows.find((fee) => fee.protocol === route.protocol && fee.chain === route.chain && fee.action === route.action);
-  /**
-   * quoteRows → protocolMix 변환 헬퍼.
-   * 풀별 인출이 정확히 동작하도록 protocol+chain으로 합치지 않고 실행 행 단위 풀을 유지한다.
-   */
-  function buildProtocolMixFromQuoteRows(rows: typeof quoteRows): { name: string; weight: number; pool?: string }[] {
-    const totalUsd = rows.reduce((acc, r) => acc + r.allocationUsd, 0);
-    if (totalUsd <= 0 || rows.length === 0) return [];
-    return rows.map((row) => ({
-      name: row.protocol,
-      weight: row.allocationUsd / totalUsd,
-      pool: `${row.chain} · ${row.action}`
-    }));
-  }
-
   const onCreateJob = async () => {
     if (!canUseServerJobs) {
       setApiMessage("내 계정에 입금 작업을 남기려면 먼저 로그인하세요.");
@@ -381,24 +361,6 @@ export function OrchestratorBoard({
       setIsExecutionConfirmed(false);
       setLastExecution(null);
       setCustomAllocationPercents(null);
-      setPreCreatedPositionId(undefined);
-
-      // quoteRows(사용자가 선택한 배분)로 포지션을 미리 생성 → 서버의 자동배분 덮어쓰기를 방지
-      try {
-        const protocolMix = buildProtocolMixFromQuoteRows(quoteRows);
-        if (protocolMix.length > 0) {
-          const expectedApr = depositUsd > 0 ? initialEstYieldUsd / depositUsd : 0.08;
-          const pos = await createDepositPositionRemote({
-            productName: initialProductName,
-            amountUsd: depositUsd,
-            expectedApr: Number.isFinite(expectedApr) && expectedApr > 0 ? expectedApr : 0.08,
-            protocolMix
-          });
-          setPreCreatedPositionId(pos.id);
-        }
-      } catch {
-        // 포지션 사전 생성 실패 시 서버 자동 생성에 위임 (무시)
-      }
 
       setApiMessage(
         hasWallet
@@ -414,11 +376,9 @@ export function OrchestratorBoard({
   const runExecution = async (authNote: string) => {
     if (!job) return;
     const idemKey = `exec-${job.id}`;
-    const effectivePositionId = preCreatedPositionId ?? linkedPositionId;
     const result = await executeJob(job.id, {
       idempotencyKey: idemKey,
       correlationId,
-      positionId: effectivePositionId,
       requestedMode: executionModeIntent
     });
     setIsExecutionDone(true);
@@ -758,11 +718,6 @@ export function OrchestratorBoard({
           <p className="execution-summary-line">
             <span className="execution-summary-k">상관 ID</span> <code className="execution-summary-code">{correlationId}</code>
           </p>
-          {linkedPositionId ? (
-            <p className="execution-summary-line">
-              <span className="execution-summary-k">연결 포지션</span> <code className="execution-summary-code">{linkedPositionId}</code>
-            </p>
-          ) : null}
           {onOpenOperationsWithJob ? (
             <div className="button-row" style={{ marginTop: 8 }}>
               <button type="button" className="ghost-btn" onClick={() => onOpenOperationsWithJob(job.id)}>
