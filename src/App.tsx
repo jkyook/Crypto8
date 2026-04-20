@@ -1,726 +1,68 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { ApprovalsDashboard } from "./components/ApprovalsDashboard";
+import { useEffect, useMemo, useState } from "react";
 import { AuthPanel } from "./components/AuthPanel";
 import { SignupRegistrationsPanel } from "./components/SignupRegistrationsPanel";
 import { DepositPlanner } from "./components/DepositPlanner";
 import { MarketAprTimeSeriesChart } from "./components/MarketAprTimeSeriesChart";
-import { PortfolioCommandCenter } from "./components/PortfolioCommandCenter";
-import { ExecutionEventsDashboard } from "./components/ExecutionEventsDashboard";
 import { UnifiedOperationsSearch } from "./components/UnifiedOperationsSearch";
 import { OrchestratorBoard } from "./components/OrchestratorBoard";
 import { WalletPanel, type WalletWithdrawLedgerLine } from "./components/WalletPanel";
+import { AgentConsensusPanel } from "./components/insights/AgentConsensusPanel";
+import { ConsultantInsightsPanel } from "./components/insights/ConsultantInsightsPanel";
+import { ChainExposureDonut } from "./components/common/ChainExposureDonut";
+import { TradeControls } from "./components/common/TradeControls";
+import { TradePanel } from "./components/common/TradePanel";
+import { RecentActivityPanel } from "./components/activity/RecentActivityPanel";
+import { OperationsHistoryPanel } from "./components/activity/OperationsHistoryPanel";
+import { CommandCenterPage } from "./pages/CommandCenterPage";
+import { StrategiesPage } from "./pages/StrategiesPage";
+import { PositionsPage } from "./pages/PositionsPage";
+import { ExecutionPage } from "./pages/ExecutionPage";
 import {
   AUTH_CLEARED_EVENT,
   cancelJob,
   fetchMarketAprSnapshot,
   fetchPoolApyHistoryFromCsv,
-  fetchProtocolNews,
-  type ProtocolNewsBundle,
   getSession,
   getWhitepaperPdfUrl,
-  listDepositPositions,
   listExecutionEvents,
   listJobs,
-  listWithdrawalLedger,
   login,
-  withdrawProtocolExposureRemote,
-  withdrawProductDepositRemote,
-  withdrawDepositRemote,
   type AuthSession,
-  type DepositPositionPayload,
   type ExecutionEvent,
   type Job,
   type MarketAprSnapshot,
   type MarketPoolAprHistoryPoint,
-  type MarketPoolAprHistorySeries,
-  type ProductNetwork,
-  type ProductSubtype
+  type MarketPoolAprHistorySeries
 } from "./lib/api";
-import { aggregateChainUsdFromPositions, estimateAnnualYieldUsd } from "./lib/portfolioMetrics";
+import { estimateAnnualYieldUsd } from "./lib/portfolioMetrics";
 import { getNextQuarterStart } from "./lib/quarterSchedule";
 import type { ExecutionPreviewRow } from "./lib/executionPreview";
-import { OPTION_L2_STAR } from "./lib/strategyEngine";
-
-const PORTFOLIO_DONUT_COLORS = ["#8b7bff", "#3bd4ff", "#47d9a8", "#ffb86b"];
-
-type MenuKey =
-  | "my"
-  | "products"
-  | "trade"
-  | "portfolio"
-  | "auth"
-  | "wallet"
-  | "execution"
-  | "operationsLog"
-  | "activity"
-  | "consensus"
-  | "consultant"
-  | "signupHistory";
-type UserRole = AuthSession["role"];
-type MenuItem = {
-  key: MenuKey;
-  label: string;
-  icon: string;
-  group: "operation" | "strategy" | "governance";
-  roles: UserRole[];
-};
-type YieldProduct = {
-  id: string;
-  name: string;
-  networkGroup: "multi" | "arbitrum" | "base" | "solana" | "ethereum";
-  /** 서버 어댑터 배분 비율 결정에 사용. api.ts ProductSubtype과 동일 값 사용. */
-  subtype: ProductSubtype;
-  targetApr: number;
-  estFeeBps: number;
-  lockDays: number;
-  protocolMix: Array<{ name: string; weight: number; pool?: string }>;
-  detail: string;
-};
-type DepositPosition = DepositPositionPayload;
-type ProtocolDetailRow = {
-  key: string;
-  name: string;
-  chain: string;
-  pool: string;
-  amount: number;
-};
-
-const PROTOCOL_SORT_ORDER = ["Aave", "Uniswap", "Orca"] as const;
-
-const GUEST_WITHDRAW_LEDGER_KEY = "crypto8_withdraw___guest__";
-
-const PRIMARY_NAV_ORDER: MenuKey[] = ["my", "products", "portfolio", "execution"];
-const PRIMARY_NAV_LABEL: Partial<Record<MenuKey, string>> = {
-  my: "Dashboard",
-  products: "Pools",
-  portfolio: "Positions",
-  execution: "Execution",
-  trade: "Swap"
-};
-
-const MENU_ITEMS: MenuItem[] = [
-  { key: "my", label: "내 현황", icon: "🙋", group: "operation", roles: ["orchestrator", "security", "viewer"] },
-  { key: "products", label: "예치상품", icon: "🧺", group: "operation", roles: ["orchestrator", "security", "viewer"] },
-  { key: "trade", label: "Trade", icon: "🔄", group: "operation", roles: ["orchestrator", "security", "viewer"] },
-  { key: "portfolio", label: "Portfolio", icon: "📊", group: "operation", roles: ["orchestrator", "security", "viewer"] },
-  { key: "wallet", label: "지갑/자산", icon: "👛", group: "operation", roles: ["orchestrator", "security", "viewer"] },
-  { key: "execution", label: "예치 실행", icon: "🧭", group: "operation", roles: ["orchestrator", "security", "viewer"] },
-  { key: "operationsLog", label: "수익/운영 이력", icon: "📜", group: "operation", roles: ["orchestrator", "security", "viewer"] },
-  { key: "activity", label: "활동 피드", icon: "🕘", group: "operation", roles: ["orchestrator", "security", "viewer"] },
-  { key: "consultant", label: "컨설턴트 인사이트", icon: "🧠", group: "governance", roles: ["orchestrator", "security"] },
-  { key: "signupHistory", label: "회원가입 내역", icon: "📋", group: "governance", roles: ["orchestrator"] },
-  { key: "auth", label: "로그인 · 계정", icon: "🔐", group: "governance", roles: ["orchestrator", "security", "viewer"] },
-  { key: "consensus", label: "에이전트 합의", icon: "🤝", group: "governance", roles: ["orchestrator", "security", "viewer"] }
-];
-type TopNavGroupKey = "more";
-
-function AgentConsensusPanel() {
-  return (
-    <section className="card consensus-card">
-      <h2>에이전트 합의 개선안</h2>
-      <div className="kpi-grid">
-        <div className="kpi-item">
-          <p className="kpi-label">디자인 에이전트</p>
-          <p className="kpi-value">실행 버튼 단계 분리 + 상태 배지 강화</p>
-        </div>
-        <div className="kpi-item">
-          <p className="kpi-label">보안 에이전트</p>
-          <p className="kpi-value">실행 이벤트 추적 + 재실행 멱등성 강제</p>
-        </div>
-        <div className="kpi-item">
-          <p className="kpi-label">운용 에이전트</p>
-          <p className="kpi-value">실행 흐름 자동 모니터링(이벤트 대시보드)</p>
-        </div>
-        <div className="kpi-item">
-          <p className="kpi-label">컨설턴트 에이전트</p>
-          <p className="kpi-value">프로토콜 위험 점검 + 파라미터 조정 권고</p>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function ConsultantInsightsPanel() {
-  const [selectedProtocol, setSelectedProtocol] = useState<string>("");
-  const [newsBundle, setNewsBundle] = useState<ProtocolNewsBundle | null>(null);
-  const [isNewsLoading, setIsNewsLoading] = useState(false);
-  const [newsError, setNewsError] = useState("");
-  const protocolCards = [
-    {
-      name: "Aave (Arbitrum/Base)",
-      risk: "Low",
-      note: "유동성 충분. 운영 우선순위: 유지",
-      details: "수수료 안정적, 변동성 낮음, 재예치 자동화 적합"
-    },
-    {
-      name: "Uniswap V3 (Arbitrum)",
-      risk: "Medium",
-      note: "틱 범위/슬리피지 상시 점검 필요",
-      details: "최근 체결 빈도 높음, 수수료 수익 우수, 범위 이탈 모니터링 필수"
-    },
-    {
-      name: "Orca (Solana)",
-      risk: "Medium",
-      note: "체인 혼잡/중단 시 fallback 계획 필요",
-      details: "체인 상태 의존도 높음, 수수료 경쟁력 양호, 장애 대응 런북 필요"
-    }
-  ];
-
-  const onSelectProtocol = async (protocolName: string) => {
-    setSelectedProtocol(protocolName);
-    setIsNewsLoading(true);
-    setNewsError("");
-    setNewsBundle(null);
-    try {
-      const bundle = await fetchProtocolNews(protocolName);
-      setNewsBundle(bundle);
-    } catch (error) {
-      setNewsBundle(null);
-      setNewsError(error instanceof Error ? error.message : "뉴스 조회 실패");
-    } finally {
-      setIsNewsLoading(false);
-    }
-  };
-
-  return (
-    <section className="card">
-      <h2>컨설턴트 인사이트</h2>
-      <p>핵심 프로토콜 점검 기준으로 현재 전략의 우선 조정 항목을 제시합니다.</p>
-      <div className="kpi-grid protocol-grid">
-        {protocolCards.map((card) => (
-          <button key={card.name} className="kpi-item protocol-card" onClick={() => onSelectProtocol(card.name)}>
-            <p className="kpi-label">{card.name}</p>
-            <p className="kpi-value">리스크: {card.risk}</p>
-            <p>{card.note}</p>
-            <div className="protocol-hover-detail">{card.details}</div>
-          </button>
-        ))}
-      </div>
-      {selectedProtocol ? (
-        <div className="card protocol-news-panel" style={{ marginTop: 12 }}>
-          <h3>{selectedProtocol} — 최근 동향 요약</h3>
-          <p className="protocol-news-lead">뉴스·거버넌스 RSS·GDELT·Reddit 등을 넓게 모은 뒤, 중복을 줄이고 요약합니다.</p>
-          {isNewsLoading ? <p>뉴스 조회 중...</p> : null}
-          {newsError ? <p>{newsError}</p> : null}
-          {!isNewsLoading && !newsError && newsBundle ? (
-            <>
-              {newsBundle.digest ? (
-                <div className="protocol-news-digest" role="region" aria-label="요약">
-                  {newsBundle.digest}
-                </div>
-              ) : null}
-              {newsBundle.scannedSources.length > 0 ? (
-                <p className="protocol-news-sources">수집에 사용한 소스 태그: {newsBundle.scannedSources.join(" · ")}</p>
-              ) : null}
-              <h4 className="protocol-news-links-title">근거 링크</h4>
-              <div className="recent-list">
-                {newsBundle.items.map((item, idx) => (
-                  <a key={`${item.url}-${idx}`} className="recent-item" href={item.url} target="_blank" rel="noreferrer">
-                    <span className="recent-main">{item.title}</span>
-                    <span className="recent-sub">
-                      {item.source} · {item.publishedAt ? new Date(item.publishedAt).toLocaleString() : "시간 정보 없음"}
-                    </span>
-                  </a>
-                ))}
-                {newsBundle.items.length === 0 ? <p className="recent-empty">표시할 링크가 없습니다. 요약·참고 허브만 확인해 주세요.</p> : null}
-              </div>
-            </>
-          ) : null}
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
-function ChainExposureDonut({
-  positions,
-  compact = false
-}: {
-  positions: DepositPosition[];
-  compact?: boolean;
-}) {
-  const circumference = 2 * Math.PI * 46;
-  const { useLiveChains, chainUsd, chartData, donutSegments } = useMemo(() => {
-    const cUsd = aggregateChainUsdFromPositions(positions);
-    const cTotal = Object.values(cUsd).reduce((a, b) => a + b, 0);
-    const templateWeights = OPTION_L2_STAR.reduce<Record<string, number>>((acc, item) => {
-      if (item.chain === "Multi") return acc;
-      acc[item.chain] = (acc[item.chain] ?? 0) + item.targetWeight;
-      return acc;
-    }, {});
-    const live = positions.length > 0 && cTotal > 0;
-    const rawChart = live
-      ? Object.entries(cUsd)
-          .filter(([, usd]) => usd > 0)
-          .map(([chain, usd]) => ({ chain, weight: usd / cTotal }))
-          .sort((a, b) => b.weight - a.weight)
-      : Object.entries(templateWeights).map(([chain, weight]) => ({ chain, weight }));
-    const rawTotalWeight = rawChart.reduce((sum, item) => sum + item.weight, 0);
-    const chart = rawTotalWeight > 0 ? rawChart.map((item) => ({ ...item, weight: item.weight / rawTotalWeight })) : rawChart;
-    let acc = 0;
-    const segments = chart.map((item, idx) => {
-      const dash = circumference * item.weight;
-      const offset = circumference * (1 - acc);
-      acc += item.weight;
-      return { chain: item.chain, dash, offset, color: PORTFOLIO_DONUT_COLORS[idx % PORTFOLIO_DONUT_COLORS.length] };
-    });
-    return { useLiveChains: live, chainUsd: cUsd, chartData: chart, donutSegments: segments };
-  }, [positions, circumference]);
-
-  return (
-    <div className={compact ? "chain-exposure-card chain-exposure-card--compact" : "overview-card overview-card--donut"}>
-      <p className="kpi-label">{useLiveChains ? "체인별 노출 (예치 기준)" : "체인 비중 (전략 템플릿)"}</p>
-      {!useLiveChains ? <p className="portfolio-overview-footnote">예치 전 Option L2* 기본 배분입니다.</p> : null}
-      <div className="donut-wrap">
-        <svg viewBox="0 0 120 120" className="donut-chart">
-          <circle cx="60" cy="60" r="46" fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="12" />
-          {donutSegments.map((seg) => (
-            <circle
-              key={seg.chain}
-              cx="60"
-              cy="60"
-              r="46"
-              fill="none"
-              stroke={seg.color}
-              strokeWidth="12"
-              strokeDasharray={`${seg.dash} ${Math.max(circumference - seg.dash, 0)}`}
-              strokeDashoffset={seg.offset}
-              transform="rotate(-90 60 60)"
-            />
-          ))}
-        </svg>
-        <div className="legend-list">
-          {chartData.map((item, idx) => (
-            <p key={item.chain}>
-              <span className="legend-dot" style={{ backgroundColor: PORTFOLIO_DONUT_COLORS[idx % PORTFOLIO_DONUT_COLORS.length] }} />
-              {item.chain}: {(item.weight * 100).toFixed(1)}%
-              {useLiveChains ? <span className="legend-usd"> (${(chainUsd[item.chain] ?? 0).toFixed(0)})</span> : null}
-            </p>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function RecentActivityPanel({
-  recentJobs,
-  recentEvents,
-  onOpenJob,
-  onOpenEvent
-}: {
-  recentJobs: Job[];
-  recentEvents: ExecutionEvent[];
-  onOpenJob: (jobId: string) => void;
-  onOpenEvent: (jobId: string) => void;
-}) {
-  return (
-    <section className="card">
-      <h2>활동 피드</h2>
-      <p>최근 작업/이벤트는 운영 문맥 추적용 보조 정보이며, 긴급 지표는 대시보드에서 우선 확인합니다.</p>
-      <div className="activity-grid">
-        <div className="activity-column">
-          <h3>최근 작업</h3>
-          <div className="recent-list">
-            {recentJobs.map((job) => (
-              <button key={job.id} className="recent-item" onClick={() => onOpenJob(job.id)}>
-                <span className="recent-main">Job {job.id.slice(-6)}</span>
-                <span className="recent-sub">
-                  {job.status} · {new Date(job.createdAt).toLocaleString()}
-                </span>
-              </button>
-            ))}
-            {recentJobs.length === 0 ? <p className="recent-empty">최근 작업 없음</p> : null}
-          </div>
-        </div>
-        <div className="activity-column">
-          <h3>최근 실행 이벤트</h3>
-          <div className="recent-list">
-            {recentEvents.map((event) => (
-              <button key={event.id} className="recent-item" onClick={() => onOpenEvent(event.jobId)}>
-                <span className="recent-main">
-                  <span className={`badge badge-${event.status === "accepted" ? "low" : event.status === "skipped" ? "medium" : "high"}`}>
-                    {event.status}
-                  </span>
-                </span>
-                <span className="recent-sub">
-                  Job {event.jobId.slice(-6)} · {new Date(event.requestedAt).toLocaleString()}
-                </span>
-              </button>
-            ))}
-            {recentEvents.length === 0 ? <p className="recent-empty">최근 이벤트 없음</p> : null}
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function OperationsHistoryPanel({
-  focusJobId,
-  recentJobs = [],
-  recentEvents = [],
-  onOpenJob,
-  onOpenEvent
-}: {
-  focusJobId?: string;
-  recentJobs?: Job[];
-  recentEvents?: ExecutionEvent[];
-  onOpenJob?: (jobId: string) => void;
-  onOpenEvent?: (jobId: string) => void;
-}) {
-  const [openSection, setOpenSection] = useState<"approvals" | "events" | "activity" | null>(focusJobId ? "events" : null);
-
-  return (
-    <section className="card">
-      <h2>운영 이력</h2>
-      <p>승인 로그와 실행 이벤트는 필요한 항목만 펼쳐 세부내역을 확인합니다.</p>
-      <div className="operations-log-launcher">
-        <button
-          type="button"
-          className={openSection === "approvals" ? "operations-log-card active" : "operations-log-card"}
-          onClick={() => setOpenSection((prev) => (prev === "approvals" ? null : "approvals"))}
-        >
-          <span>Approval Trail</span>
-          <strong>승인 로그 세부내역</strong>
-          <em>{openSection === "approvals" ? "접기" : "열기"}</em>
-        </button>
-        <button
-          type="button"
-          className={openSection === "events" ? "operations-log-card active" : "operations-log-card"}
-          onClick={() => setOpenSection((prev) => (prev === "events" ? null : "events"))}
-        >
-          <span>Execution Events</span>
-          <strong>실행 이벤트 세부내역</strong>
-          <em>{openSection === "events" ? "접기" : "열기"}</em>
-        </button>
-        <button
-          type="button"
-          className={openSection === "activity" ? "operations-log-card active" : "operations-log-card"}
-          onClick={() => setOpenSection((prev) => (prev === "activity" ? null : "activity"))}
-        >
-          <span>Activity Feed</span>
-          <strong>최근 활동 피드</strong>
-          <em>{openSection === "activity" ? "접기" : "열기"}</em>
-        </button>
-      </div>
-      {openSection === "approvals" ? <ApprovalsDashboard focusJobId={focusJobId} /> : null}
-      {openSection === "events" ? <ExecutionEventsDashboard focusJobId={focusJobId} /> : null}
-      {openSection === "activity" && onOpenJob && onOpenEvent ? (
-        <RecentActivityPanel recentJobs={recentJobs} recentEvents={recentEvents} onOpenJob={onOpenJob} onOpenEvent={onOpenEvent} />
-      ) : null}
-    </section>
-  );
-}
-
-function TradeControls({
-  onDeposit,
-  onWithdraw,
-  disabled,
-  size = "compact"
-}: {
-  onDeposit: () => void;
-  onWithdraw: () => void;
-  disabled?: boolean;
-  size?: "compact" | "large";
-}) {
-  return (
-    <div className={`inline-trade-controls inline-trade-controls--${size}`} aria-label="입금 인출">
-      <button type="button" className="inline-trade-btn inline-trade-btn-plus" onClick={onDeposit} disabled={disabled} aria-label="입금">
-        +
-      </button>
-      <button type="button" className="inline-trade-btn inline-trade-btn-minus" onClick={onWithdraw} disabled={disabled} aria-label="인출">
-        -
-      </button>
-    </div>
-  );
-}
-
-function applyLifoWithdraw(positions: DepositPosition[], amountUsd: number): DepositPosition[] {
-  let remaining = Math.max(0, amountUsd);
-  const sorted = [...positions].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  const kept: DepositPosition[] = [];
-  for (const p of sorted) {
-    if (remaining <= 0) {
-      kept.push(p);
-      continue;
-    }
-    if (p.amountUsd <= remaining) {
-      remaining -= p.amountUsd;
-    } else {
-      kept.push({ ...p, amountUsd: p.amountUsd - remaining });
-      remaining = 0;
-    }
-  }
-  return kept;
-}
-
-function applyTargetedWithdraw(
-  positions: DepositPosition[],
-  amountUsd: number,
-  target: Pick<ProtocolDetailRow, "name" | "chain" | "pool">
-): DepositPosition[] {
-  let remaining = amountUsd;
-  const next: DepositPosition[] = [];
-  const matchesTarget = (mix: { name: string; pool?: string }) =>
-    mix.name.toLowerCase() === target.name.toLowerCase() &&
-    inferProtocolChain(mix.name, mix.pool).toLowerCase() === target.chain.toLowerCase() &&
-    (mix.pool ?? "").trim().toLowerCase() === target.pool.trim().toLowerCase();
-
-  for (const position of positions) {
-    if (remaining <= 0) {
-      next.push(position);
-      continue;
-    }
-    const absoluteMix = position.protocolMix.map((mix) => ({
-      mix,
-      amountUsd: position.amountUsd * mix.weight
-    }));
-    let withdrawnFromPosition = 0;
-    for (const item of absoluteMix) {
-      if (remaining <= 0) break;
-      if (!matchesTarget(item.mix)) continue;
-      const take = Math.min(item.amountUsd, remaining);
-      item.amountUsd -= take;
-      withdrawnFromPosition += take;
-      remaining -= take;
-    }
-    if (withdrawnFromPosition <= 0) {
-      next.push(position);
-      continue;
-    }
-    const nextAmount = position.amountUsd - withdrawnFromPosition;
-    if (nextAmount <= 0.000001) continue;
-    next.push({
-      ...position,
-      amountUsd: nextAmount,
-      protocolMix: absoluteMix
-        .filter((item) => item.amountUsd > 0.000001)
-        .map((item) => ({
-          ...item.mix,
-          weight: item.amountUsd / nextAmount
-        }))
-    });
-  }
-  return next;
-}
-
-function applyProductWithdraw(positions: DepositPosition[], amountUsd: number, productName: string): DepositPosition[] {
-  let remaining = amountUsd;
-  const kept: DepositPosition[] = [];
-  for (const position of positions) {
-    if (remaining <= 0 || position.productName !== productName) {
-      kept.push(position);
-      continue;
-    }
-    if (position.amountUsd <= remaining) {
-      remaining -= position.amountUsd;
-    } else {
-      kept.push({ ...position, amountUsd: position.amountUsd - remaining });
-      remaining = 0;
-    }
-  }
-  return kept;
-}
-
-const APR_DAYS_PER_YEAR = 365;
-
-/** UI의 networkGroup(소문자) → 서버 어댑터의 ProductNetwork(PascalCase) 변환 */
-function networkGroupToProductNetwork(networkGroup: YieldProduct["networkGroup"]): ProductNetwork {
-  const map: Record<YieldProduct["networkGroup"], ProductNetwork> = {
-    multi: "Multi",
-    arbitrum: "Arbitrum",
-    base: "Base",
-    solana: "Solana",
-    ethereum: "Ethereum"
-  };
-  return map[networkGroup] ?? "Multi";
-}
-
-/** networkGroup → 기본 ProductSubtype (사용자 추가 상품 등 subtype 미지정 시 fallback) */
-function networkGroupToDefaultSubtype(networkGroup: YieldProduct["networkGroup"]): ProductSubtype {
-  const map: Record<YieldProduct["networkGroup"], ProductSubtype> = {
-    multi: "multi-stable",
-    arbitrum: "arb-stable",
-    base: "base-stable",
-    solana: "sol-stable",
-    ethereum: "eth-stable"
-  };
-  return map[networkGroup] ?? "multi-stable";
-}
-
-const PRODUCT_NETWORK_GROUPS: Array<{
-  key: YieldProduct["networkGroup"];
-  label: string;
-  description: string;
-}> = [
-  { key: "multi", label: "복수 네트워크", description: "Arbitrum · Base · Solana를 함께 쓰는 기존 분산형 상품" },
-  { key: "arbitrum", label: "Arbitrum", description: "브릿지 없이 Arbitrum 안에서 Aave/Uniswap 풀로 분산" },
-  { key: "base", label: "Base", description: "Base 네트워크 안에서 USDC 중심 공급/LP로 구성" },
-  { key: "solana", label: "Solana", description: "Solana 안에서 Orca Whirlpool 기반 스테이블/LST 풀로 구성" },
-  { key: "ethereum", label: "Ethereum", description: "Ethereum 메인넷에서 Aave/Curve/Uniswap 풀로 구성된 안정형 상품" }
-];
-
-const PRODUCT_NETWORK_LABELS = PRODUCT_NETWORK_GROUPS.reduce(
-  (acc, group) => ({ ...acc, [group.key]: group.label }),
-  {} as Record<YieldProduct["networkGroup"], string>
-);
-
-function buildDefaultProductMix(networkGroup: YieldProduct["networkGroup"]): YieldProduct["protocolMix"] {
-  if (networkGroup === "arbitrum") {
-    return [
-      { name: "Aave", weight: 0.45, pool: "Aave v3 Arbitrum USDC eMode" },
-      { name: "Uniswap", weight: 0.35, pool: "Uniswap v3 Arbitrum USDC-USDT 0.05%" },
-      { name: "Uniswap", weight: 0.2, pool: "Uniswap v3 Arbitrum ETH-USDC 0.05% (±50%)" }
-    ];
-  }
-  if (networkGroup === "base") {
-    return [
-      { name: "Aave", weight: 0.5, pool: "Aave v3 Base USDC eMode" },
-      { name: "Uniswap", weight: 0.3, pool: "Uniswap v3 Base ETH-USDC 0.05%" },
-      { name: "Uniswap", weight: 0.2, pool: "Uniswap v3 Base USDC-USDT 0.05%" }
-    ];
-  }
-  if (networkGroup === "solana") {
-    return [
-      { name: "Orca", weight: 0.4, pool: "Orca Whirlpools USDC-USDT" },
-      { name: "Orca", weight: 0.35, pool: "Orca Whirlpools SOL-USDC" },
-      { name: "Orca", weight: 0.25, pool: "Orca Whirlpools mSOL-SOL" }
-    ];
-  }
-  if (networkGroup === "ethereum") {
-    return [
-      { name: "Aave", weight: 0.4, pool: "Aave v3 Ethereum USDC" },
-      { name: "Curve", weight: 0.35, pool: "Curve 3pool DAI-USDC-USDT" },
-      { name: "Uniswap", weight: 0.25, pool: "Uniswap v3 Ethereum USDC-USDT 0.01%" }
-    ];
-  }
-  return [
-    { name: "Aave", weight: 0.34, pool: "Aave v3 Arbitrum USDC eMode" },
-    { name: "Uniswap", weight: 0.33, pool: "Uniswap v3 Arbitrum USDC-USDT 0.05%" },
-    { name: "Orca", weight: 0.33, pool: "Orca Whirlpools SOL-USDC" }
-  ];
-}
-
-function mixItemAnnualAprDecimal(name: string, snapshot: MarketAprSnapshot): number {
-  const key = name.toLowerCase();
-  if (key.includes("aave")) return snapshot.aave;
-  if (key.includes("uniswap")) return snapshot.uniswap;
-  return snapshot.orca;
-}
-
-/** 연 APR(소수) → 단순 선형 근사 7일 수익률(퍼센트 포인트, 예 0.12 → 0.12%) */
-function aprDecimalToSimpleWeekYieldPercentPoints(annualAprDecimal: number): number {
-  return annualAprDecimal * (7 / APR_DAYS_PER_YEAR) * 100;
-}
-
-const DEFAULT_PRODUCTS: YieldProduct[] = [
-  {
-    id: "p-multi-stable-8",
-    name: "Multi-network Stable 8%",
-    networkGroup: "multi",
-    subtype: "multi-stable",
-    targetApr: 0.08,
-    estFeeBps: 65,
-    lockDays: 30,
-    protocolMix: [
-      { name: "Aave", weight: 0.45, pool: "Aave v3 Arbitrum USDC eMode" },
-      { name: "Uniswap", weight: 0.35, pool: "Uniswap v3 Arbitrum USDC-USDT 0.05%" },
-      { name: "Orca", weight: 0.2, pool: "Orca Whirlpools SOL-USDC" }
-    ],
-    detail: "초기 전략 문서 기반 기본 상품. Arbitrum, Base, Solana를 함께 쓰는 안정성 중심 분산 예치."
-  },
-  {
-    id: "p-multi-balanced-72",
-    name: "Multi-network Balanced 7.2%",
-    networkGroup: "multi",
-    subtype: "multi-balanced",
-    targetApr: 0.072,
-    estFeeBps: 58,
-    lockDays: 21,
-    protocolMix: [
-      { name: "Aave", weight: 0.5, pool: "Aave v3 Base USDC eMode" },
-      { name: "Uniswap", weight: 0.3, pool: "Uniswap v3 Arbitrum ETH-USDC 0.05% (±50%)" },
-      { name: "Orca", weight: 0.2, pool: "Orca Whirlpools mSOL-SOL" }
-    ],
-    detail: "변동성 완화를 우선한 중립형 예치상품. 네트워크 간 분산 효과를 유지합니다."
-  },
-  {
-    id: "p-arbitrum-stable-76",
-    name: "Arbitrum Stable 7.6%",
-    networkGroup: "arbitrum",
-    subtype: "arb-stable",
-    targetApr: 0.076,
-    estFeeBps: 48,
-    lockDays: 21,
-    protocolMix: [
-      { name: "Aave", weight: 0.45, pool: "Aave v3 Arbitrum USDC eMode" },
-      { name: "Uniswap", weight: 0.35, pool: "Uniswap v3 Arbitrum USDC-USDT 0.05%" },
-      { name: "Uniswap", weight: 0.2, pool: "Uniswap v3 Arbitrum ETH-USDC 0.05% (±50%)" }
-    ],
-    detail: "브릿지 없이 Arbitrum 내에서 USDC 공급과 스테이블/ETH-USDC LP를 조합한 상품."
-  },
-  {
-    id: "p-base-usdc-70",
-    name: "Base USDC Core 7.0%",
-    networkGroup: "base",
-    subtype: "base-stable",
-    targetApr: 0.07,
-    estFeeBps: 44,
-    lockDays: 21,
-    protocolMix: [
-      { name: "Aave", weight: 0.5, pool: "Aave v3 Base USDC eMode" },
-      { name: "Uniswap", weight: 0.3, pool: "Uniswap v3 Base ETH-USDC 0.05%" },
-      { name: "Uniswap", weight: 0.2, pool: "Uniswap v3 Base USDC-USDT 0.05%" }
-    ],
-    detail: "Base 네트워크 안에서 Aave USDC 공급과 Uniswap Base LP를 묶어 네트워크 이동을 줄입니다."
-  },
-  {
-    id: "p-solana-orca-74",
-    name: "Solana Orca Blend 7.4%",
-    networkGroup: "solana",
-    subtype: "sol-stable",
-    targetApr: 0.074,
-    estFeeBps: 42,
-    lockDays: 14,
-    protocolMix: [
-      { name: "Orca", weight: 0.4, pool: "Orca Whirlpools USDC-USDT" },
-      { name: "Orca", weight: 0.35, pool: "Orca Whirlpools SOL-USDC" },
-      { name: "Orca", weight: 0.25, pool: "Orca Whirlpools mSOL-SOL" }
-    ],
-    detail: "Solana 네트워크 안에서 Orca 스테이블·SOL·LST 풀을 나눠 담는 단일 네트워크 상품."
-  },
-  {
-    id: "p-eth-stable-42",
-    name: "Ethereum Stable 4.2%",
-    networkGroup: "ethereum",
-    subtype: "eth-stable",
-    targetApr: 0.042,
-    estFeeBps: 55,
-    lockDays: 30,
-    protocolMix: [
-      { name: "Aave", weight: 0.4, pool: "Aave v3 Ethereum USDC" },
-      { name: "Curve", weight: 0.35, pool: "Curve 3pool DAI-USDC-USDT" },
-      { name: "Uniswap", weight: 0.25, pool: "Uniswap v3 Ethereum USDC-USDT 0.01%" }
-    ],
-    detail: "Ethereum 메인넷에서 Aave USDC 공급, Curve 3pool, Uniswap 스테이블 LP를 조합한 안정형 상품."
-  },
-  {
-    id: "p-eth-bluechip-55",
-    name: "Ethereum Blue-chip 5.5%",
-    networkGroup: "ethereum",
-    subtype: "eth-bluechip",
-    targetApr: 0.055,
-    estFeeBps: 58,
-    lockDays: 30,
-    protocolMix: [
-      { name: "Aave", weight: 0.3, pool: "Aave v3 Ethereum WETH" },
-      { name: "Curve", weight: 0.4, pool: "Curve stETH-ETH" },
-      { name: "Uniswap", weight: 0.3, pool: "Uniswap v3 Ethereum ETH-USDC 0.05%" }
-    ],
-    detail: "Ethereum 메인넷 대표 자산(ETH/stETH) 중심의 Blue-chip 예치상품. Curve LSD 수익 포함."
-  }
-];
+import {
+  DEFAULT_PRODUCTS,
+  PRODUCT_NETWORK_GROUPS,
+  PRODUCT_NETWORK_LABELS,
+  aprDecimalToSimpleWeekYieldPercentPoints,
+  buildDefaultProductMix,
+  mixItemAnnualAprDecimal,
+  networkGroupToDefaultSubtype,
+  networkGroupToProductNetwork,
+  type YieldProduct
+} from "./lib/productCatalog";
+import { getProtocolSortRank, inferProtocolChain } from "./lib/protocolChain";
+import {
+  GUEST_WITHDRAW_LEDGER_KEY,
+  MARKET_APR_REFRESH_MS,
+  WITHDRAW_DONE_TOAST_MS
+} from "./lib/constants";
+import {
+  MENU_ITEMS,
+  PRIMARY_NAV_LABEL,
+  PRIMARY_NAV_ORDER,
+  type MenuKey,
+  type TopNavGroupKey
+} from "./lib/menu";
+import type { DepositPosition, ProtocolDetailRow } from "./types/portfolio";
+import { usePortfolio, type PortfolioNotice } from "./hooks/usePortfolio";
 
 function ProductsPanel({
   positions,
@@ -737,7 +79,7 @@ function ProductsPanel({
   canPersistToServer: boolean;
   onWithdraw: (amountUsd: number) => void | Promise<void>;
   onWithdrawProduct?: (amountUsd: number, productName: string) => void | Promise<void>;
-  onActionNotice?: (notice: { variant: "error" | "info"; text: string }) => void;
+  onActionNotice?: (notice: PortfolioNotice) => void;
   onOpenOperationsWithJob?: (jobId: string) => void;
   onExecutionComplete?: () => void | Promise<void>;
 }) {
@@ -863,7 +205,7 @@ function ProductsPanel({
       }
     };
     void loadAprAndHistory();
-    const timer = window.setInterval(() => void loadAprAndHistory(), 10 * 60 * 1000);
+    const timer = window.setInterval(() => void loadAprAndHistory(), MARKET_APR_REFRESH_MS);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -1360,49 +702,6 @@ function ProductsPanel({
   );
 }
 
-function TradePanel() {
-  return (
-    <section className="card">
-      <p>우선 외부 DeFi를 사용해 토큰 교환을 진행합니다.</p>
-      <div className="button-row">
-        <button onClick={() => window.open("https://www.orca.so/pools", "_blank", "noopener,noreferrer")}>Orca 열기</button>
-        <button onClick={() => window.open("https://app.uniswap.org/", "_blank", "noopener,noreferrer")}>Uniswap 열기</button>
-      </div>
-    </section>
-  );
-}
-
-/**
- * 체인명 추출.
- * pool 레이블이 "Arbitrum · USDC Supply" 형식이면 앞부분에서 체인명을 먼저 파싱하고,
- * 없으면 프로토콜명으로 폴백한다.
- */
-function inferProtocolChain(protocolName: string, poolLabel?: string): string {
-  if (poolLabel) {
-    // "Arbitrum · USDC Supply" → "Arbitrum"
-    const chainPart = poolLabel.split("·")[0].trim().split("/")[0].trim();
-    const lc = chainPart.toLowerCase();
-    if (lc === "arbitrum" || lc.includes("arbitrum")) return "Arbitrum";
-    if (lc === "base" || lc.includes("base")) return "Base";
-    if (lc === "solana" || lc.includes("solana")) return "Solana";
-    if (lc === "ethereum" || lc.includes("ethereum")) return "Ethereum";
-    if (lc === "sol") return "Solana";
-    if (lc === "eth") return "Ethereum";
-  }
-  // 프로토콜명 기반 폴백
-  const key = protocolName.toLowerCase();
-  if (key.includes("orca")) return "Solana";
-  if (key.includes("aave")) return "Arbitrum";
-  if (key.includes("uniswap")) return "Arbitrum";
-  return "Multi";
-}
-
-function getProtocolSortRank(protocolName: string): number {
-  const key = protocolName.toLowerCase();
-  const rank = PROTOCOL_SORT_ORDER.findIndex((name) => key.includes(name.toLowerCase()));
-  return rank === -1 ? PROTOCOL_SORT_ORDER.length : rank;
-}
-
 function PortfolioPanel({
   positions,
   onExecutionComplete,
@@ -1421,24 +720,18 @@ function PortfolioPanel({
   const [protocolDepositKey, setProtocolDepositKey] = useState(0);
   const [showPositionDetails, setShowPositionDetails] = useState(false);
 
-  // ── 인출 상태 ──────────────────────────────────────────────
   const [withdrawDraft, setWithdrawDraft] = useState<{ row: ProtocolDetailRow; maxUsd: number } | null>(null);
-  /** 슬라이더 값 = 인출할 USD 금액 (0 ~ maxUsd) */
   const [withdrawAmtUsd, setWithdrawAmtUsd] = useState(0);
   const [withdrawVerifyPwd, setWithdrawVerifyPwd] = useState("");
   const [withdrawVerifyLoading, setWithdrawVerifyLoading] = useState(false);
   const [withdrawVerifyError, setWithdrawVerifyError] = useState("");
   const [withdrawDoneMsg, setWithdrawDoneMsg] = useState("");
 
-  /** 슬라이더 값 그대로 사용 — 서버로 보내는 금액과 일치 */
   const withdrawAmount = Number(withdrawAmtUsd.toFixed(2));
 
   const onOpenWithdraw = (row: ProtocolDetailRow) => {
     const inputAmt = protocolAmounts[row.key] ?? 0;
-    // 입력칸 금액이 유효하면 사용, 없으면 잔액 전체를 기본값으로
-    const initAmt = inputAmt > 0 && inputAmt <= row.amount
-      ? inputAmt
-      : row.amount;
+    const initAmt = inputAmt > 0 && inputAmt <= row.amount ? inputAmt : row.amount;
     setWithdrawDraft({ row, maxUsd: row.amount });
     setWithdrawAmtUsd(Number(initAmt.toFixed(2)));
     setWithdrawVerifyPwd("");
@@ -1472,7 +765,7 @@ function PortfolioPanel({
       setWithdrawDraft(null);
       setWithdrawVerifyPwd("");
       setWithdrawDoneMsg(doneMsg);
-      window.setTimeout(() => setWithdrawDoneMsg(""), 5000);
+      window.setTimeout(() => setWithdrawDoneMsg(""), WITHDRAW_DONE_TOAST_MS);
     } catch (error) {
       setWithdrawVerifyError(error instanceof Error ? error.message : "인출 확인 실패");
     } finally {
@@ -1624,7 +917,6 @@ function PortfolioPanel({
           )}
         </tbody>
       </table>
-      {/* ── 인출 확인 패널 ── */}
       {withdrawDraft ? (
         <div className="protocol-withdraw-confirm" role="dialog" aria-label="인출 확인">
           <p className="protocol-withdraw-confirm-title">
@@ -1769,204 +1061,6 @@ function PortfolioPanel({
   );
 }
 
-function CommandCenterPage({
-  positions,
-  recentJobs,
-  recentEvents,
-  onGo,
-  onOpenJob,
-  onCancelJob
-}: {
-  positions: DepositPosition[];
-  recentJobs: Job[];
-  recentEvents: ExecutionEvent[];
-  onGo: (menu: MenuKey) => void;
-  onOpenJob: (jobId: string) => void;
-  onCancelJob: (jobId: string) => void | Promise<void>;
-}) {
-  const [showPendingJobs, setShowPendingJobs] = useState(false);
-  const pendingJobRows = recentJobs.filter((job) => job.status === "queued" || job.status === "blocked");
-  const pendingJobs = pendingJobRows.length;
-  const failedEvents = recentEvents.filter((event) => event.status === "failed").length;
-  const executedJobs = recentJobs.filter((job) => job.status === "executed").length;
-
-  return (
-    <div className="page-shell command-page-shell">
-      <section className="mission-hero card">
-        <div>
-          <p className="section-eyebrow">Dashboard</p>
-          <h1>DeFi 자금 운용 상황판</h1>
-          <p>
-            예치, 리스크, 실행, 운영 로그를 한 화면에서 판단합니다. 상품 탐색보다 먼저 현재 포트폴리오가 안전한지와 오늘 조치할 항목을 보여줍니다.
-          </p>
-        </div>
-        <div className="mission-action-stack">
-          <button onClick={() => onGo("products")} title="Pools에서 상품을 선택하고 입금 금액을 조정합니다.">전략 검토</button>
-          <button className="ghost-btn" onClick={() => onGo("execution")} title="입금 처리와 운영 이력을 확인합니다.">실행 보드</button>
-        </div>
-      </section>
-      <div className="ops-status-rail">
-        <button type="button" onClick={() => onGo("portfolio")} title="현재 포지션 상세 화면으로 이동합니다.">
-          <span>Positions</span>
-          <strong>{positions.length}</strong>
-        </button>
-        <button type="button" onClick={() => setShowPendingJobs((prev) => !prev)} title="대기 중인 Job 목록을 펼치고 필요 시 취소합니다.">
-          <span>Pending Jobs</span>
-          <strong>{pendingJobs}</strong>
-        </button>
-        <button type="button" onClick={() => onGo("operationsLog")} title="실패 이벤트 상세 운영 이력으로 이동합니다.">
-          <span>Failures</span>
-          <strong>{failedEvents}</strong>
-        </button>
-        <button type="button" onClick={() => onGo("execution")} title="실행 완료된 Job은 Execution 화면에서 운영 로그와 함께 확인합니다.">
-          <span>Executed</span>
-          <strong>{executedJobs}</strong>
-        </button>
-      </div>
-      {showPendingJobs ? (
-        <section className="card pending-jobs-panel">
-          <div className="pending-jobs-head">
-            <div>
-              <p className="section-eyebrow">Pending Jobs</p>
-              <h2>대기 중인 입금 작업</h2>
-            </div>
-            <button type="button" className="ghost-btn" onClick={() => onGo("execution")} title="Execution 화면에서 선택한 Job의 입금 처리를 이어갑니다.">
-              실행 화면으로
-            </button>
-          </div>
-          <div className="pending-jobs-list">
-            {pendingJobRows.map((job) => (
-              <div key={job.id} className="pending-job-row">
-                <button type="button" onClick={() => onOpenJob(job.id)} title="이 Job을 Execution 화면에서 엽니다.">
-                  <strong>Job {job.id.slice(-8)}</strong>
-                  <span>{job.status} · ${job.input.depositUsd.toLocaleString()} · {job.riskLevel}</span>
-                </button>
-                <button type="button" className="ghost-btn pending-job-cancel" onClick={() => void onCancelJob(job.id)} title="아직 실행되지 않은 Job을 취소합니다.">
-                  취소
-                </button>
-              </div>
-            ))}
-            {pendingJobRows.length === 0 ? <p className="recent-empty">대기 중인 Job이 없습니다.</p> : null}
-          </div>
-        </section>
-      ) : null}
-      <PortfolioCommandCenter positions={positions} onOpenExecution={() => onGo("execution")} />
-    </div>
-  );
-}
-
-function StrategiesPage({
-  children,
-  onOpenTrade,
-  onOpenPortfolio
-}: {
-  children: ReactNode;
-  onOpenTrade: () => void;
-  onOpenPortfolio: () => void;
-}) {
-  return (
-    <div className="page-shell strategy-page-shell">
-      <section className="mission-hero mission-hero--strategy card">
-        <div>
-          <p className="section-eyebrow">Pools</p>
-          <h1>수익 풀을 고르고, 실행 전 리스크를 비교합니다</h1>
-          <p>
-            Aave, Uniswap, Orca 배분을 상품 단위로 비교하고 APR, 수수료, 기간 수익, 표준 L2 배분안을 함께 검토합니다.
-          </p>
-        </div>
-        <div className="mission-action-stack">
-          <button onClick={onOpenPortfolio}>포지션 관제</button>
-          <button className="ghost-btn" onClick={onOpenTrade}>외부 Swap</button>
-        </div>
-      </section>
-      {children}
-    </div>
-  );
-}
-
-function PositionsPage({
-  positions,
-  onGo,
-  onExecutionComplete,
-  onWithdraw,
-  onWithdrawTarget,
-  canPersistToServer
-}: {
-  positions: DepositPosition[];
-  onGo: (menu: MenuKey) => void;
-  onExecutionComplete?: () => void | Promise<void>;
-  onWithdraw?: (amountUsd: number) => Promise<void>;
-  onWithdrawTarget?: (amountUsd: number, target: Pick<ProtocolDetailRow, "name" | "chain" | "pool">) => Promise<void>;
-  canPersistToServer?: boolean;
-}) {
-  return (
-    <div className="page-shell positions-page-shell">
-      <section className="mission-hero mission-hero--positions card">
-        <div>
-          <p className="section-eyebrow">Positions</p>
-          <h1>포지션 및 프로토콜별 노출을 관리합니다</h1>
-          <p>
-            체인·프로토콜별 노출과 예치 건별 상세를 확인합니다.
-          </p>
-        </div>
-        <div className="mission-action-stack">
-          <button onClick={() => onGo("products")}>추가 예치</button>
-          <button className="ghost-btn" onClick={() => onGo("execution")}>리밸런싱 실행</button>
-        </div>
-      </section>
-      <PortfolioPanel
-        positions={positions}
-        onExecutionComplete={onExecutionComplete}
-        onWithdraw={onWithdraw}
-        onWithdrawTarget={onWithdrawTarget}
-        canPersistToServer={canPersistToServer}
-      />
-    </div>
-  );
-}
-
-function ExecutionPage({
-  hasSession,
-  recentJobs,
-  recentEvents,
-  focusJobId,
-  onOpenJob,
-  onOpenEvent,
-  onExecutionComplete
-}: {
-  hasSession: boolean;
-  recentJobs: Job[];
-  recentEvents: ExecutionEvent[];
-  focusJobId?: string;
-  onOpenJob: (jobId: string) => void;
-  onOpenEvent: (jobId: string) => void;
-  onExecutionComplete?: () => void | Promise<void>;
-}) {
-  return (
-    <div className="page-shell execution-page-shell">
-      <section className="mission-hero mission-hero--execution card">
-        <div>
-          <p className="section-eyebrow">Execution</p>
-          <h1>내 입금 실행, 서명, dry-run, 감사 로그를 한 흐름으로 추적합니다</h1>
-          <p>
-            실행은 계획, 본인 확인, 서명, 제출, 확인, 기록으로 나뉩니다. 실패와 재실행은 운영 이력에서 추적합니다.
-          </p>
-        </div>
-      </section>
-      <div className="page-grid-two page-grid-two--execution execution-primary-grid">
-        <OrchestratorBoard allowJobExecution={hasSession} onExecutionComplete={onExecutionComplete} />
-      </div>
-      <OperationsHistoryPanel
-        focusJobId={focusJobId}
-        recentJobs={recentJobs}
-        recentEvents={recentEvents}
-        onOpenJob={onOpenJob}
-        onOpenEvent={onOpenEvent}
-      />
-    </div>
-  );
-}
-
 export default function App() {
   const [session, setSession] = useState<AuthSession | null>(getSession());
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -1974,157 +1068,28 @@ export default function App() {
   const [openTopMenu, setOpenTopMenu] = useState<TopNavGroupKey | null>(null);
   const [recentJobs, setRecentJobs] = useState<Job[]>([]);
   const [recentEvents, setRecentEvents] = useState<ExecutionEvent[]>([]);
-  const [withdrawLedger, setWithdrawLedger] = useState<WalletWithdrawLedgerLine[]>([]);
   const [focusJobId, setFocusJobId] = useState<string | undefined>(undefined);
   const [operationsSearchOpen, setOperationsSearchOpen] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [quarterAlertSeen, setQuarterAlertSeen] = useState(false);
-  const [positions, setPositions] = useState<DepositPosition[]>([]);
-  const [portfolioNotice, setPortfolioNotice] = useState<{ variant: "error" | "info"; text: string } | null>(null);
+
   const role = session?.role;
 
-  const canPersistPortfolio = Boolean(session);
-  const portfolioTotalUsd = useMemo(() => positions.reduce((acc, p) => acc + p.amountUsd, 0), [positions]);
-
-  const refreshWithdrawLedgerFromServer = async () => {
-    if (!session) {
-      return;
-    }
-    try {
-      const rows = await listWithdrawalLedger();
-      setWithdrawLedger(rows);
-    } catch {
-      setWithdrawLedger([]);
-    }
-  };
-
-  const refreshPositions = async () => {
-    if (!session) {
-      return;
-    }
-    try {
-      const rows = await listDepositPositions();
-      setPositions(rows);
-    } catch {
-      setPositions([]);
-    }
-  };
-
-  const handleWithdrawPosition = async (amountUsd: number) => {
-    if (amountUsd <= 0) return;
-    setPortfolioNotice(null);
-    try {
-      if (canPersistPortfolio) {
-        const { withdrawnUsd } = await withdrawDepositRemote(amountUsd);
-        await refreshPositions();
-        await refreshWithdrawLedgerFromServer();
-        if (withdrawnUsd <= 0 && amountUsd > 0) {
-          setPortfolioNotice({ variant: "info", text: "인출할 예치 잔액이 없습니다." });
-        } else if (withdrawnUsd < amountUsd) {
-          setPortfolioNotice({
-            variant: "info",
-            text: `요청 ${amountUsd.toLocaleString("ko-KR")} USD 중 실제 반영 ${withdrawnUsd.toFixed(2)} USD입니다.`
-          });
-        }
-      } else {
-        setPositions((prev) => applyLifoWithdraw(prev, amountUsd));
-        setWithdrawLedger((prev) => {
-          const next = [{ id: `wd_${Date.now()}`, amountUsd, createdAt: new Date().toISOString() }, ...prev];
-          try {
-            localStorage.setItem(GUEST_WITHDRAW_LEDGER_KEY, JSON.stringify(next));
-          } catch {
-            /* 저장 실패 무시 */
-          }
-          return next;
-        });
-      }
-    } catch (err) {
-      setPortfolioNotice({
-        variant: "error",
-        text: err instanceof Error ? err.message : "인출에 실패했습니다."
-      });
-    }
-  };
-
-  const handleWithdrawProtocolExposure = async (
-    amountUsd: number,
-    target: Pick<ProtocolDetailRow, "name" | "chain" | "pool">
-  ) => {
-    if (amountUsd <= 0) return;
-    setPortfolioNotice(null);
-    try {
-      if (canPersistPortfolio) {
-        const { withdrawnUsd } = await withdrawProtocolExposureRemote({
-          amountUsd,
-          protocol: target.name,
-          chain: target.chain,
-          pool: target.pool
-        });
-        await refreshPositions();
-        await refreshWithdrawLedgerFromServer();
-        if (withdrawnUsd <= 0 && amountUsd > 0) {
-          setPortfolioNotice({ variant: "info", text: "해당 풀에서 인출할 예치 잔액이 없습니다." });
-        } else if (withdrawnUsd < amountUsd) {
-          setPortfolioNotice({
-            variant: "info",
-            text: `요청 ${amountUsd.toLocaleString("ko-KR")} USD 중 해당 풀에서 실제 반영 ${withdrawnUsd.toFixed(2)} USD입니다.`
-          });
-        }
-      } else {
-        setPositions((prev) => applyTargetedWithdraw(prev, amountUsd, target));
-        setWithdrawLedger((prev) => {
-          const next = [{ id: `wd_${Date.now()}`, amountUsd, createdAt: new Date().toISOString() }, ...prev];
-          try {
-            localStorage.setItem(GUEST_WITHDRAW_LEDGER_KEY, JSON.stringify(next));
-          } catch {
-            /* 저장 실패 무시 */
-          }
-          return next;
-        });
-      }
-    } catch (err) {
-      setPortfolioNotice({
-        variant: "error",
-        text: err instanceof Error ? err.message : "풀별 인출에 실패했습니다."
-      });
-    }
-  };
-
-  const handleWithdrawProductDeposit = async (amountUsd: number, productName: string) => {
-    if (amountUsd <= 0) return;
-    setPortfolioNotice(null);
-    try {
-      if (canPersistPortfolio) {
-        const { withdrawnUsd } = await withdrawProductDepositRemote({ amountUsd, productName });
-        await refreshPositions();
-        await refreshWithdrawLedgerFromServer();
-        if (withdrawnUsd <= 0 && amountUsd > 0) {
-          setPortfolioNotice({ variant: "info", text: "선택 상품으로 인출할 예치 잔액이 없습니다." });
-        } else if (withdrawnUsd < amountUsd) {
-          setPortfolioNotice({
-            variant: "info",
-            text: `요청 ${amountUsd.toLocaleString("ko-KR")} USD 중 ${productName}에서 실제 반영 ${withdrawnUsd.toFixed(2)} USD입니다.`
-          });
-        }
-      } else {
-        setPositions((prev) => applyProductWithdraw(prev, amountUsd, productName));
-        setWithdrawLedger((prev) => {
-          const next = [{ id: `wd_${Date.now()}`, amountUsd, createdAt: new Date().toISOString() }, ...prev];
-          try {
-            localStorage.setItem(GUEST_WITHDRAW_LEDGER_KEY, JSON.stringify(next));
-          } catch {
-            /* 저장 실패 무시 */
-          }
-          return next;
-        });
-      }
-    } catch (err) {
-      setPortfolioNotice({
-        variant: "error",
-        text: err instanceof Error ? err.message : "상품별 인출에 실패했습니다."
-      });
-    }
-  };
+  const {
+    positions,
+    setPositions,
+    withdrawLedger,
+    setWithdrawLedger,
+    portfolioNotice,
+    setPortfolioNotice,
+    canPersistPortfolio,
+    portfolioTotalUsd,
+    refreshPositions,
+    refreshWithdrawLedgerFromServer,
+    handleWithdrawPosition,
+    handleWithdrawProtocolExposure,
+    handleWithdrawProductDeposit
+  } = usePortfolio(session);
 
   const handleCancelJob = async (jobId: string) => {
     setPortfolioNotice(null);
@@ -2167,14 +1132,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!portfolioNotice) {
-      return;
-    }
-    const timer = window.setTimeout(() => setPortfolioNotice(null), 8000);
-    return () => window.clearTimeout(timer);
-  }, [portfolioNotice]);
-
-  useEffect(() => {
     const controller = new AbortController();
     const loadRecent = async () => {
       if (!session) {
@@ -2190,23 +1147,18 @@ export default function App() {
         return;
       }
       const signal = controller.signal;
-      const [jobsResult, eventsResult, depositRowsResult, wdRowsResult] = await Promise.allSettled([
+      const [jobsResult, eventsResult] = await Promise.allSettled([
         listJobs({ signal }),
-        listExecutionEvents(undefined, { signal }),
-        listDepositPositions({ signal }),
-        listWithdrawalLedger({ signal })
+        listExecutionEvents(undefined, { signal })
       ]);
-      if (signal.aborted) {
-        return;
-      }
+      if (signal.aborted) return;
       setRecentJobs(jobsResult.status === "fulfilled" ? jobsResult.value.slice(0, 6) : []);
       setRecentEvents(eventsResult.status === "fulfilled" ? eventsResult.value.slice(0, 6) : []);
-      setPositions(depositRowsResult.status === "fulfilled" ? depositRowsResult.value : []);
-      setWithdrawLedger(wdRowsResult.status === "fulfilled" ? wdRowsResult.value : []);
+      await Promise.all([refreshPositions(), refreshWithdrawLedgerFromServer()]);
     };
     void loadRecent();
     return () => controller.abort();
-  }, [session]);
+  }, [session, refreshPositions, refreshWithdrawLedgerFromServer, setPositions, setWithdrawLedger]);
 
   useEffect(() => {
     const allowed = availableMenus.some((item) => item.key === activeMenu);
@@ -2214,6 +1166,12 @@ export default function App() {
       setActiveMenu(role ? "my" : "products");
     }
   }, [role, activeMenu, availableMenus]);
+
+  const onSelectMenu = (menu: MenuKey) => {
+    setActiveMenu(menu);
+    setOpenTopMenu(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
 
   const renderContent = () => {
     switch (activeMenu) {
@@ -2262,17 +1220,18 @@ export default function App() {
         return <TradePanel />;
       case "portfolio":
         return (
-          <PositionsPage
-            positions={positions}
-            onGo={onSelectMenu}
-            onWithdraw={handleWithdrawPosition}
-            onWithdrawTarget={handleWithdrawProtocolExposure}
-            canPersistToServer={canPersistPortfolio}
-            onExecutionComplete={async () => {
-              await refreshPositions();
-              await refreshWithdrawLedgerFromServer();
-            }}
-          />
+          <PositionsPage onGo={onSelectMenu}>
+            <PortfolioPanel
+              positions={positions}
+              onWithdraw={handleWithdrawPosition}
+              onWithdrawTarget={handleWithdrawProtocolExposure}
+              canPersistToServer={canPersistPortfolio}
+              onExecutionComplete={async () => {
+                await refreshPositions();
+                await refreshWithdrawLedgerFromServer();
+              }}
+            />
+          </PositionsPage>
         );
       case "wallet":
         return (
@@ -2339,12 +1298,6 @@ export default function App() {
           />
         );
     }
-  };
-
-  const onSelectMenu = (menu: MenuKey) => {
-    setActiveMenu(menu);
-    setOpenTopMenu(null);
-    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   /** 상단 주요 메뉴: Dashboard · Pools · Positions · Execution (역할에 없는 항목은 숨김) */
