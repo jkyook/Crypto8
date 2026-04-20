@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { PortfolioCommandCenter } from "../components/PortfolioCommandCenter";
 import type { DepositPosition } from "../types/portfolio";
-import type { ExecutionEvent, Job } from "../lib/api";
+import type { ExecutionEvent, Job, OnchainPositionPayload } from "../lib/api";
 import type { MenuKey } from "../lib/menu";
 
 export function CommandCenterPage({
   positions,
+  onchainPositions = [],
   recentJobs,
   recentEvents,
   onGo,
@@ -13,6 +14,7 @@ export function CommandCenterPage({
   onCancelJob
 }: {
   positions: DepositPosition[];
+  onchainPositions?: OnchainPositionPayload[];
   recentJobs: Job[];
   recentEvents: ExecutionEvent[];
   onGo: (menu: MenuKey) => void;
@@ -85,7 +87,7 @@ export function CommandCenterPage({
           </div>
         </section>
       ) : null}
-      <PortfolioCommandCenter positions={positions} onOpenExecution={() => onGo("execution")} />
+      <PortfolioCommandCenter positions={positions} onchainPositions={onchainPositions} onOpenExecution={() => onGo("execution")} />
     </div>
   );
 }

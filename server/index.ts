@@ -62,8 +62,8 @@ import {
   createWithdrawalIntent,
   createWithdrawalExecution,
   updateWithdrawalExecutionConfirmed,
-  closePosition,
-  getPositionById
+  getPositionById,
+  finalizePositionOnClose
 } from "./intentStore";
 import {
   verifyPosition,
@@ -1567,7 +1567,9 @@ app.post("/api/withdrawals/:intentId/confirm", requireAuth, async (req, res) => 
     amountReturnedUsd: typeof body.amountReturnedUsd === "number" ? body.amountReturnedUsd : undefined
   });
 
-  await closePosition(position.id, body.txHash);
+  // 실현 손익 확정 후 포지션 close
+  const returnedUsd = typeof body.amountReturnedUsd === "number" ? body.amountReturnedUsd : position.amountUsd;
+  await finalizePositionOnClose(position.id, returnedUsd);
 
   res.json({ ok: true, message: "withdrawal confirmed and position closed", positionId: position.id });
 });

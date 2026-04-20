@@ -266,6 +266,25 @@ export type OnchainPositionPayload = {
   closedAt: string | null;
   onchainDataJson: string | null;
   verify?: OnchainPositionVerifySnapshot | null;
+  // ── 포지션 회계 필드 (P1) ──────────────────────────────
+  /** 입금 원금 (USD). 변경되지 않는 cost basis. */
+  principalUsd: number | null;
+  /** 최신 온체인 평가금액 (USD). sync 시 갱신. */
+  currentValueUsd: number | null;
+  /** 미실현 손익 = currentValueUsd - principalUsd */
+  unrealizedPnlUsd: number | null;
+  /** 실현 손익. 포지션 close 시 확정. */
+  realizedPnlUsd: number | null;
+  /** 가스비 + 프로토콜 수수료 합계 (USD). */
+  feesPaidUsd: number | null;
+  /** 실제 누적 수익 기준 연환산 APY. */
+  netApy: number | null;
+  /** 입금 시점 자산 가격 (USD). IL 계산에 사용. */
+  entryPrice: number | null;
+  /** 입금 당시 예상 APR. */
+  expectedApr: number | null;
+  /** 프로토콜 자체 포지션 식별자. */
+  protocolPositionId: string | null;
 };
 
 export type AccountAssetSymbol = "USDC" | "USDT" | "ETH" | "SOL";

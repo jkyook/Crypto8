@@ -5990,3 +5990,116 @@ body[data-theme="light"] .exec-verify-input {
   border-color: #aec4e0;
   color: #122131;
 }
+
+/* ── 포지션 회계 패널 (P1) ─────────────────────────────────────────── */
+.accounting-panel {
+  margin-top: 14px;
+  padding: 16px;
+  border-radius: var(--c8-radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(4, 12, 22, 0.45);
+}
+
+.accounting-panel h3 {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--c8-muted);
+  margin: 0 0 12px;
+}
+
+.accounting-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.accounting-kpi {
+  min-height: 72px;
+  padding: 10px 12px;
+  border-radius: var(--c8-radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.02);
+  display: grid;
+  align-content: space-between;
+}
+
+.accounting-kpi strong {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+/* PnL 색상 */
+.pnl-positive strong { color: #4ade80; }
+.pnl-negative strong { color: #f87171; }
+.pnl-neutral strong  { color: var(--c8-text); }
+
+/* 포지션별 손익 목록 */
+.position-pnl-list {
+  margin-top: 6px;
+}
+
+.position-pnl-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 0.82rem;
+  flex-wrap: wrap;
+}
+
+.position-pnl-row:last-child {
+  border-bottom: none;
+}
+
+.position-pnl-id {
+  flex: 1;
+  color: var(--c8-text);
+  font-weight: 500;
+}
+
+.position-pnl-principal {
+  color: var(--c8-muted);
+  min-width: 72px;
+  text-align: right;
+}
+
+.position-pnl-value {
+  font-weight: 600;
+  min-width: 80px;
+  text-align: right;
+}
+
+.position-pnl-apy {
+  color: var(--c8-muted);
+  font-size: 0.78rem;
+}
+
+/* 라이트 모드 보정 */
+body[data-theme="light"] .accounting-panel {
+  background: rgba(240, 246, 255, 0.6);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+
+body[data-theme="light"] .accounting-kpi {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+
+body[data-theme="light"] .pnl-positive strong { color: #16a34a; }
+body[data-theme="light"] .pnl-negative strong { color: #dc2626; }
+
+@media (max-width: 900px) {
+  .accounting-kpi-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .accounting-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

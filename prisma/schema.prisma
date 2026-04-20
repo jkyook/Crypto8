@@ -258,6 +258,26 @@ model Position {
   /** 조회 어댑터가 갱신한 최신 온체인 데이터 (JSON) */
   onchainDataJson String? @map("onchain_data_json")
 
+  // ── 포지션 회계 필드 (P1) ─────────────────────────────────────────
+  /** 입금 당시 원금 (USD). amountUsd와 동일하게 시작하며 변경되지 않는다. */
+  principalUsd      Float?  @map("principal_usd")
+  /** 최신 온체인 조회 기준 평가금액 (USD). sync 시 갱신. */
+  currentValueUsd   Float?  @map("current_value_usd")
+  /** 미실현 손익 = currentValueUsd - principalUsd */
+  unrealizedPnlUsd  Float?  @map("unrealized_pnl_usd")
+  /** 실현 손익. 포지션 close 시 확정. */
+  realizedPnlUsd    Float?  @map("realized_pnl_usd")
+  /** 가스비 + 프로토콜 수수료 합계 (USD). */
+  feesPaidUsd       Float?  @map("fees_paid_usd")
+  /** 포지션 오픈 후 실제 누적 수익 기준 연환산 APY. */
+  netApy            Float?  @map("net_apy")
+  /** 입금 시점 기준 자산 가격 (USD). IL 계산에 사용. */
+  entryPrice        Float?  @map("entry_price")
+  /** 입금 당시 quote에서 가져온 예상 APR. */
+  expectedApr       Float?  @map("expected_apr")
+  /** 프로토콜 자체 포지션 식별자 (Uniswap tokenId, Aave aToken alias 등). */
+  protocolPositionId String? @map("protocol_position_id")
+
   execution Execution @relation(fields: [executionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   user      User      @relation(fields: [username], references: [username], onDelete: Cascade, onUpdate: Cascade)
 

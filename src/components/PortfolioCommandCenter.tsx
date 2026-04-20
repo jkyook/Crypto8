@@ -1,11 +1,79 @@
 import { useMemo } from "react";
-import type { DepositPositionPayload } from "../lib/api";
+import type { DepositPositionPayload, OnchainPositionPayload } from "../lib/api";
 import { assessPortfolioRisk, describePositionChainMix, getTargetChainWeight } from "../lib/portfolioRisk";
 
 type Props = {
   positions: DepositPositionPayload[];
+  onchainPositions?: OnchainPositionPayload[];
   onOpenExecution?: () => void;
 };
+
+type AccountingSummary = {
+  totalPrincipalUsd: number;
+  totalCurrentValueUsd: number;
+  totalUnrealizedPnlUsd: number;
+  totalRealizedPnlUsd: number;
+  totalFeesPaidUsd: number;
+  weightedNetApy: number | null;
+  hasData: boolean;
+};
+
+function computeAccountingSummary(positions: OnchainPositionPayload[]): AccountingSummary {
+  const active = positions.filter(p => p.status === "active");
+  if (active.length === 0) return {
+    totalPrincipalUsd: 0, totalCurrentValueUsd: 0, totalUnrealizedPnlUsd: 0,
+    totalRealizedPnlUsd: 0, totalFeesPaidUsd: 0, weightedNetApy: null, hasData: false
+  };
+
+  let totalPrincipalUsd = 0;
+  let totalCurrentValueUsd = 0;
+  let totalUnrealizedPnlUsd = 0;
+  let totalRealizedPnlUsd = 0;
+  let totalFeesPaidUsd = 0;
+  let apyWeightSum = 0;
+  let apyValueSum = 0;
+
+  for (const p of active) {
+    const principal = p.principalUsd ?? p.amountUsd;
+    const current = p.currentValueUsd ?? p.amountUsd;
+    totalPrincipalUsd += principal;
+    totalCurrentValueUsd += current;
+    totalUnrealizedPnlUsd += p.unrealizedPnlUsd ?? (current - principal);
+    totalRealizedPnlUsd += p.realizedPnlUsd ?? 0;
+    totalFeesPaidUsd += p.feesPaidUsd ?? 0;
+    if (p.netApy !== null) {
+      apyValueSum += p.netApy * principal;
+      apyWeightSum += principal;
+    }
+  }
+
+  // 닫힌 포지션의 실현 손익도 합산
+  const closed = positions.filter(p => p.status === "closed");
+  for (const p of closed) {
+    totalRealizedPnlUsd += p.realizedPnlUsd ?? 0;
+  }
+
+  return {
+    totalPrincipalUsd,
+    totalCurrentValueUsd,
+    totalUnrealizedPnlUsd,
+    totalRealizedPnlUsd,
+    totalFeesPaidUsd,
+    weightedNetApy: apyWeightSum > 0 ? apyValueSum / apyWeightSum : null,
+    hasData: true
+  };
+}
+
+function pnlClass(value: number): string {
+  if (value > 0) return "pnl-positive";
+  if (value < 0) return "pnl-negative";
+  return "pnl-neutral";
+}
+
+function formatPnl(value: number): string {
+  const sign = value > 0 ? "+" : "";
+  return `${sign}$${Math.abs(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
 
 function riskBadgeClass(level: string): string {
   const key = level.toLowerCase();
@@ -21,8 +89,9 @@ function controlStatusLabel(status: "ok" | "watch" | "action"): string {
   return "정상";
 }
 
-export function PortfolioCommandCenter({ positions, onOpenExecution }: Props) {
+export function PortfolioCommandCenter({ positions, onchainPositions = [], onOpenExecution }: Props) {
   const assessment = useMemo(() => assessPortfolioRisk(positions), [positions]);
+  const accounting = useMemo(() => computeAccountingSummary(onchainPositions), [onchainPositions]);
   const latestPosition = positions[0];
 
   return (
@@ -59,6 +128,63 @@ export function PortfolioCommandCenter({ positions, onOpenExecution }: Props) {
           <strong>${Math.round(assessment.estimatedAnnualYieldUsd).toLocaleString()}</strong>
         </div>
       </div>
+
+      {/* ── 포지션 회계 패널 (P1 데이터가 있을 때만 렌더) ── */}
+      {accounting.hasData && (
+        <div className="accounting-panel card-inner">
+          <h3>포지션 회계 요약</h3>
+          <div className="accounting-kpi-grid">
+            <div className="accounting-kpi">
+              <span className="kpi-label">원금 합계</span>
+              <strong>${accounting.totalPrincipalUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+            </div>
+            <div className="accounting-kpi">
+              <span className="kpi-label">평가금액</span>
+              <strong>${accounting.totalCurrentValueUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+            </div>
+            <div className={`accounting-kpi ${pnlClass(accounting.totalUnrealizedPnlUsd)}`}>
+              <span className="kpi-label">미실현 손익</span>
+              <strong>{formatPnl(accounting.totalUnrealizedPnlUsd)}</strong>
+            </div>
+            <div className={`accounting-kpi ${pnlClass(accounting.totalRealizedPnlUsd)}`}>
+              <span className="kpi-label">실현 손익</span>
+              <strong>{formatPnl(accounting.totalRealizedPnlUsd)}</strong>
+            </div>
+            <div className="accounting-kpi">
+              <span className="kpi-label">누적 수수료</span>
+              <strong>${accounting.totalFeesPaidUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+            </div>
+            {accounting.weightedNetApy !== null && (
+              <div className="accounting-kpi">
+                <span className="kpi-label">실현 APY</span>
+                <strong>{(accounting.weightedNetApy * 100).toFixed(2)}%</strong>
+              </div>
+            )}
+          </div>
+          {/* 포지션별 PnL 목록 */}
+          {onchainPositions.filter(p => p.principalUsd !== null).length > 0 && (
+            <div className="position-pnl-list">
+              <p className="kpi-label" style={{ marginBottom: "0.5rem" }}>포지션별 손익</p>
+              {onchainPositions
+                .filter(p => p.principalUsd !== null)
+                .map(p => {
+                  const pnl = p.unrealizedPnlUsd ?? ((p.currentValueUsd ?? p.amountUsd) - (p.principalUsd ?? p.amountUsd));
+                  return (
+                    <div key={p.id} className="position-pnl-row">
+                      <span className="position-pnl-id">{p.protocol} · {p.chain} · {p.asset}</span>
+                      <span className="position-pnl-principal">${(p.principalUsd ?? p.amountUsd).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                      <span className={`position-pnl-value ${pnlClass(pnl)}`}>{formatPnl(pnl)}</span>
+                      {p.netApy !== null && (
+                        <span className="position-pnl-apy">{(p.netApy * 100).toFixed(2)}% APY</span>
+                      )}
+                      <span className={`badge ${p.status === "active" ? "badge-low" : "badge-medium"}`}>{p.status}</span>
+                    </div>
+                  );
+                })}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="command-grid">
         <div className="command-panel">

@@ -69,6 +69,16 @@ export type PositionRow = {
   openedAt: string;
   closedAt: string | null;
   onchainDataJson: string | null;
+  // ── 포지션 회계 필드 (P1) ──────────────────────
+  principalUsd: number | null;
+  currentValueUsd: number | null;
+  unrealizedPnlUsd: number | null;
+  realizedPnlUsd: number | null;
+  feesPaidUsd: number | null;
+  netApy: number | null;
+  entryPrice: number | null;
+  expectedApr: number | null;
+  protocolPositionId: string | null;
 };
 
 export type WithdrawalIntentRow = {
@@ -281,6 +291,14 @@ export async function createPositionFromExecution(params: {
   positionToken?: string;
   positionRaw?: string;
   onchainDataJson?: string;
+  /** 입금 시점 자산 가격 (USD). IL 계산용. */
+  entryPrice?: number;
+  /** 입금 당시 quote의 예상 APR. */
+  expectedApr?: number;
+  /** 가스비 + 프로토콜 수수료 합계 (USD). */
+  feesPaidUsd?: number;
+  /** 프로토콜 자체 포지션 ID (tokenId 등). */
+  protocolPositionId?: string;
 }): Promise<PositionRow> {
   if (params.execution.status !== "confirmed") {
     throw new Error(
@@ -299,8 +317,10 @@ export async function createPositionFromExecution(params: {
     `INSERT INTO positions
       (id, execution_id, username, protocol, chain, asset, pool_address,
        position_token, position_raw, amount_usd, deposit_tx_hash,
-       last_synced_at, status, opened_at, onchain_data_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+       last_synced_at, status, opened_at, onchain_data_json,
+       principal_usd, current_value_usd, unrealized_pnl_usd,
+       entry_price, expected_apr, fees_paid_usd, protocol_position_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     id, params.execution.id, params.username,
     params.execution.protocol, params.execution.chain,
     params.asset,
@@ -310,7 +330,15 @@ export async function createPositionFromExecution(params: {
     params.amountUsd,
     params.execution.txHash,
     now, now,
-    params.onchainDataJson ?? null
+    params.onchainDataJson ?? null,
+    // 회계 필드: principalUsd = amountUsd (cost basis), currentValueUsd = amountUsd (초기값), unrealizedPnl = 0
+    params.amountUsd,
+    params.amountUsd,
+    0,
+    params.entryPrice ?? null,
+    params.expectedApr ?? null,
+    params.feesPaidUsd ?? null,
+    params.protocolPositionId ?? null
   );
 
   return {
@@ -329,7 +357,16 @@ export async function createPositionFromExecution(params: {
     status: "active",
     openedAt: now,
     closedAt: null,
-    onchainDataJson: params.onchainDataJson ?? null
+    onchainDataJson: params.onchainDataJson ?? null,
+    principalUsd: params.amountUsd,
+    currentValueUsd: params.amountUsd,
+    unrealizedPnlUsd: 0,
+    realizedPnlUsd: null,
+    feesPaidUsd: params.feesPaidUsd ?? null,
+    netApy: null,
+    entryPrice: params.entryPrice ?? null,
+    expectedApr: params.expectedApr ?? null,
+    protocolPositionId: params.protocolPositionId ?? null
   };
 }
 
@@ -359,6 +396,83 @@ export async function updatePositionOnchainData(
   await db.$executeRawUnsafe(
     `UPDATE positions SET onchain_data_json = ?, last_synced_at = ? WHERE id = ?`,
     onchainDataJson, new Date().toISOString(), positionId
+  );
+}
+
+/**
+ * 온체인 sync 후 회계 필드를 갱신한다.
+ * - currentValueUsd: 최신 온체인 평가금액
+ * - unrealizedPnlUsd: currentValueUsd - principalUsd
+ * - netApy: 포지션 오픈 이후 경과 시간 기준 연환산 수익률
+ * - feesPaidUsd: 누적 수수료 (선택)
+ */
+export async function updatePositionAccountingFromSync(
+  positionId: string,
+  currentValueUsd: number,
+  opts?: { feesPaidUsd?: number }
+): Promise<void> {
+  const db = getDb();
+  // principalUsd와 openedAt을 먼저 조회해 PnL 계산
+  const rows = await db.$queryRawUnsafe<Record<string, unknown>[]>(
+    `SELECT principal_usd, opened_at FROM positions WHERE id = ? LIMIT 1`,
+    positionId
+  );
+  if (rows.length === 0) return;
+
+  const principalUsd = (rows[0]["principal_usd"] as number | null) ?? currentValueUsd;
+  const openedAt = rows[0]["opened_at"] as string;
+  const unrealizedPnlUsd = currentValueUsd - principalUsd;
+
+  // 경과 일수 기준 연환산 APY
+  const daysElapsed = (Date.now() - new Date(openedAt).getTime()) / (1000 * 60 * 60 * 24);
+  let netApy: number | null = null;
+  if (daysElapsed >= 1 && principalUsd > 0) {
+    netApy = (unrealizedPnlUsd / principalUsd) * (365 / daysElapsed);
+  }
+
+  const feesPaidUsd = opts?.feesPaidUsd ?? null;
+  const now = new Date().toISOString();
+
+  await db.$executeRawUnsafe(
+    `UPDATE positions
+     SET current_value_usd  = ?,
+         unrealized_pnl_usd = ?,
+         net_apy            = ?,
+         fees_paid_usd      = COALESCE(?, fees_paid_usd),
+         last_synced_at     = ?
+     WHERE id = ?`,
+    currentValueUsd, unrealizedPnlUsd, netApy, feesPaidUsd, now, positionId
+  );
+}
+
+/**
+ * 포지션 close 시 실현 손익을 확정한다.
+ * returnedUsd: 실제 수령한 금액 (USD)
+ */
+export async function finalizePositionOnClose(
+  positionId: string,
+  returnedUsd: number
+): Promise<void> {
+  const db = getDb();
+  const rows = await db.$queryRawUnsafe<Record<string, unknown>[]>(
+    `SELECT principal_usd, fees_paid_usd FROM positions WHERE id = ? LIMIT 1`,
+    positionId
+  );
+  if (rows.length === 0) return;
+
+  const principalUsd = (rows[0]["principal_usd"] as number | null) ?? returnedUsd;
+  const feesPaidUsd = (rows[0]["fees_paid_usd"] as number | null) ?? 0;
+  const realizedPnlUsd = returnedUsd - principalUsd - feesPaidUsd;
+
+  await db.$executeRawUnsafe(
+    `UPDATE positions
+     SET realized_pnl_usd  = ?,
+         unrealized_pnl_usd = 0,
+         current_value_usd = ?,
+         status             = 'closed',
+         closed_at          = ?
+     WHERE id = ?`,
+    realizedPnlUsd, returnedUsd, new Date().toISOString(), positionId
   );
 }
 
@@ -532,6 +646,16 @@ function mapPositionRow(r: Record<string, unknown>): PositionRow {
     status: r["status"] as PositionRow["status"],
     openedAt: r["opened_at"] as string,
     closedAt: (r["closed_at"] ?? null) as string | null,
-    onchainDataJson: (r["onchain_data_json"] ?? null) as string | null
+    onchainDataJson: (r["onchain_data_json"] ?? null) as string | null,
+    // 회계 필드
+    principalUsd: (r["principal_usd"] ?? null) as number | null,
+    currentValueUsd: (r["current_value_usd"] ?? null) as number | null,
+    unrealizedPnlUsd: (r["unrealized_pnl_usd"] ?? null) as number | null,
+    realizedPnlUsd: (r["realized_pnl_usd"] ?? null) as number | null,
+    feesPaidUsd: (r["fees_paid_usd"] ?? null) as number | null,
+    netApy: (r["net_apy"] ?? null) as number | null,
+    entryPrice: (r["entry_price"] ?? null) as number | null,
+    expectedApr: (r["expected_apr"] ?? null) as number | null,
+    protocolPositionId: (r["protocol_position_id"] ?? null) as string | null
   };
 }

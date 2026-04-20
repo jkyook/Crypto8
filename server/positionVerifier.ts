@@ -27,6 +27,7 @@ import {
 } from "viem";
 import { arbitrum, base, mainnet } from "viem/chains";
 import type { PositionRow } from "./intentStore";
+import { updatePositionAccountingFromSync } from "./intentStore";
 import { getDb } from "./db";
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -425,6 +426,10 @@ async function persistVerifyResult(
       `UPDATE positions SET onchain_data_json = ?, last_synced_at = ? WHERE id = ?`,
       onchainData, now, positionId
     );
+    // 온체인 평가금액이 있으면 회계 필드 갱신
+    if (result.onchainAmountUsd !== null && result.status !== "rpc_error") {
+      await updatePositionAccountingFromSync(positionId, result.onchainAmountUsd);
+    }
   }
 }
 

@@ -45,6 +45,7 @@ function AppShell() {
     portfolioNotice,
     setPortfolioNotice,
     portfolioTotalUsd,
+    onchainPositions,
     refreshOnchainPositions,
     refreshPositions,
     refreshWithdrawLedgerFromServer
@@ -153,6 +154,7 @@ function AppShell() {
         return (
           <CommandCenterPage
             positions={positions}
+            onchainPositions={onchainPositions}
             recentJobs={recentJobs}
             recentEvents={recentEvents}
             onGo={onSelectMenu}
@@ -241,6 +243,7 @@ function AppShell() {
         return (
           <CommandCenterPage
             positions={positions}
+            onchainPositions={onchainPositions}
             recentJobs={recentJobs}
             recentEvents={recentEvents}
             onGo={onSelectMenu}
