@@ -1,19 +1,17 @@
 import { useState } from "react";
 import { AddressType } from "@phantom/browser-sdk";
 import { useAccounts, useConnect } from "@phantom/react-sdk";
-import { clearSession, getSession, login, loginWithWallet, register, type AuthSession } from "../lib/api";
-
-type Props = {
-  onSessionChange: (session: AuthSession | null) => void;
-};
+import { clearSession, getSession, login, loginWithWallet, register } from "../lib/api";
+import { useSessionContext } from "../contexts/SessionContext";
 
 type MainTab = "login" | "signup";
 type LoginMode = "id" | "wallet";
 
-export function AuthPanel({ onSessionChange }: Props) {
+export function AuthPanel() {
   const { connect } = useConnect();
   const accounts = useAccounts();
   const solanaAccount = accounts?.find((account) => account.addressType === AddressType.solana);
+  const { setSession } = useSessionContext();
 
   const [mainTab, setMainTab] = useState<MainTab>("login");
   const [loginMode, setLoginMode] = useState<LoginMode>("id");
@@ -41,7 +39,7 @@ export function AuthPanel({ onSessionChange }: Props) {
     setLoading(true);
     try {
       const next = await login(username, password);
-      onSessionChange(next);
+      setSession(next);
       showMsg("ok", `로그인 완료 — ${next.username} (${next.role})`);
     } catch (error) {
       showMsg("err", error instanceof Error ? error.message : "로그인 실패");
@@ -69,7 +67,7 @@ export function AuthPanel({ onSessionChange }: Props) {
         return;
       }
       const next = await loginWithWallet(addr);
-      onSessionChange(next);
+      setSession(next);
       showMsg("ok", `지갑 로그인 완료 — ${next.username} (${next.role})`);
     } catch (error) {
       showMsg("err", error instanceof Error ? error.message : "지갑 로그인 실패");
@@ -81,7 +79,7 @@ export function AuthPanel({ onSessionChange }: Props) {
   // ── 로그아웃 ───────────────────────────────────────
   const onLogout = async () => {
     await clearSession();
-    onSessionChange(null);
+    setSession(null);
     showMsg("info", "로그아웃 완료");
   };
 
@@ -95,7 +93,7 @@ export function AuthPanel({ onSessionChange }: Props) {
     setLoading(true);
     try {
       const next = await register(regUsername, regPassword);
-      onSessionChange(next);
+      setSession(next);
       showMsg("ok", `가입 및 로그인 완료 — ${next.username} (viewer)`);
       setRegUsername("");
       setRegPassword("");

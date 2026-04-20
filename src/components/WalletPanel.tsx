@@ -14,10 +14,11 @@ import {
   loginWithWallet,
   type AccountAssetBalance,
   type AccountAssetSymbol,
-  type AuthSession,
   type DepositPositionPayload,
   type UserWallet
 } from "../lib/api";
+import { usePortfolioContext } from "../contexts/PortfolioContext";
+import { useSessionContext } from "../contexts/SessionContext";
 import {
   fetchOnChainPortfolioWithFallback,
   getSolanaRpcCandidates,
@@ -45,7 +46,6 @@ type WalletPanelProps = {
   onOpenPortfolio?: () => void;
   onOpenMyOverview?: () => void;
   onOpenAuth?: () => void;
-  onSessionChange?: (session: AuthSession | null) => void;
 };
 
 type LedgerRow = {
@@ -196,12 +196,13 @@ export function WalletPanel({
   onOpenActivity,
   onOpenPortfolio,
   onOpenMyOverview,
-  onOpenAuth,
-  onSessionChange
+  onOpenAuth
 }: WalletPanelProps) {
   const { connect } = useConnect();
   const { disconnect } = useDisconnect();
   const { isConnected } = usePhantom();
+  const { setSession } = useSessionContext();
+  const { positions: contextPositions, withdrawLedger: contextWithdrawLedger, portfolioTotalUsd } = usePortfolioContext();
   const accounts = useAccounts();
   const solanaAccount = accounts?.find((account) => account.addressType === AddressType.solana);
   const [network, setNetwork] = useState<"mainnet" | "devnet">("mainnet");
@@ -224,6 +225,9 @@ export function WalletPanel({
   const [accountAssets, setAccountAssets] = useState<AccountAssetBalance[]>([]);
   const [accountMenuError, setAccountMenuError] = useState("");
   const accountMenuRef = useRef<HTMLDivElement>(null);
+  const effectivePositions = positions.length > 0 ? positions : contextPositions;
+  const effectiveWithdrawLedger = withdrawLedger.length > 0 ? withdrawLedger : contextWithdrawLedger;
+  const effectivePortfolioUsd = portfolioUsd > 0 ? portfolioUsd : portfolioTotalUsd;
 
   useEffect(() => {
     const sync = (): void => {
@@ -334,7 +338,7 @@ export function WalletPanel({
 
   const ledgerRows = useMemo(() => {
     const rows: LedgerRow[] = [];
-    for (const p of positions) {
+    for (const p of effectivePositions) {
       rows.push({
         id: `in-${p.id}`,
         kind: "입금",
@@ -343,7 +347,7 @@ export function WalletPanel({
         createdAt: p.createdAt
       });
     }
-    for (const w of withdrawLedger) {
+    for (const w of effectiveWithdrawLedger) {
       rows.push({
         id: w.id,
         kind: "출금",
@@ -352,7 +356,7 @@ export function WalletPanel({
       });
     }
     return rows.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [positions, withdrawLedger]);
+  }, [effectivePositions, effectiveWithdrawLedger]);
 
   const rpcCandidates = useMemo(() => getSolanaRpcCandidates(network), [network]);
   const copyAddress = useCallback(async () => {
@@ -404,14 +408,14 @@ export function WalletPanel({
     setPendingWalletLogin(false);
     void loginWithWallet(addr)
       .then((session) => {
-        onSessionChange?.(session);
+        setSession(session);
         setAppUsername(session.username);
         setLoginChoiceOpen(false);
       })
       .catch((error) => {
         setConnectError(error instanceof Error ? error.message : "지갑 로그인 실패");
       });
-  }, [onSessionChange, pendingWalletLogin, solanaAccount?.address]);
+  }, [pendingWalletLogin, setSession, solanaAccount?.address]);
 
   const onConnect = async () => {
     setIsConnecting(true);
@@ -446,7 +450,7 @@ export function WalletPanel({
     if (solanaAccount?.address) {
       try {
         const session = await loginWithWallet(solanaAccount.address);
-        onSessionChange?.(session);
+        setSession(session);
         setAppUsername(session.username);
         setLoginChoiceOpen(false);
         setPendingWalletLogin(false);
@@ -486,12 +490,12 @@ export function WalletPanel({
   const onLogout = async () => {
     await clearSession();
     await disconnect().catch(() => undefined);
+    setSession(null);
     setAppUsername("");
     setLinkedWallets([]);
     setAccountAssets([]);
     setAccountMenuOpen(false);
     setWalletCreateOpen(false);
-    onSessionChange?.(null);
   };
 
   const accountAssetsTotal = accountAssets.reduce((acc, asset) => acc + asset.usdValue, 0);
@@ -605,7 +609,7 @@ export function WalletPanel({
       await disconnect();
       if (appUsername.startsWith("wallet_")) {
         await clearSession();
-        onSessionChange?.(null);
+        setSession(null);
         setAppUsername("");
       }
     } catch (error) {
@@ -644,11 +648,11 @@ export function WalletPanel({
                 </tr>
               ))}
             </tbody>
-            {(portfolioUsd > 0 || positions.length > 0) && (
+            {(effectivePortfolioUsd > 0 || effectivePositions.length > 0) && (
               <tfoot>
                 <tr>
                   <td colSpan={compact ? 3 : 4} className="wallet-ledger-foot">
-                    예치 잔액 <strong>${portfolioUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+                    예치 잔액 <strong>${effectivePortfolioUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
                   </td>
                 </tr>
               </tfoot>
