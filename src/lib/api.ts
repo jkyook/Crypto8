@@ -1272,14 +1272,14 @@ export async function createDepositPositionRemote(payload: {
   return data.position;
 }
 
-export async function withdrawDepositRemote(amountUsd: number): Promise<{ withdrawnUsd: number }> {
+export async function withdrawDepositRemote(amountUsd: number): Promise<{ withdrawnUsd: number; mode?: string }> {
   const response = await authedFetch("/api/portfolio/withdraw", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ amountUsd })
   });
   const text = await response.text();
-  let data = {} as { ok?: boolean; withdrawnUsd?: number; message?: string };
+  let data = {} as { ok?: boolean; withdrawnUsd?: number; message?: string; mode?: string };
   try {
     if (text) {
       data = JSON.parse(text) as typeof data;
@@ -1305,7 +1305,7 @@ export async function withdrawDepositRemote(amountUsd: number): Promise<{ withdr
     throw new Error("인출 반영 실패");
   }
   const withdrawnUsd = typeof data.withdrawnUsd === "number" ? data.withdrawnUsd : 0;
-  return { withdrawnUsd };
+  return { withdrawnUsd, mode: data.mode };
 }
 
 export async function withdrawProtocolExposureRemote(payload: {
@@ -1313,14 +1313,14 @@ export async function withdrawProtocolExposureRemote(payload: {
   protocol: string;
   chain?: string;
   pool?: string;
-}): Promise<{ withdrawnUsd: number }> {
+}): Promise<{ withdrawnUsd: number; mode?: string }> {
   const response = await authedFetch("/api/portfolio/withdraw-protocol", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
   const text = await response.text();
-  let data = {} as { ok?: boolean; withdrawnUsd?: number; message?: string };
+  let data = {} as { ok?: boolean; withdrawnUsd?: number; message?: string; mode?: string };
   try {
     if (text) {
       data = JSON.parse(text) as typeof data;
@@ -1339,20 +1339,20 @@ export async function withdrawProtocolExposureRemote(payload: {
     throw new Error(msg ?? "프로토콜별 인출 반영 실패");
   }
   const withdrawnUsd = typeof data.withdrawnUsd === "number" ? data.withdrawnUsd : 0;
-  return { withdrawnUsd };
+  return { withdrawnUsd, mode: data.mode };
 }
 
 export async function withdrawProductDepositRemote(payload: {
   amountUsd: number;
   productName: string;
-}): Promise<{ withdrawnUsd: number }> {
+}): Promise<{ withdrawnUsd: number; mode?: string }> {
   const response = await authedFetch("/api/portfolio/withdraw-product", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
   const text = await response.text();
-  let data = {} as { ok?: boolean; withdrawnUsd?: number; message?: string };
+  let data = {} as { ok?: boolean; withdrawnUsd?: number; message?: string; mode?: string };
   try {
     if (text) {
       data = JSON.parse(text) as typeof data;
@@ -1371,7 +1371,7 @@ export async function withdrawProductDepositRemote(payload: {
     throw new Error(msg ?? "상품별 인출 반영 실패");
   }
   const withdrawnUsd = typeof data.withdrawnUsd === "number" ? data.withdrawnUsd : 0;
-  return { withdrawnUsd };
+  return { withdrawnUsd, mode: data.mode };
 }
 
 export async function fetchAaveUsdcPosition(
@@ -1433,6 +1433,23 @@ export async function buildAaveUsdcWithdrawTx(
     throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "Aave USDC 출금 트랜잭션 생성 실패");
   }
   return { amountRaw: raw.amountRaw, transaction: raw.transaction, position: raw.position };
+}
+
+export async function checkAaveUsdcTxReceipt(
+  chain: AaveUsdcChain,
+  txHash: string,
+  init: Pick<RequestInit, "signal"> = {}
+): Promise<{ status: "pending" | "confirmed"; receipt?: { from: string; to: string | null; blockNumber: string | null; status: string } }> {
+  const response = await authedFetch(`/api/aave/usdc/tx/${encodeURIComponent(chain)}/${encodeURIComponent(txHash)}`, init);
+  const raw = (await readJsonFromApiResponse(response, "Aave USDC 트랜잭션 영수증 조회")) as {
+    message?: string;
+    status?: "pending" | "confirmed";
+    receipt?: { from: string; to: string | null; blockNumber: string | null; status: string };
+  };
+  if (!response.ok || (raw.status !== "pending" && raw.status !== "confirmed")) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "Aave USDC 트랜잭션 영수증 조회 실패");
+  }
+  return { status: raw.status, receipt: raw.receipt };
 }
 
 export async function confirmAaveUsdcTx(

@@ -1,29 +1,150 @@
-import { useEffect, useState } from "react";
-import { ChainExposureDonut } from "../common/ChainExposureDonut";
-import { TradeControls } from "../common/TradeControls";
-import { OrchestratorBoard } from "../OrchestratorBoard";
-import { getSession, login } from "../../lib/api";
-import { DEFAULT_TARGET_APR, WITHDRAW_DONE_TOAST_MS } from "../../lib/constants";
-import { estimateAnnualYieldUsd } from "../../lib/portfolioMetrics";
-import { getProtocolSortRank, inferProtocolChain } from "../../lib/protocolChain";
-import type { ProtocolDetailRow } from "../../types/portfolio";
-import { usePortfolioContext } from "../../contexts/PortfolioContext";
+import { useMemo, useState } from "react";
+import { getSession, login } from "../lib/api";
+import { aggregateChainUsdFromPositions, estimateAnnualYieldUsd } from "../lib/portfolioMetrics";
+import { OPTION_L2_STAR } from "../lib/strategyEngine";
+import { OrchestratorBoard } from "./OrchestratorBoard";
+import type { DepositPosition, ProtocolDetailRow } from "../types";
 
-export function PortfolioPanel() {
-  const {
-    positions,
-    onchainPositions,
-    canPersistPortfolio,
-    handleWithdrawProtocolExposure,
-    refreshPositions,
-    refreshWithdrawLedgerFromServer,
-    refreshOnchainPositions
-  } = usePortfolioContext();
+const PORTFOLIO_DONUT_COLORS = ["#8b7bff", "#3bd4ff", "#47d9a8", "#ffb86b"];
+const PROTOCOL_SORT_ORDER = ["Aave", "Uniswap", "Orca"] as const;
+
+function inferProtocolChain(protocolName: string, poolLabel?: string): string {
+  if (poolLabel) {
+    const chainPart = poolLabel.split("·")[0].trim().split("/")[0].trim();
+    const lc = chainPart.toLowerCase();
+    if (lc === "arbitrum" || lc.includes("arbitrum")) return "Arbitrum";
+    if (lc === "base" || lc.includes("base")) return "Base";
+    if (lc === "solana" || lc.includes("solana")) return "Solana";
+    if (lc === "ethereum" || lc.includes("ethereum")) return "Ethereum";
+    if (lc === "sol") return "Solana";
+    if (lc === "eth") return "Ethereum";
+  }
+  const key = protocolName.toLowerCase();
+  if (key.includes("orca")) return "Solana";
+  if (key.includes("aave")) return "Arbitrum";
+  if (key.includes("uniswap")) return "Arbitrum";
+  return "Multi";
+}
+
+function getProtocolSortRank(protocolName: string): number {
+  const key = protocolName.toLowerCase();
+  const rank = PROTOCOL_SORT_ORDER.findIndex((name) => key.includes(name.toLowerCase()));
+  return rank === -1 ? PROTOCOL_SORT_ORDER.length : rank;
+}
+
+function ChainExposureDonut({
+  positions,
+  compact = false
+}: {
+  positions: DepositPosition[];
+  compact?: boolean;
+}) {
+  const circumference = 2 * Math.PI * 46;
+  const { useLiveChains, chainUsd, chartData, donutSegments } = useMemo(() => {
+    const cUsd = aggregateChainUsdFromPositions(positions);
+    const cTotal = Object.values(cUsd).reduce((a, b) => a + b, 0);
+    const templateWeights = OPTION_L2_STAR.reduce<Record<string, number>>((acc, item) => {
+      if (item.chain === "Multi") return acc;
+      acc[item.chain] = (acc[item.chain] ?? 0) + item.targetWeight;
+      return acc;
+    }, {});
+    const live = positions.length > 0 && cTotal > 0;
+    const rawChart = live
+      ? Object.entries(cUsd)
+          .filter(([, usd]) => usd > 0)
+          .map(([chain, usd]) => ({ chain, weight: usd / cTotal }))
+          .sort((a, b) => b.weight - a.weight)
+      : Object.entries(templateWeights).map(([chain, weight]) => ({ chain, weight }));
+    const rawTotalWeight = rawChart.reduce((sum, item) => sum + item.weight, 0);
+    const chart = rawTotalWeight > 0 ? rawChart.map((item) => ({ ...item, weight: item.weight / rawTotalWeight })) : rawChart;
+    let acc = 0;
+    const segments = chart.map((item, idx) => {
+      const dash = circumference * item.weight;
+      const offset = circumference * (1 - acc);
+      acc += item.weight;
+      return { chain: item.chain, dash, offset, color: PORTFOLIO_DONUT_COLORS[idx % PORTFOLIO_DONUT_COLORS.length] };
+    });
+    return { useLiveChains: live, chainUsd: cUsd, chartData: chart, donutSegments: segments };
+  }, [positions, circumference]);
+
+  return (
+    <div className={compact ? "chain-exposure-card chain-exposure-card--compact" : "overview-card overview-card--donut"}>
+      <p className="kpi-label">{useLiveChains ? "체인별 노출 (예치 기준)" : "체인 비중 (전략 템플릿)"}</p>
+      {!useLiveChains ? <p className="portfolio-overview-footnote">예치 전 Option L2* 기본 배분입니다.</p> : null}
+      <div className="donut-wrap">
+        <svg viewBox="0 0 120 120" className="donut-chart">
+          <circle cx="60" cy="60" r="46" fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="12" />
+          {donutSegments.map((seg) => (
+            <circle
+              key={seg.chain}
+              cx="60"
+              cy="60"
+              r="46"
+              fill="none"
+              stroke={seg.color}
+              strokeWidth="12"
+              strokeDasharray={`${seg.dash} ${Math.max(circumference - seg.dash, 0)}`}
+              strokeDashoffset={seg.offset}
+              transform="rotate(-90 60 60)"
+            />
+          ))}
+        </svg>
+        <div className="legend-list">
+          {chartData.map((item, idx) => (
+            <p key={item.chain}>
+              <span className="legend-dot" style={{ backgroundColor: PORTFOLIO_DONUT_COLORS[idx % PORTFOLIO_DONUT_COLORS.length] }} />
+              {item.chain}: {(item.weight * 100).toFixed(1)}%
+              {useLiveChains ? <span className="legend-usd"> (${(chainUsd[item.chain] ?? 0).toFixed(0)})</span> : null}
+            </p>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TradeControls({
+  onDeposit,
+  onWithdraw,
+  disabled,
+  size = "compact"
+}: {
+  onDeposit: () => void;
+  onWithdraw: () => void;
+  disabled?: boolean;
+  size?: "compact" | "large";
+}) {
+  return (
+    <div className={`inline-trade-controls inline-trade-controls--${size}`} aria-label="입금 인출">
+      <button type="button" className="inline-trade-btn inline-trade-btn-plus" onClick={onDeposit} disabled={disabled} aria-label="입금">
+        +
+      </button>
+      <button type="button" className="inline-trade-btn inline-trade-btn-minus" onClick={onWithdraw} disabled={disabled} aria-label="인출">
+        -
+      </button>
+    </div>
+  );
+}
+
+export function PortfolioPanel({
+  positions,
+  onExecutionComplete,
+  onWithdraw,
+  onWithdrawTarget,
+  canPersistToServer
+}: {
+  positions: DepositPosition[];
+  onExecutionComplete?: () => void | Promise<void>;
+  onWithdraw?: (amountUsd: number) => Promise<void>;
+  onWithdrawTarget?: (amountUsd: number, target: Pick<ProtocolDetailRow, "name" | "chain" | "pool">) => Promise<void>;
+  canPersistToServer?: boolean;
+}) {
   const [protocolAmounts, setProtocolAmounts] = useState<Record<string, number>>({});
   const [protocolDepositDraft, setProtocolDepositDraft] = useState<ProtocolDetailRow | null>(null);
   const [protocolDepositKey, setProtocolDepositKey] = useState(0);
   const [showPositionDetails, setShowPositionDetails] = useState(false);
 
+  // ── 인출 상태 ──────────────────────────────────────────────
   const [withdrawDraft, setWithdrawDraft] = useState<{ row: ProtocolDetailRow; maxUsd: number } | null>(null);
   const [withdrawAmtUsd, setWithdrawAmtUsd] = useState(0);
   const [withdrawVerifyPwd, setWithdrawVerifyPwd] = useState("");
@@ -35,7 +156,9 @@ export function PortfolioPanel() {
 
   const onOpenWithdraw = (row: ProtocolDetailRow) => {
     const inputAmt = protocolAmounts[row.key] ?? 0;
-    const initAmt = inputAmt > 0 && inputAmt <= row.amount ? inputAmt : row.amount;
+    const initAmt = inputAmt > 0 && inputAmt <= row.amount
+      ? inputAmt
+      : row.amount;
     setWithdrawDraft({ row, maxUsd: row.amount });
     setWithdrawAmtUsd(Number(initAmt.toFixed(2)));
     setWithdrawVerifyPwd("");
@@ -58,19 +181,18 @@ export function PortfolioPanel() {
     setWithdrawVerifyError("");
     try {
       await login(session.username, withdrawVerifyPwd);
-      const { mode } = await handleWithdrawProtocolExposure(withdrawAmount, {
-        name: withdrawDraft.row.name,
-        chain: withdrawDraft.row.chain,
-        pool: withdrawDraft.row.pool
-      });
-      const doneMsg =
-        mode === "ledger"
-          ? `$${withdrawAmount.toFixed(2)} 장부 인출 반영 완료 — 온체인 출금은 Aave 앱에서 직접 진행해 주세요`
-          : `$${withdrawAmount.toFixed(2)} 인출 처리 완료`;
+      await (onWithdrawTarget
+        ? onWithdrawTarget(withdrawAmount, {
+            name: withdrawDraft.row.name,
+            chain: withdrawDraft.row.chain,
+            pool: withdrawDraft.row.pool
+          })
+        : onWithdraw?.(withdrawAmount));
+      const doneMsg = `$${withdrawAmount.toFixed(2)} 인출 처리 완료`;
       setWithdrawDraft(null);
       setWithdrawVerifyPwd("");
       setWithdrawDoneMsg(doneMsg);
-      window.setTimeout(() => setWithdrawDoneMsg(""), WITHDRAW_DONE_TOAST_MS);
+      window.setTimeout(() => setWithdrawDoneMsg(""), 5000);
     } catch (error) {
       setWithdrawVerifyError(error instanceof Error ? error.message : "인출 확인 실패");
     } finally {
@@ -104,38 +226,6 @@ export function PortfolioPanel() {
     return a.pool.localeCompare(b.pool, "ko-KR", { sensitivity: "base" });
   });
   const annualYield = estimateAnnualYieldUsd(positions);
-  const verificationCounts = onchainPositions.reduce(
-    (acc, position) => {
-      const status = position.verify?.status ?? "rpc_error";
-      if (status === "verified") acc.verified += 1;
-      else if (status === "drift") acc.drift += 1;
-      else if (status === "closed_onchain") acc.closed += 1;
-      else if (status === "rpc_error") acc.rpcError += 1;
-      else acc.unsupported += 1;
-      return acc;
-    },
-    { verified: 0, drift: 0, closed: 0, rpcError: 0, unsupported: 0 }
-  );
-
-  useEffect(() => {
-    void refreshOnchainPositions();
-  }, [refreshOnchainPositions]);
-
-  const positionStatusBadge = (status: string) => {
-    if (status === "verified") return "badge badge-low";
-    if (status === "drift") return "badge badge-medium";
-    if (status === "closed_onchain") return "badge badge-high";
-    if (status === "rpc_error") return "badge badge-critical";
-    return "badge badge-medium";
-  };
-
-  const positionStatusLabel = (status: string) => {
-    if (status === "verified") return "확인됨";
-    if (status === "drift") return "차이 있음";
-    if (status === "closed_onchain") return "온체인 종료";
-    if (status === "rpc_error") return "조회 실패";
-    return "미지원";
-  };
 
   return (
     <section className="card portfolio-panel-card">
@@ -161,67 +251,6 @@ export function PortfolioPanel() {
         </div>
         <ChainExposureDonut positions={positions} compact />
       </div>
-      <div className="portfolio-section-head">
-        <div>
-          <h3>온체인 검증 포지션</h3>
-          <p>새 positions 테이블 기준으로 DB 금액과 온체인 잔고를 함께 보여줍니다.</p>
-        </div>
-        <div className="portfolio-overview-metrics">
-          <div>
-            <span>확인됨</span>
-            <strong>{verificationCounts.verified}건</strong>
-          </div>
-          <div>
-            <span>차이 있음</span>
-            <strong>{verificationCounts.drift}건</strong>
-          </div>
-          <div>
-            <span>조회 실패</span>
-            <strong>{verificationCounts.rpcError}건</strong>
-          </div>
-        </div>
-      </div>
-      <table className="protocol-detail-table portfolio-onchain-table">
-        <thead>
-          <tr>
-            <th>프로토콜</th>
-            <th>체인</th>
-            <th>상태</th>
-            <th>DB 금액</th>
-            <th>온체인 금액</th>
-            <th>drift</th>
-            <th>검증 시각</th>
-            <th>메모</th>
-          </tr>
-        </thead>
-        <tbody>
-          {onchainPositions.map((position) => {
-            const verify = position.verify ?? undefined;
-            const status = verify?.status ?? position.status;
-            return (
-              <tr key={position.id}>
-                <td data-label="프로토콜">{position.protocol}</td>
-                <td data-label="체인">{position.chain}</td>
-                <td data-label="상태">
-                  <span className={positionStatusBadge(status)}>
-                    {positionStatusLabel(status)}
-                  </span>
-                </td>
-                <td data-label="DB 금액">${position.amountUsd.toFixed(2)}</td>
-                <td data-label="온체인 금액">{verify?.onchainAmountUsd == null ? "—" : `$${verify.onchainAmountUsd.toFixed(2)}`}</td>
-                <td data-label="drift">{verify?.driftPct == null ? "—" : `${verify.driftPct.toFixed(1)}%`}</td>
-                <td data-label="검증 시각">{verify?.verifiedAt ? new Date(verify.verifiedAt).toLocaleString() : "—"}</td>
-                <td data-label="메모">{verify?.detail ?? "—"}</td>
-              </tr>
-            );
-          })}
-          {onchainPositions.length === 0 ? (
-            <tr>
-              <td colSpan={8}>아직 온체인 검증 포지션이 없습니다.</td>
-            </tr>
-          ) : null}
-        </tbody>
-      </table>
       <h3>프로토콜별 예치 상세</h3>
       <table className="protocol-detail-table">
         <thead>
@@ -289,7 +318,7 @@ export function PortfolioPanel() {
                     className="protocol-withdraw-action"
                     onClick={() => onOpenWithdraw(row)}
                     title="이 프로토콜에서 인출합니다."
-                    disabled={!canPersistPortfolio || row.amount <= 0}
+                    disabled={!canPersistToServer || row.amount <= 0}
                   >
                     인출
                   </button>
@@ -315,6 +344,7 @@ export function PortfolioPanel() {
           )}
         </tbody>
       </table>
+      {/* ── 인출 확인 패널 ── */}
       {withdrawDraft ? (
         <div className="protocol-withdraw-confirm" role="dialog" aria-label="인출 확인">
           <p className="protocol-withdraw-confirm-title">
@@ -406,7 +436,7 @@ export function PortfolioPanel() {
               key={`${protocolDepositDraft.name}-${protocolDepositKey}`}
               initialDepositUsd={protocolDepositDraft.amount}
               initialProductName={`${protocolDepositDraft.name} ${protocolDepositDraft.chain} direct pool`}
-              initialEstYieldUsd={protocolDepositDraft.amount * DEFAULT_TARGET_APR}
+              initialEstYieldUsd={protocolDepositDraft.amount * 0.08}
               initialEstFeeUsd={0}
               previewRowsOverride={[
                 {
@@ -416,11 +446,7 @@ export function PortfolioPanel() {
                   allocationUsd: protocolDepositDraft.amount
                 }
               ]}
-              onExecutionComplete={async () => {
-                await refreshPositions();
-                await refreshOnchainPositions();
-                await refreshWithdrawLedgerFromServer();
-              }}
+              onExecutionComplete={onExecutionComplete}
             />
           </div>
         </div>

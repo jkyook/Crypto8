@@ -4,6 +4,7 @@ import { useAccounts, useEthereum, usePhantom } from "@phantom/react-sdk";
 import {
   buildAaveUsdcSupplyTx,
   buildAaveUsdcWithdrawTx,
+  checkAaveUsdcTxReceipt,
   confirmAaveUsdcTx,
   fetchAaveUsdcPosition,
   fetchMarketPrices,
@@ -666,6 +667,23 @@ export function OrchestratorBoard({
       setAaveTxStatus(`${tx.description} · 지갑 서명 대기`);
       const txHash = await sendAaveTransaction(tx);
       setAaveTxStatus(`${tx.kind === "approve" ? "승인" : "입금"} 제출됨: ${txHash}`);
+      if (tx.kind === "approve") {
+        let approveConfirmed = false;
+        const maxAttempts = 20;
+        for (let i = 0; i < maxAttempts; i += 1) {
+          setAaveTxStatus(`approve 온체인 확인 중... (${i + 1}/${maxAttempts})`);
+          const receipt = await checkAaveUsdcTxReceipt(aaveUsdcChain, txHash);
+          if (receipt.status === "confirmed") {
+            approveConfirmed = true;
+            setAaveTxStatus("approve 확인 완료 — supply 준비 중");
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+        if (!approveConfirmed) {
+          throw new Error("Aave approve receipt confirmation timed out");
+        }
+      }
       if (tx.kind === "supply") {
         supplyHash = txHash;
       }

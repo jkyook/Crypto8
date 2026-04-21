@@ -49,6 +49,7 @@ import { linkUserWallet, listUserWallets } from "./userWallets";
 import {
   buildAaveUsdcSupplyTransactions,
   buildAaveUsdcWithdrawTransaction,
+  checkAaveUsdcTransaction,
   confirmAaveUsdcTransaction,
   getAaveUsdcPosition
 } from "./aaveUsdc";
@@ -907,7 +908,7 @@ app.post("/api/portfolio/withdraw", requireAuth(["orchestrator", "security", "vi
     return;
   }
   const withdrawnUsd = await withdrawDepositAmount(username, body.amountUsd);
-  res.json({ ok: true, withdrawnUsd });
+  res.json({ ok: true, withdrawnUsd, mode: "ledger" });
 });
 
 app.post("/api/portfolio/withdraw-product", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
@@ -924,7 +925,7 @@ app.post("/api/portfolio/withdraw-product", requireAuth(["orchestrator", "securi
   try {
     assertValidWithdrawAmount(body.amountUsd);
     const withdrawnUsd = await withdrawProductDepositAmount(username, body.productName, body.amountUsd);
-    res.json({ ok: true, withdrawnUsd });
+    res.json({ ok: true, withdrawnUsd, mode: "ledger" });
   } catch (error) {
     res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "withdraw failed" });
   }
@@ -948,7 +949,7 @@ app.post("/api/portfolio/withdraw-protocol", requireAuth(["orchestrator", "secur
       chain: typeof body.chain === "string" ? body.chain : undefined,
       pool: typeof body.pool === "string" ? body.pool : undefined
     });
-    res.json({ ok: true, withdrawnUsd });
+    res.json({ ok: true, withdrawnUsd, mode: "ledger" });
   } catch (error) {
     res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "withdraw failed" });
   }
@@ -1002,6 +1003,16 @@ app.post("/api/aave/usdc/withdraw-tx", requireAuth(["orchestrator", "security", 
     res.json({ ok: true, ...result });
   } catch (error) {
     res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "Aave withdraw tx build failed" });
+  }
+});
+
+app.get("/api/aave/usdc/tx/:chain/:txHash", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+  const { chain, txHash } = req.params as { chain: string; txHash: string };
+  try {
+    const result = await checkAaveUsdcTransaction(chain, txHash);
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "Aave tx receipt lookup failed" });
   }
 });
 

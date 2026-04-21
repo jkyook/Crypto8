@@ -23,11 +23,13 @@ import { arbitrum, base } from "viem/chains";
 import { getDb } from "./db";
 import { createDepositPosition } from "./positions";
 import {
+  createDepositIntentsFromAdapterResults,
   createExecution,
   createPositionFromExecution,
+  updateDepositIntentStatus,
   updateExecutionConfirmed
 } from "./intentStore";
-import { randomUUID } from "crypto";
+import { createJob } from "./store";
 
 export type AaveUsdcChain = "Arbitrum" | "Base";
 
@@ -230,6 +232,10 @@ function getClient(chain: AaveUsdcChain) {
     chain: AAVE_USDC[chain].chain,
     transport: http(rpcUrl, { timeout: 12_000 })
   });
+}
+
+async function getTransactionReceipt(chain: AaveUsdcChain, txHash: string) {
+  return getClient(chain).getTransactionReceipt({ hash: txHash as `0x${string}` }).catch(() => null);
 }
 
 /**
@@ -518,7 +524,7 @@ export async function confirmAaveUsdcTransaction(
   }
 
   const client = getClient(chain);
-  const receipt = await client.getTransactionReceipt({ hash: txHash }).catch(() => null);
+  const receipt = await getTransactionReceipt(chain, txHash);
 
   if (!receipt) {
     return { status: "pending" };
@@ -546,6 +552,37 @@ export async function confirmAaveUsdcTransaction(
     const existing = await db.aaveUsdcPosition.findUnique({ where: { depositTxHash: txHash } });
     if (existing) {
       return { status: "confirmed", position: existing };
+    }
+
+    const directJob = await createJob(
+      {
+        depositUsd: input.amountUsdc,
+        isRangeOut: false,
+        isDepegAlert: false,
+        hasPendingRelease: false,
+        sourceAsset: "USDC",
+        productNetwork: chain,
+        productSubtype: chain === "Base" ? "base-stable" : "arb-stable"
+      },
+      username
+    );
+    const [intent] = await createDepositIntentsFromAdapterResults(
+      directJob.id,
+      username,
+      [
+        {
+          protocol: "Aave",
+          chain,
+          action: "USDC Supply (eMode)",
+          allocationUsd: input.amountUsdc,
+          txId: txHash,
+          status: "confirmed"
+        }
+      ],
+      "USDC"
+    );
+    if (!intent) {
+      throw new Error("Aave direct intent creation failed");
     }
 
     // 레거시 DepositPosition 기록
@@ -576,25 +613,19 @@ export async function confirmAaveUsdcTransaction(
         updatedAt: now
       }
     });
+    await updateDepositIntentStatus(intent.id, "completed").catch(() => undefined);
+    await db.$executeRawUnsafe(`UPDATE jobs SET status = 'executed' WHERE id = ?`, directJob.id);
 
     // 새 Position 모델에 기록 (receipt 확인 후)
     // 임시 DepositIntent + Execution 생성 → Position 확정
     try {
-      const intentId = `di_aave_${randomUUID()}`;
-      await db.$executeRawUnsafe(
-        `INSERT OR IGNORE INTO deposit_intents
-          (id, job_id, username, protocol, chain, asset, amount_usd, action, status, created_at, updated_at)
-         VALUES (?, 'direct', ?, 'Aave', ?, 'USDC', ?, 'USDC Supply (eMode)', 'completed', ?, ?)`,
-        intentId, username, chain, input.amountUsdc, now, now
-      );
-
       const execution = await createExecution({
-        intentId,
+        intentId: intent.id,
         protocol: "Aave",
         chain,
         action: "USDC Supply (eMode)",
         txHash,
-        status: "submitted",
+        status: "confirmed",
         idempotencyKey: `aave_supply_${txHash}`
       });
 
@@ -670,3 +701,35 @@ export async function confirmAaveUsdcTransaction(
 }
 
 export const AAVE_USDC_CHAINS = Object.keys(AAVE_USDC) as AaveUsdcChain[];
+
+export async function checkAaveUsdcTransaction(
+  chainRaw: unknown,
+  txHashRaw: string
+): Promise<{
+  status: "pending" | "confirmed";
+  receipt?: {
+    from: string;
+    to: string | null;
+    blockNumber: string | null;
+    status: string;
+  };
+}> {
+  const chain = assertChain(chainRaw);
+  const txHash = txHashRaw.trim();
+  if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+    throw new Error("txHash invalid");
+  }
+  const receipt = await getTransactionReceipt(chain, txHash);
+  if (!receipt) {
+    return { status: "pending" };
+  }
+  return {
+    status: receipt.status === "success" ? "confirmed" : "pending",
+    receipt: {
+      from: receipt.from,
+      to: receipt.to ?? null,
+      blockNumber: receipt.blockNumber?.toString() ?? null,
+      status: receipt.status
+    }
+  };
+}
