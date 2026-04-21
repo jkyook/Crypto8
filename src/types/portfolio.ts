@@ -14,3 +14,16 @@ export type ProtocolDetailRow = {
   pool: string;
   amount: number;
 };
+
+/** 상품 카탈로그 단일 항목. ProductsPanel에서 사용. */
+export type YieldProduct = {
+  id: string;
+  name: string;
+  networkGroup: "multi" | "arbitrum" | "base" | "solana" | "ethereum";
+  subtype: string;
+  targetApr: number;
+  estFeeBps: number;
+  lockDays: number;
+  protocolMix: Array<{ name: string; weight: number; pool: string }>;
+  detail: string;
+};

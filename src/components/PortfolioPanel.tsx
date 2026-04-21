@@ -3,7 +3,7 @@ import { getSession, login } from "../lib/api";
 import { aggregateChainUsdFromPositions, estimateAnnualYieldUsd } from "../lib/portfolioMetrics";
 import { OPTION_L2_STAR } from "../lib/strategyEngine";
 import { OrchestratorBoard } from "./OrchestratorBoard";
-import type { DepositPosition, ProtocolDetailRow } from "../types";
+import type { DepositPosition, ProtocolDetailRow } from "../types/portfolio";
 
 const PORTFOLIO_DONUT_COLORS = ["#8b7bff", "#3bd4ff", "#47d9a8", "#ffb86b"];
 const PROTOCOL_SORT_ORDER = ["Aave", "Uniswap", "Orca"] as const;

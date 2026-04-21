@@ -14,7 +14,7 @@ import { OrchestratorBoard } from "./OrchestratorBoard";
 import { MarketAprTimeSeriesChart } from "./MarketAprTimeSeriesChart";
 import { DepositPlanner } from "./DepositPlanner";
 import type { ExecutionPreviewRow } from "../lib/executionPreview";
-import type { DepositPosition, YieldProduct } from "../types";
+import type { DepositPosition, YieldProduct } from "../types/portfolio";
 
 const APR_DAYS_PER_YEAR = 365;
 
