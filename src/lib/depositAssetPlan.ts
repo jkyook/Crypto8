@@ -62,8 +62,10 @@ export function buildDepositAssetReadiness(
   rows: ExecutionPreviewRow[],
   fallbackSourceChain?: string
 ): DepositAssetReadiness {
-  const selectedAsset = assets.find((asset) => asset.symbol === selectedSymbol);
-  const availableUsd = selectedAsset?.usdValue ?? 0;
+  const selectedAssets = assets.filter((asset) => asset.symbol === selectedSymbol);
+  const selectedAsset =
+    selectedAssets.sort((a, b) => b.usdValue - a.usdValue || b.amount - a.amount || a.chain.localeCompare(b.chain, "ko-KR"))[0];
+  const availableUsd = selectedAssets.reduce((sum, asset) => sum + asset.usdValue, 0);
   const sourceChain = selectedAsset?.chain ?? fallbackSourceChain ?? (selectedSymbol === "SOL" ? "Solana" : "Arbitrum");
   const isSufficient = Number.isFinite(depositUsd) && depositUsd > 0 && availableUsd >= depositUsd;
   const swapRows = rows.map((row) => {

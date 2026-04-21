@@ -31,6 +31,7 @@ export type AdapterExecutionContext = {
   productNetwork?: ProductNetwork;
   /** 상품 서브타입. 동일 네트워크 내 배분 비율 분기에 사용. */
   productSubtype?: ProductSubtype;
+  protocolReadiness?: ProtocolExecutionReadiness[];
 };
 
 export type AdapterExecutionResult = {
@@ -40,4 +41,14 @@ export type AdapterExecutionResult = {
   allocationUsd: number;
   txId: string;
   status: "simulated" | "submitted";
+};
+
+export type ProtocolExecutionReadiness = {
+  protocol: AdapterExecutionResult["protocol"];
+  chain: AdapterExecutionResult["chain"];
+  action: string;
+  implemented: boolean;
+  flagOn: boolean;
+  ready: boolean;
+  reason: string;
 };

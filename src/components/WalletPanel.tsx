@@ -18,6 +18,7 @@ import {
   type DepositPositionPayload,
   type UserWallet
 } from "../lib/api";
+import { fetchEvmPortfolioWithFallback, getEvmRpcCandidates, type EvmChainName } from "../lib/evmChainAssets";
 import { fetchOnChainPortfolioWithFallback, getSolanaRpcCandidates, solscanTokenUrl, type OnChainTokenRow } from "../lib/solanaChainAssets";
 
 export type WalletWithdrawLedgerLine = {
@@ -181,6 +182,58 @@ function ChainAssetsTable({
   );
 }
 
+function EvmAssetsTable({
+  loading,
+  error,
+  rows,
+  compact,
+  priceMeta
+}: {
+  loading: boolean;
+  error: string;
+  rows: AccountAssetBalance[];
+  compact: boolean;
+  priceMeta: string;
+}) {
+  if (loading) {
+    return <p className="wallet-chain-loading">EVM 체인에서 자산 조회 중…</p>;
+  }
+  if (error) {
+    return <p className="wallet-error">{error}</p>;
+  }
+  return (
+    <div className={compact ? "wallet-chain-table-wrap wallet-chain-table-wrap-compact" : "wallet-chain-table-wrap"}>
+      <h4 className="wallet-feed-title">블록체인 자산 (EVM)</h4>
+      {priceMeta ? <p className="wallet-price-meta">가격 기준: {priceMeta}</p> : null}
+      <table className="wallet-chain-table">
+        <thead>
+          <tr>
+            <th>체인</th>
+            <th>자산</th>
+            <th>잔고</th>
+            <th>USD 가치</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={`${row.chain}-${row.symbol}-${row.amount}`}>
+              <td>{row.chain}</td>
+              <td>{row.symbol}</td>
+              <td className="wallet-mono">{formatTokenAmount(row.amount)}</td>
+              <td className="wallet-mono">${row.usdValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+            </tr>
+          ))}
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={4}>EVM 잔고 없음</td>
+            </tr>
+          ) : null}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function WalletPanel({
   compact = false,
   positions = [],
@@ -198,11 +251,15 @@ export function WalletPanel({
   const { isConnected } = usePhantom();
   const accounts = useAccounts();
   const solanaAccount = accounts?.find((account) => account.addressType === AddressType.solana);
+  const evmAccount = accounts?.find((account) => account.addressType === AddressType.ethereum);
   const [network, setNetwork] = useState<"mainnet" | "devnet">("mainnet");
   const [chainLoading, setChainLoading] = useState(false);
   const [chainError, setChainError] = useState("");
   const [solOnChain, setSolOnChain] = useState<number | null>(null);
   const [tokensOnChain, setTokensOnChain] = useState<OnChainTokenRow[]>([]);
+  const [evmChainLoading, setEvmChainLoading] = useState(false);
+  const [evmChainError, setEvmChainError] = useState("");
+  const [evmAssetsOnChain, setEvmAssetsOnChain] = useState<AccountAssetBalance[]>([]);
   const [connectError, setConnectError] = useState<string>("");
   const [isConnecting, setIsConnecting] = useState(false);
   const [isCompactDetailOpen, setIsCompactDetailOpen] = useState(false);
@@ -287,7 +344,7 @@ export function WalletPanel({
   }, [accountMenuOpen]);
 
   const walletAddressLabel = useMemo(() => {
-    const chain = solanaAccount?.address;
+    const chain = solanaAccount?.address ?? evmAccount?.address;
     if (appUsername && chain) {
       return `${appUsername} · ${shortAddress(chain)}`;
     }
@@ -298,7 +355,8 @@ export function WalletPanel({
       return shortAddress(chain);
     }
     return "주소 없음";
-  }, [appUsername, solanaAccount?.address]);
+  }, [appUsername, evmAccount?.address, solanaAccount?.address]);
+  const primaryWalletAddress = solanaAccount?.address ?? evmAccount?.address;
 
   const ledgerRows = useMemo(() => {
     const rows: LedgerRow[] = [];
@@ -324,7 +382,7 @@ export function WalletPanel({
 
   const rpcCandidates = useMemo(() => getSolanaRpcCandidates(network), [network]);
   const copyAddress = useCallback(async () => {
-    const addr = solanaAccount?.address;
+    const addr = primaryWalletAddress;
     if (!addr) return;
     try {
       await navigator.clipboard.writeText(addr);
@@ -334,7 +392,7 @@ export function WalletPanel({
       setCopyHint("복사 실패");
       setTimeout(() => setCopyHint(""), 2000);
     }
-  }, [solanaAccount?.address]);
+  }, [primaryWalletAddress]);
 
   useEffect(() => {
     const addr = solanaAccount?.address;
@@ -364,7 +422,60 @@ export function WalletPanel({
     };
 
     void load();
-  }, [isConnected, solanaAccount?.address, network, rpcCandidates]);
+  }, [isConnected, network, rpcCandidates, solanaAccount?.address]);
+
+  useEffect(() => {
+    const addr = evmAccount?.address as `0x${string}` | undefined;
+    if (!isConnected || !addr) {
+      setEvmAssetsOnChain([]);
+      setEvmChainError("");
+      setEvmChainLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    const load = async () => {
+      setEvmChainLoading(true);
+      setEvmChainError("");
+      try {
+        const snapshot = await fetchMarketPrices({ signal: controller.signal });
+        if (controller.signal.aborted) return;
+        const settled = await Promise.allSettled(
+          (["Ethereum", "Arbitrum", "Base"] as EvmChainName[]).map((chainName) =>
+            fetchEvmPortfolioWithFallback(
+              getEvmRpcCandidates(chainName),
+              addr,
+              chainName,
+              snapshot.prices,
+              snapshot.source,
+              snapshot.updatedAt
+            )
+          )
+        );
+        if (controller.signal.aborted) return;
+        const nextRows: AccountAssetBalance[] = [];
+        settled.forEach((result) => {
+          if (result.status === "fulfilled") {
+            nextRows.push(...result.value.portfolio);
+          }
+        });
+        setEvmAssetsOnChain(nextRows);
+        if (settled.every((result) => result.status === "rejected")) {
+          setEvmChainError("EVM 잔고를 불러오지 못했습니다.");
+        }
+      } catch (e) {
+        if (!controller.signal.aborted) {
+          setEvmAssetsOnChain([]);
+          setEvmChainError(e instanceof Error ? e.message : "EVM 잔고를 불러오지 못했습니다.");
+        }
+      } finally {
+        if (!controller.signal.aborted) setEvmChainLoading(false);
+      }
+    };
+
+    void load();
+    return () => controller.abort();
+  }, [evmAccount?.address, isConnected]);
 
   useEffect(() => {
     const addr = solanaAccount?.address;
@@ -430,12 +541,24 @@ export function WalletPanel({
 
   const onLinkCurrentWallet = async () => {
     setConnectError("");
-    let addr = solanaAccount?.address;
+    let addr = primaryWalletAddress;
     if (!addr) {
       setPendingWalletLogin(true);
       await onConnect();
       setPendingWalletLogin(false);
-      addr = (window as { phantom?: { solana?: { publicKey?: { toString?: () => string } } } }).phantom?.solana?.publicKey?.toString?.();
+      addr =
+        primaryWalletAddress ??
+        (window as {
+          phantom?: {
+            solana?: { publicKey?: { toString?: () => string } };
+            ethereum?: { selectedAddress?: string };
+          };
+        }).phantom?.solana?.publicKey?.toString?.() ??
+        (window as {
+          phantom?: {
+            ethereum?: { selectedAddress?: string };
+          };
+        }).phantom?.ethereum?.selectedAddress;
     }
     if (!addr) {
       setConnectError("지갑 주소를 아직 읽지 못했습니다. 연결 후 다시 시도해 주세요.");
@@ -635,7 +758,7 @@ export function WalletPanel({
     };
     return (
       <div className={opts.compact ? "wallet-action-grid wallet-action-grid-compact" : "wallet-action-grid"}>
-        {solanaAccount?.address ? (
+        {primaryWalletAddress ? (
           <button type="button" className="wallet-action-btn" onClick={() => void copyAddress()}>
             주소 복사
           </button>
@@ -717,6 +840,7 @@ export function WalletPanel({
                   prices={marketPrices}
                   priceMeta={priceMeta}
                 />
+                <EvmAssetsTable loading={evmChainLoading} error={evmChainError} rows={evmAssetsOnChain} compact priceMeta={priceMeta} />
                 {ledgerSection}
                 {actionRow({ compact: true })}
               </div>
@@ -761,8 +885,8 @@ export function WalletPanel({
                 앱 계정 <strong className="wallet-mono">{appUsername}</strong>
               </p>
             ) : null}
-            <p className="wallet-full-address" title={solanaAccount?.address ?? undefined}>
-              {shortAddress(solanaAccount?.address)}
+            <p className="wallet-full-address" title={primaryWalletAddress ?? undefined}>
+              {shortAddress(primaryWalletAddress)}
             </p>
             {copyHint ? <p className="wallet-copy-hint wallet-copy-hint-in-panel">{copyHint}</p> : null}
             <NetworkStatusBlock network={network} plain />
@@ -778,6 +902,7 @@ export function WalletPanel({
             prices={marketPrices}
             priceMeta={priceMeta}
           />
+          <EvmAssetsTable loading={evmChainLoading} error={evmChainError} rows={evmAssetsOnChain} compact={false} priceMeta={priceMeta} />
           {ledgerSection}
           {actionRow({ compact: false })}
         </>

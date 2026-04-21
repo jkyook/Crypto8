@@ -16,7 +16,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       config={{
         appId,
         providers,
-        addressTypes: [AddressType.solana],
+        addressTypes: [AddressType.solana, AddressType.ethereum],
         authOptions: {
           redirectUrl
         }

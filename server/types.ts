@@ -61,6 +61,15 @@ export type ExecutionEventPayloadV1 = {
   correlationId?: string;
   positionId?: string;
   adapterResults?: AdapterResultSnapshot[];
+  skippedProtocols?: {
+    protocol: AdapterResultSnapshot["protocol"];
+    chain: AdapterResultSnapshot["chain"];
+    action: string;
+    implemented: boolean;
+    flagOn: boolean;
+    ready: boolean;
+    reason: string;
+  }[];
   retries?: number;
 };
 

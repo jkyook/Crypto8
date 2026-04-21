@@ -8,7 +8,7 @@ import type {
   RiskLevel
 } from "./types";
 import type { ExecutionAdapterBundle } from "./executionAdapter";
-import type { ExecutionMode } from "./adapters/types";
+import type { ExecutionMode, ProtocolExecutionReadiness } from "./adapters/types";
 import { getEffectiveExecutionMode, runExecutionAdapter } from "./executionAdapter";
 import { getDb } from "./db";
 import { MAX_DEPOSIT_USD } from "./limits";
@@ -253,12 +253,13 @@ async function findIdempotentEvent(jobId: string, idempotencyKey?: string): Prom
 async function runExecutionWithRetry(
   job: ExecutionJob,
   retryCount: number,
-  requestedMode?: ExecutionMode
+  requestedMode?: ExecutionMode,
+  protocolReadiness?: ProtocolExecutionReadiness[]
 ): Promise<{ bundle: ExecutionAdapterBundle; attempts: number }> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= retryCount; attempt += 1) {
     try {
-      const bundle = await runExecutionAdapter(job, requestedMode);
+      const bundle = await runExecutionAdapter(job, requestedMode, protocolReadiness);
       return { bundle, attempts: attempt };
     } catch (error) {
       lastError = error;
@@ -329,6 +330,7 @@ export type ExecuteJobMeta = {
   correlationId?: string;
   positionId?: string;
   requestedMode?: ExecutionMode;
+  protocolReadiness?: ProtocolExecutionReadiness[];
 };
 
 export async function executeJob(
@@ -422,7 +424,7 @@ export async function executeJob(
   let execution: ExecutionAdapterBundle;
   let attemptsUsed = maxAttempts;
   try {
-    const ran = await runExecutionWithRetry(job, maxAttempts, meta?.requestedMode);
+    const ran = await runExecutionWithRetry(job, maxAttempts, meta?.requestedMode, meta?.protocolReadiness);
     execution = ran.bundle;
     attemptsUsed = ran.attempts;
   } catch (error) {
@@ -454,6 +456,7 @@ export async function executeJob(
       txId: r.txId,
       status: r.status
     })),
+    skippedProtocols: execution.skippedProtocols,
     retries: attemptsUsed
   });
   await createExecutionEvent({

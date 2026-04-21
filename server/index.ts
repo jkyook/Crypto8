@@ -26,6 +26,7 @@ import { listAccountAssets } from "./accountAssets";
 import { estimateProtocolFees, type FeeEstimateInputRow } from "./feeEstimator";
 import { getMarketPriceSnapshot } from "./marketPricing";
 import { linkUserWallet, listUserWallets } from "./userWallets";
+import type { ProtocolExecutionReadiness } from "./adapters/types";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
@@ -612,7 +613,7 @@ app.get("/api/runtime/info", (_req, res) => {
     liveExecutionConfirmed: liveConfirmed,
     walletUiPolicy: "phantom-solana",
     serverExecutionNote:
-      "Phantom signMessage in the browser records user intent only. Protocol movements are performed by server-side adapters according to EXECUTION_MODE."
+      "현재 MVP는 로그인한 사용자가 본인 Job을 직접 실행 요청하는 구조입니다. Phantom signMessage는 실행 의사 확인용이며, 프로토콜 전송은 EXECUTION_MODE에 따라 서버 어댑터가 처리합니다."
   });
 });
 
@@ -934,6 +935,7 @@ app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orche
     correlationId?: unknown;
     positionId?: unknown;
     requestedMode?: unknown;
+    protocolReadiness?: unknown;
   };
   const headerCorr = req.headers["x-correlation-id"];
   const correlationId =
@@ -944,9 +946,24 @@ app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orche
         : undefined;
   const positionId = typeof body.positionId === "string" ? body.positionId : undefined;
   const requestedMode = body.requestedMode === "live" || body.requestedMode === "dry-run" ? body.requestedMode : undefined;
+  const protocolReadiness = Array.isArray(body.protocolReadiness)
+    ? body.protocolReadiness.filter((item): item is ProtocolExecutionReadiness => {
+        if (!item || typeof item !== "object") return false;
+        const row = item as Partial<ProtocolExecutionReadiness>;
+        return (
+          typeof row.protocol === "string" &&
+          typeof row.chain === "string" &&
+          typeof row.action === "string" &&
+          typeof row.implemented === "boolean" &&
+          typeof row.flagOn === "boolean" &&
+          typeof row.ready === "boolean" &&
+          typeof row.reason === "string"
+        );
+      })
+    : undefined;
   const username = res.locals.user.username as string;
   const role = res.locals.user.role as string;
-  const result = await executeJob(jobId, idempotencyKey, { correlationId, positionId, requestedMode }, { username, role });
+  const result = await executeJob(jobId, idempotencyKey, { correlationId, positionId, requestedMode, protocolReadiness }, { username, role });
   const requestId = typeof (res.locals as Record<string, unknown>).requestId === "string" ? (res.locals as Record<string, string>).requestId : undefined;
   if (!result.ok) {
     const forbidden = typeof result.message === "string" && result.message.startsWith("forbidden:");

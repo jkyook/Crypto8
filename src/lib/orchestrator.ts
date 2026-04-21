@@ -49,8 +49,8 @@ export function buildAgentTasks(context: RunContext): AgentTask[] {
   tasks.push({
     agent: "Security-Guardian",
     priority: "P0",
-    objective: "승인/권한/서명 플로우 점검 및 Go/No-Go 판단",
-    doneDefinition: "취약점 등급과 승인 TTL 포함 결과 제출"
+    objective: "권한/본인 확인/서명 플로우 점검 및 실행 가능 여부 판단",
+    doneDefinition: "취약점 등급과 본인 확인 기준 포함 결과 제출"
   });
 
   tasks.push({

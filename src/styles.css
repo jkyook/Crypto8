@@ -4811,6 +4811,42 @@ body[data-theme="light"] .unified-search-hit-sub {
   border-color: rgba(255, 215, 160, 0.45);
 }
 
+.quote-readiness-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 8px;
+}
+
+.quote-readiness-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 850;
+  border: 1px solid transparent;
+}
+
+.quote-readiness-pill--ready {
+  background: rgba(123, 232, 195, 0.14);
+  color: #7be8c3;
+  border-color: rgba(123, 232, 195, 0.28);
+}
+
+.quote-readiness-pill--flag {
+  background: rgba(255, 184, 107, 0.14);
+  color: #ffcc8a;
+  border-color: rgba(255, 184, 107, 0.28);
+}
+
+.quote-readiness-pill--blocked {
+  background: rgba(255, 92, 92, 0.12);
+  color: #ff9a9a;
+  border-color: rgba(255, 92, 92, 0.24);
+}
+
 .quote-card-grid {
   display: grid;
   gap: 6px;
@@ -4818,7 +4854,7 @@ body[data-theme="light"] .unified-search-hit-sub {
 
 .quote-card-row {
   display: grid;
-  grid-template-columns: 0.8fr 0.8fr 1.25fr auto minmax(150px, 0.9fr);
+  grid-template-columns: 0.8fr 0.8fr 1.25fr auto minmax(90px, 0.7fr) minmax(150px, 0.9fr);
   gap: 8px;
   align-items: center;
   padding: 8px 10px;
@@ -4832,6 +4868,25 @@ body[data-theme="light"] .unified-search-hit-sub {
   text-align: right;
   font-weight: 700;
   color: #b8e0ff;
+}
+
+.quote-card-readiness {
+  justify-self: flex-start;
+  font-size: 0.7rem;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.quote-card-readiness--ready {
+  color: #7be8c3;
+}
+
+.quote-card-readiness--flag {
+  color: #ffcc8a;
+}
+
+.quote-card-readiness--blocked {
+  color: #ff9a9a;
 }
 
 .quote-card-slider {
@@ -4882,6 +4937,33 @@ body[data-theme="light"] .quote-card-cell.quote-card-usd {
 
 body[data-theme="light"] .quote-card-slider span {
   color: #087e65;
+}
+
+body[data-theme="light"] .quote-readiness-pill--ready {
+  background: rgba(123, 232, 195, 0.18);
+  color: #0d6f58;
+}
+
+body[data-theme="light"] .quote-readiness-pill--flag {
+  background: rgba(255, 184, 107, 0.18);
+  color: #8c5600;
+}
+
+body[data-theme="light"] .quote-readiness-pill--blocked {
+  background: rgba(255, 92, 92, 0.14);
+  color: #8d2020;
+}
+
+body[data-theme="light"] .quote-card-readiness--ready {
+  color: #0d6f58;
+}
+
+body[data-theme="light"] .quote-card-readiness--flag {
+  color: #8c5600;
+}
+
+body[data-theme="light"] .quote-card-readiness--blocked {
+  color: #8d2020;
 }
 
 body[data-theme="light"] .quote-default-btn {
@@ -5556,7 +5638,7 @@ body[data-theme="light"] .section-eyebrow {
 }
 
 /* ══════════════════════════════════════════════
-   최종 입금처리 본인확인 오버레이
+   내 입금 실행 본인확인 오버레이
 ══════════════════════════════════════════════ */
 .exec-verify-overlay {
   position: relative;

@@ -1,6 +1,6 @@
 # Crypto8 Yield Orchestrator MVP
 
-지갑 연결 + 예치 계획 + 총괄 에이전트 제어판을 포함한 React MVP입니다.
+지갑 연결 + 예치 계획 + 사용자별 셀프 실행 보드를 포함한 React MVP입니다.
 
 ## 실행
 
@@ -10,7 +10,7 @@ cp .env.example .env
 npm run prisma:generate
 npm run prisma:seed
 npm run dev:api
-npm run dev:web가
+npm run dev:web
 ```
 
 ## Prisma 마이그레이션
@@ -37,7 +37,7 @@ npm run prisma:seed
 
 - `VITE_PHANTOM_APP_ID`: Phantom Portal에서 발급받은 App ID
   - 없으면 `injected` provider만 활성화됩니다.
-- `VITE_API_BASE_URL`: 오케스트레이터 API 주소
+- `VITE_API_BASE_URL`: Crypto8 API 주소
 - `JWT_SECRET`: 서버 JWT 서명 키 (운영환경에서 반드시 변경)
 - `EXECUTION_MODE`: `dry-run`(기본) 또는 `live`
 - `LIVE_EXECUTION_CONFIRM`: live 모드 활성화 시 `YES` 필요
@@ -53,16 +53,18 @@ npm run prisma:seed
 
 ## MVP 실행 범위·체인·지갑 정책
 
+현재 MVP는 **각 로그인 유저가 본인 계정 기준으로 예치 계획을 만들고 직접 실행 요청을 완료하는 구조**입니다. 중앙 오케스트레이터가 여러 유저의 예치 신청을 모아 한 번에 최종 예치하는 집계/대리 실행 모델은 아직 포함하지 않습니다.
+
 ### 지갑(UI)
 
 - Phantom 기준 **Solana** 주소로 연결·해제 및 잔고(SOL/USDC) 조회.
-- 예치 실행 패널의 **메시지 서명(`signMessage`)**은 해당 Job에 대한 **실행 의사 확인**용이며, 브라우저 지갑이 Arbitrum 등 EVM에서 Aave/Uniswap 예치 트랜잭션을 **직접 전송하지는 않습니다**.
+- 예치 실행 패널의 **메시지 서명(`signMessage`)**은 현재 로그인 유저의 해당 Job에 대한 **실행 의사 확인**용이며, 브라우저 지갑이 Arbitrum 등 EVM에서 Aave/Uniswap 예치 트랜잭션을 **직접 전송하지는 않습니다**.
 
 ### 서버 실행
 
 - `EXECUTION_MODE=dry-run`(기본): 어댑터가 시뮬레이션 중심으로 동작합니다.
 - `EXECUTION_MODE=live`이고 `LIVE_EXECUTION_CONFIRM=YES`일 때만 라이브 의미의 온체인 호출이 켜집니다(어댑터·실행 지갑·RPC 등 환경 필요).
-- 프로토콜별 호출은 `server/executionAdapter.ts`가 Aave·Uniswap·Orca 어댑터를 묶는 구조입니다.
+- 프로토콜별 호출은 `server/executionAdapter.ts`가 Aave·Uniswap·Orca 어댑터를 묶는 구조입니다. 실행 요청은 현재 로그인 유저의 Job에 연결됩니다.
 - 공개 엔드포인트 `GET /api/runtime/info`로 현재 표시용 실행 모드(dry-run/live)를 조회할 수 있습니다.
 - 공개 `GET /api/health`로 DB 연결·실효 실행 모드·버전·가동 시간을 점검할 수 있습니다. 엔드포인트·멱등 키 요약은 `agents/API-OVERVIEW.md`를 참고하세요.
 
@@ -73,8 +75,8 @@ npm run prisma:seed
 - `POST /api/portfolio/positions`: `orchestrator`, `security`, `viewer` — 본인 계정 기준 예치 포지션 생성
 - `POST /api/portfolio/withdraw`: `orchestrator`, `security`, `viewer` — LIFO로 본인 예치를 차감하고, 실제 차감된 USD 합계를 `withdrawnUsd`로 응답합니다. `withdrawnUsd`가 0보다 크면 `withdrawal_ledger`에 한 줄이 추가됩니다.
 - `POST /api/orchestrator/jobs`: `orchestrator`, `security`, `viewer` — 본인 계정 기준 실행 Job 생성
-- `POST /api/security/approve`: `orchestrator`, `security`, `viewer` — `security`는 전체 Job, 그 외 역할은 본인 Job 승인
-- `POST /api/orchestrator/execute/:jobId`: `orchestrator`, `security`, `viewer` — `security`는 전체 Job, 그 외 역할은 본인 Job 실행
+- `POST /api/security/approve`: `orchestrator`, `security`, `viewer` — MVP 검토/기록용 승인 로그 생성. 현재 실행 API의 필수 게이트는 아닙니다.
+- `POST /api/orchestrator/execute/:jobId`: `orchestrator`, `security`, `viewer` — 본인 Job 기준 실행 요청
 - 단일 요청 한도: 예치/인출 금액 `amountUsd` ≤ 1억 USD(코드 상한), `protocolMix` 최대 24행, 상품명·풀 라벨 길이 제한
 
 ## 포함 기능
@@ -82,9 +84,9 @@ npm run prisma:seed
 - Phantom 지갑 연결/해제
 - Option L2* 기반 예치 비중 자동 계산
 - 예상 연 수익(USD) 계산
-- 총괄 에이전트 리스크 레벨 산정
+- 본인 예치 Job 리스크 레벨 산정
 - 역할별 에이전트 작업(P0~P3) 자동 생성
-- API 기반 실행 흐름: 작업 생성 -> 보안 승인 -> 실행
+- API 기반 셀프 실행 흐름: 작업 생성 -> 본인 확인(지갑 서명 또는 비밀번호) -> 실행
 - 실행 감사 이벤트 로그 API: `/api/orchestrator/execution-events`
 - 실행 멱등성: 같은 Job 재실행 시 `already executed - idempotent skip`
 - 같은 `Idempotency-Key` 재요청 시 기존 결과 재응답(idempotent replay)
@@ -94,7 +96,7 @@ npm run prisma:seed
 - live 모드에서는 mint 전 `slot0/liquidity` 검사 후 임계치 미달 시 실행 차단
 - auth/execute 엔드포인트 rate limit 기본 적용
 - 실행 실패 시 지수형 백오프(단순) 재시도 후 실패 이벤트 기록
-- 보안 승인 로그 조회 API (`/api/security/approvals`)
+- 검토/승인 로그 조회 API (`/api/security/approvals`)
 - JWT + RBAC 기반 권한 분리
   - orchestrator/security/viewer: 예치 포지션 생성·인출·Job 생성·승인·실행 쓰기 API 사용 가능
   - security: 운영 검토 목적의 전체 Job/실행 이벤트 조회 가능
@@ -126,14 +128,14 @@ npm run prisma:seed
 
 - 사용자 인지 부하를 낮추고 핵심 의사결정 정보만 전면에 배치한다.
 - 화면 구조는 일관된 내비게이션 계층을 유지해 사용자가 현재 맥락을 잃지 않게 한다.
-- 실행 UX는 단계를 단순화하되, 블록체인 실행의 신뢰성(지갑 연동/승인)은 절대 약화하지 않는다.
+- 실행 UX는 단계를 단순화하되, 블록체인 실행의 신뢰성(지갑 연동/본인 확인)은 절대 약화하지 않는다.
 - 데이터 표시는 숫자 중심 KPI와 실행 단위 상세를 함께 제공해 요약-상세 탐색이 자연스럽게 이어지게 한다.
 - 외부 데이터(이율/뉴스)는 단일 실패 지점 없이 동작하도록 복원력 있는 수집 구조를 유지한다.
 
 ## 다음 구현 권장
 
 - 브라우저 지갑에서 직접 보내는 온체인 예치 플로우(체인별 지갑 통합 또는 전용 커스터디)
-- 서버측 전략 실행 오케스트레이터(API + Queue)
+- 여러 유저 예치 신청을 모아 처리하는 중앙 오케스트레이션(API + Queue)
 - 시세/APY 실시간 데이터 소스 연동
 - 감사 로그/승인 로그 저장
 - DB/Redis 기반 영속 큐 전환 (현재 인메모리)

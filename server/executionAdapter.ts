@@ -4,7 +4,13 @@ import { executeAerodromePlan } from "./adapters/aerodromeAdapter";
 import { executeCurvePlan } from "./adapters/curveAdapter";
 import { executeOrcaPlan } from "./adapters/orcaAdapter";
 import { executeRaydiumPlan } from "./adapters/raydiumAdapter";
-import type { AdapterExecutionContext, AdapterExecutionResult, ExecutionMode, ProductNetwork } from "./adapters/types";
+import type {
+  AdapterExecutionContext,
+  AdapterExecutionResult,
+  ExecutionMode,
+  ProductNetwork,
+  ProtocolExecutionReadiness
+} from "./adapters/types";
 import { executeUniswapPlan } from "./adapters/uniswapAdapter";
 
 export type ExecutionAdapterBundle = {
@@ -12,6 +18,7 @@ export type ExecutionAdapterBundle = {
   summary: string;
   mode: ExecutionMode;
   adapterResults: AdapterExecutionResult[];
+  skippedProtocols: ProtocolExecutionReadiness[];
 };
 
 /** 런타임 정보 API와 동일한 기준의 "실효" 실행 모드(라이브는 확인 플래그까지 필요). */
@@ -44,6 +51,65 @@ function buildSummary(results: AdapterExecutionResult[], mode: ExecutionMode): s
   const total = results.reduce((acc, item) => acc + item.allocationUsd, 0);
   const lines = results.map((item) => `${item.protocol}/${item.chain}:${item.allocationUsd.toFixed(2)}`);
   return `${mode.toUpperCase()} execution total=$${total.toFixed(2)} | ${lines.join(", ")}`;
+}
+
+function isBuiltForLiveExecution(protocol: AdapterExecutionResult["protocol"]): boolean {
+  return protocol === "Aave" || protocol === "Uniswap" || protocol === "Orca";
+}
+
+function buildDefaultReadiness(result: AdapterExecutionResult, mode: ExecutionMode): ProtocolExecutionReadiness {
+  const implemented = isBuiltForLiveExecution(result.protocol);
+  const ready = mode !== "live" ? true : implemented;
+  return {
+    protocol: result.protocol,
+    chain: result.chain,
+    action: result.action,
+    implemented,
+    flagOn: mode === "live",
+    ready,
+    reason: ready ? "실행 가능" : implemented ? "플래그만 ON" : "라이브 미구현"
+  };
+}
+
+function readinessKey(row: Pick<ProtocolExecutionReadiness, "protocol" | "chain" | "action">): string {
+  return `${row.protocol}::${row.chain}::${row.action}`.toLowerCase();
+}
+
+function filterLiveResults(
+  results: AdapterExecutionResult[],
+  mode: ExecutionMode,
+  readiness?: ProtocolExecutionReadiness[]
+): { results: AdapterExecutionResult[]; skippedProtocols: ProtocolExecutionReadiness[] } {
+  if (mode !== "live") {
+    return { results, skippedProtocols: [] };
+  }
+  const readinessMap = new Map<string, ProtocolExecutionReadiness>();
+  for (const row of readiness ?? []) {
+    readinessMap.set(readinessKey(row), row);
+  }
+
+  const kept: AdapterExecutionResult[] = [];
+  const skippedProtocols: ProtocolExecutionReadiness[] = [];
+  for (const result of results) {
+    const defaultReadiness = buildDefaultReadiness(result, mode);
+    const row = readinessMap.get(readinessKey(result));
+    const effective = row ?? defaultReadiness;
+    if (effective.ready) {
+      kept.push(result);
+    } else {
+      skippedProtocols.push({
+        protocol: result.protocol,
+        chain: result.chain,
+        action: result.action,
+        implemented: effective.implemented,
+        flagOn: effective.flagOn,
+        ready: false,
+        reason: effective.reason
+      });
+    }
+  }
+
+  return { results: kept, skippedProtocols };
 }
 
 /**
@@ -113,7 +179,11 @@ async function runAdaptersByNetwork(
   }
 }
 
-export async function runExecutionAdapter(job: ExecutionJob, requestedMode?: ExecutionMode): Promise<ExecutionAdapterBundle> {
+export async function runExecutionAdapter(
+  job: ExecutionJob,
+  requestedMode?: ExecutionMode,
+  protocolReadiness?: ProtocolExecutionReadiness[]
+): Promise<ExecutionAdapterBundle> {
   const mode = getExecutionMode(requestedMode);
   ensureSafeLiveMode(mode);
 
@@ -123,11 +193,13 @@ export async function runExecutionAdapter(job: ExecutionJob, requestedMode?: Exe
     depositUsd: job.input.depositUsd,
     timestamp: new Date().toISOString(),
     productNetwork: job.input.productNetwork,
-    productSubtype: job.input.productSubtype
+    productSubtype: job.input.productSubtype,
+    protocolReadiness
   };
 
   const adapterResults = await runAdaptersByNetwork(context);
-  const txId = adapterResults.map((item) => item.txId).join(",");
-  const summary = buildSummary(adapterResults, mode);
-  return { txId, summary, mode, adapterResults };
+  const { results, skippedProtocols } = filterLiveResults(adapterResults, mode, context.protocolReadiness);
+  const txId = results.map((item) => item.txId).join(",");
+  const summary = `${buildSummary(results, mode)}${mode === "live" && skippedProtocols.length > 0 ? ` | skipped=${skippedProtocols.length}` : ""}`;
+  return { txId, summary, mode, adapterResults: results, skippedProtocols };
 }

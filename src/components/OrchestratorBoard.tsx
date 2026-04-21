@@ -11,12 +11,14 @@ import {
   estimateProtocolFees,
   executeJob,
   fetchRuntimeInfo,
+  fetchMarketPrices,
   readAccessTokenSnapshot,
   subscribeLocalAuth,
   type AccountAssetBalance,
   type AccountAssetSymbol,
   type ExecuteJobResponse,
   type Job,
+  type ProtocolExecutionReadiness,
   type ProductNetwork,
   type ProductSubtype,
   type ProtocolFeeEstimate,
@@ -28,6 +30,8 @@ import { buildExecutionPreviewRows } from "../lib/executionPreview";
 import { buildAgentTasks, evaluateRisk } from "../lib/orchestrator";
 import { checkGuardrails } from "../lib/strategyEngine";
 import type { ExecutionPreviewRow } from "../lib/executionPreview";
+import { fetchEvmPortfolioWithFallback, getEvmRpcCandidates } from "../lib/evmChainAssets";
+import { fetchOnChainPortfolioWithFallback, getSolanaRpcCandidates } from "../lib/solanaChainAssets";
 
 type OrchestratorBoardProps = {
   initialDepositUsd?: number;
@@ -65,7 +69,8 @@ export function OrchestratorBoard({
   const { isConnected } = usePhantom();
   const accounts = useAccounts();
   const solanaAccount = accounts?.find((account) => account.addressType === AddressType.solana);
-  const isSecurityApproved = true;
+  const evmAccount = accounts?.find((account) => account.addressType === AddressType.ethereum);
+  const isIdentityConfirmed = true;
   const [depositUsd, setDepositUsd] = useState(initialDepositUsd);
   useEffect(() => {
     setDepositUsd(initialDepositUsd);
@@ -79,6 +84,7 @@ export function OrchestratorBoard({
   const [accountAssets, setAccountAssets] = useState<AccountAssetBalance[]>([]);
   const [assetLoading, setAssetLoading] = useState(false);
   const [assetError, setAssetError] = useState("");
+  const [assetSourceLabel, setAssetSourceLabel] = useState("가상 잔고");
   const [selectedSourceAsset, setSelectedSourceAsset] = useState<AccountAssetSymbol>("USDC");
   const [feeEstimate, setFeeEstimate] = useState<ProtocolFeeEstimate | null>(null);
   const [feeEstimateError, setFeeEstimateError] = useState("");
@@ -89,7 +95,7 @@ export function OrchestratorBoard({
   const [preCreatedPositionId, setPreCreatedPositionId] = useState<string | undefined>(undefined);
   /** 현재 로그인 계정에 등록된 지갑 목록 (계정 연동 검증용) */
   const [linkedWallets, setLinkedWallets] = useState<UserWallet[]>([]);
-  /** 최종 입금 전 비밀번호 확인 다이얼로그 표시 여부 */
+  /** 실행 요청 전 비밀번호 확인 다이얼로그 표시 여부 */
   const [showPasswordConfirm, setShowPasswordConfirm] = useState(false);
   const [execVerifyPassword, setExecVerifyPassword] = useState("");
   const [execVerifyLoading, setExecVerifyLoading] = useState(false);
@@ -111,18 +117,18 @@ export function OrchestratorBoard({
   const guardrail = useMemo(() => checkGuardrails(), []);
   const isRangeOut = !guardrail.maxPoolOk || !guardrail.maxChainOk;
   const isDepegAlert = false;
-  const hasPendingRelease = !isSecurityApproved;
+  const hasPendingRelease = !isIdentityConfirmed;
 
   const risk = useMemo(
-    () => evaluateRisk({ isSecurityApproved, isRangeOut, isDepegAlert, hasPendingRelease }),
-    [isSecurityApproved, isRangeOut, isDepegAlert, hasPendingRelease]
+    () => evaluateRisk({ isSecurityApproved: isIdentityConfirmed, isRangeOut, isDepegAlert, hasPendingRelease }),
+    [isIdentityConfirmed, isRangeOut, isDepegAlert, hasPendingRelease]
   );
   const tasks = useMemo(
-    () => buildAgentTasks({ isSecurityApproved, isRangeOut, isDepegAlert, hasPendingRelease }),
-    [isSecurityApproved, isRangeOut, isDepegAlert, hasPendingRelease]
+    () => buildAgentTasks({ isSecurityApproved: isIdentityConfirmed, isRangeOut, isDepegAlert, hasPendingRelease }),
+    [isIdentityConfirmed, isRangeOut, isDepegAlert, hasPendingRelease]
   );
   const riskClass = `badge badge-${risk.toLowerCase()}`;
-  const hasWallet = Boolean(isConnected && solanaAccount?.address);
+  const hasWallet = Boolean(isConnected && (solanaAccount?.address || evmAccount?.address));
   const jwtAccess = useSyncExternalStore(subscribeLocalAuth, readAccessTokenSnapshot, () => "");
   const canUseServerJobs = jwtAccess.length > 0 && allowJobExecutionProp !== false;
   useEffect(() => {
@@ -130,29 +136,122 @@ export function OrchestratorBoard({
       setAccountAssets([]);
       setAssetError("");
       setAssetLoading(false);
+      setAssetSourceLabel("가상 잔고");
       return;
     }
     const controller = new AbortController();
     setAssetLoading(true);
     setAssetError("");
-    void listAccountAssets({ signal: controller.signal })
-      .then((rows) => {
-        if (controller.signal.aborted) return;
-        setAccountAssets(rows);
-        if (!rows.some((row) => row.symbol === selectedSourceAsset) && rows[0]) {
-          setSelectedSourceAsset(rows[0].symbol);
+    const loadAssets = async () => {
+      try {
+        if (executionModeIntent === "live") {
+          if (!hasWallet) {
+            throw new Error("REAL-RUN은 실제 지갑 연결이 필요합니다.");
+          }
+          const prices = await fetchMarketPrices({ signal: controller.signal });
+          if (controller.signal.aborted) return;
+          const evmAddress = evmAccount?.address as `0x${string}` | undefined;
+          const [solanaPortfolio, evmPortfolios] = await Promise.all([
+            solanaAccount?.address
+              ? fetchOnChainPortfolioWithFallback(getSolanaRpcCandidates("mainnet"), solanaAccount.address, "mainnet")
+              : Promise.resolve(null),
+            evmAddress
+              ? Promise.allSettled(
+                  (["Ethereum", "Arbitrum", "Base"] as const).map((chainName) =>
+                    fetchEvmPortfolioWithFallback(
+                      getEvmRpcCandidates(chainName),
+                      evmAddress,
+                      chainName,
+                      prices.prices,
+                      prices.source,
+                      prices.updatedAt
+                    )
+                  )
+                )
+              : Promise.resolve([])
+          ]);
+          const nextAssets: AccountAssetBalance[] = [];
+          if (solanaPortfolio) {
+            const solanaRows: AccountAssetBalance[] = [
+              {
+                symbol: "SOL",
+                chain: "Solana",
+                amount: solanaPortfolio.portfolio.sol,
+                usdPrice: prices.prices.SOL,
+                usdValue: Number((solanaPortfolio.portfolio.sol * prices.prices.SOL).toFixed(2)),
+                priceSource: prices.source,
+                priceUpdatedAt: prices.updatedAt
+              },
+              ...solanaPortfolio.portfolio.tokens
+                .map((token) => {
+                  const symbol: AccountAssetSymbol | null = token.symbol.includes("USDC")
+                    ? "USDC"
+                    : token.symbol.includes("USDT")
+                      ? "USDT"
+                      : token.symbol.includes("ETH")
+                        ? "ETH"
+                        : null;
+                  if (!symbol) return null;
+                  const usdPrice = prices.prices[symbol] ?? 0;
+                  const row: AccountAssetBalance = {
+                    symbol,
+                    chain: "Solana",
+                    amount: token.amount,
+                    usdPrice,
+                    usdValue: Number((token.amount * usdPrice).toFixed(2)),
+                    priceSource: prices.source,
+                    priceUpdatedAt: prices.updatedAt
+                  };
+                  return row;
+                })
+                .filter((row): row is AccountAssetBalance => row !== null)
+            ];
+            nextAssets.push(...solanaRows);
+          }
+          evmPortfolios.forEach((result, idx) => {
+            if (result.status === "fulfilled") {
+              nextAssets.push(...result.value.portfolio);
+            } else if (!controller.signal.aborted) {
+              console.warn(`EVM ${(["Ethereum", "Arbitrum", "Base"] as const)[idx]} balance fetch failed:`, result.reason);
+            }
+          });
+          if (nextAssets.length === 0) {
+            throw new Error("실잔고를 불러오지 못했습니다.");
+          }
+          setAccountAssets(nextAssets);
+          setAssetSourceLabel("실잔고");
+          if (!nextAssets.some((row) => row.symbol === selectedSourceAsset) && nextAssets[0]) {
+            setSelectedSourceAsset(nextAssets[0].symbol);
+          }
+        } else {
+          const rows = await listAccountAssets({ signal: controller.signal });
+          if (controller.signal.aborted) return;
+          setAccountAssets(rows);
+          setAssetSourceLabel("가상 잔고");
+          if (!rows.some((row) => row.symbol === selectedSourceAsset) && rows[0]) {
+            setSelectedSourceAsset(rows[0].symbol);
+          }
         }
-      })
-      .catch((error) => {
+      } catch (error) {
         if (controller.signal.aborted) return;
         setAccountAssets([]);
         setAssetError(error instanceof Error ? error.message : "계정 자산을 불러오지 못했습니다.");
-      })
-      .finally(() => {
+      } finally {
         if (!controller.signal.aborted) setAssetLoading(false);
-      });
+      }
+    };
+    void loadAssets();
     return () => controller.abort();
-  }, [canUseServerJobs, selectedSourceAsset]);
+  }, [canUseServerJobs, evmAccount?.address, executionModeIntent, hasWallet, solanaAccount?.address]);
+
+  useEffect(() => {
+    if (accountAssets.length === 0) {
+      return;
+    }
+    if (!accountAssets.some((row) => row.symbol === selectedSourceAsset) && accountAssets[0]) {
+      setSelectedSourceAsset(accountAssets[0].symbol);
+    }
+  }, [accountAssets, selectedSourceAsset]);
   // 로그인 상태가 바뀔 때마다 계정에 연결된 지갑 목록을 가져옴
   useEffect(() => {
     if (!canUseServerJobs) {
@@ -172,6 +271,7 @@ export function OrchestratorBoard({
 
   const displayExecutionMode = executionModeIntent;
   const isLiveExecution = displayExecutionMode === "live";
+  const livePresetLabel = isLiveExecution ? "REAL-RUN" : "DRY-RUN";
   const [customAllocationPercents, setCustomAllocationPercents] = useState<number[] | null>(null);
   const baseQuoteRows = useMemo(() => {
     const ar = lastExecution?.payload?.adapterResults;
@@ -212,7 +312,36 @@ export function OrchestratorBoard({
   }, [baseQuoteRows, depositUsd, job]);
   const isResultQuote = Boolean(lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0));
   const adjustedAllocationTotal = quoteRows.reduce((acc, row) => acc + row.allocationUsd, 0);
-  const connectedWalletNetwork = hasWallet ? "Solana" : undefined;
+  const connectedWalletNetwork = solanaAccount?.address ? "Solana" : evmAccount?.address ? "Ethereum" : undefined;
+  const protocolReadiness = useMemo<ProtocolExecutionReadiness[]>(
+    () =>
+      quoteRows.map((row) => {
+        const implemented = !["Aerodrome", "Raydium", "Curve"].includes(row.protocol);
+        const requiresSolanaWallet = row.chain === "Solana" || row.protocol === "Orca";
+        const requiresEvmWallet = !requiresSolanaWallet && ["Ethereum", "Arbitrum", "Base"].includes(row.chain);
+        const hasRequiredWallet = requiresSolanaWallet ? Boolean(solanaAccount?.address) : requiresEvmWallet ? Boolean(evmAccount?.address) : true;
+        const ready = implemented && hasRequiredWallet;
+        return {
+          protocol: row.protocol,
+          chain: row.chain,
+          action: row.action,
+          implemented,
+          flagOn: isLiveExecution,
+          ready,
+          reason: !implemented
+            ? "라이브 미구현"
+            : !hasRequiredWallet
+              ? requiresSolanaWallet
+                ? "Solana 키 필요"
+                : "EVM 키 필요"
+              : "실행 가능"
+        };
+      }),
+    [evmAccount?.address, isLiveExecution, quoteRows, solanaAccount?.address]
+  );
+  const protocolReadyCount = protocolReadiness.filter((row) => row.ready).length;
+  const protocolFlagOnlyCount = protocolReadiness.filter((row) => row.flagOn && !row.ready).length;
+  const protocolUnsupportedCount = protocolReadiness.filter((row) => !row.implemented).length;
   const assetReadiness = useMemo(
     () => buildDepositAssetReadiness(accountAssets, selectedSourceAsset, depositUsd, quoteRows, connectedWalletNetwork),
     [accountAssets, connectedWalletNetwork, depositUsd, quoteRows, selectedSourceAsset]
@@ -242,7 +371,7 @@ export function OrchestratorBoard({
     return () => controller.abort();
   }, [canUseServerJobs, isResultQuote, quoteRows]);
   const canFundDeposit = !canUseServerJobs || assetReadiness.isSufficient;
-  const canExecute = Boolean(job) && isExecutionConfirmed && canUseServerJobs && canFundDeposit && (!isLiveExecution || hasWallet);
+  const canExecute = Boolean(job) && isExecutionConfirmed && canUseServerJobs && canFundDeposit && (!isLiveExecution || protocolReadyCount > 0);
   const quoteTitle = lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0)
     ? "실행 결과 배분"
     : "입금 처리할 항목";
@@ -257,7 +386,7 @@ export function OrchestratorBoard({
       detail: assetReadiness.isSufficient ? `${selectedSourceAsset} 잔고 충분` : `$${assetReadiness.missingUsd.toLocaleString()} 부족`
     },
     { key: "guardrail", label: "전략 가드레일", ok: guardrail.maxPoolOk && guardrail.maxChainOk && guardrail.minProtocolOk, detail: "pool/chain/protocol 점검" },
-    { key: "security", label: "보안 승인", ok: isSecurityApproved, detail: isSecurityApproved ? "승인 완료" : "승인 대기" },
+    { key: "identity", label: "본인 확인", ok: isIdentityConfirmed, detail: isIdentityConfirmed ? "계정 기준 진행" : "확인 대기" },
     { key: "depeg", label: "스테이블 디페그", ok: !isDepegAlert, detail: "실시간 피드 연동 전 기본 정상값" }
   ] as const;
   const findFeeForRoute = (route: (typeof assetReadiness.swapRows)[number]) =>
@@ -278,7 +407,7 @@ export function OrchestratorBoard({
 
   const onCreateJob = async () => {
     if (!canUseServerJobs) {
-      setApiMessage("입금내역을 서버에 남기려면 먼저 로그인하세요.");
+      setApiMessage("내 계정에 입금 작업을 남기려면 먼저 로그인하세요.");
       return;
     }
     if (!assetReadiness.isSufficient) {
@@ -323,8 +452,8 @@ export function OrchestratorBoard({
 
       setApiMessage(
         hasWallet
-          ? `입금내역 확인 완료: ${created.id}`
-          : `입금내역 확인 완료: ${created.id} · 라이브 모드 최종 입금 전에는 Phantom(Solana) 지갑 서명이 필요합니다.`
+          ? `내 입금 작업 생성 완료: ${created.id}`
+          : `내 입금 작업 생성 완료: ${created.id} · REAL-RUN에서는 준비되지 않은 프로토콜을 건너뜁니다.`
       );
     } catch (error) {
       setApiMessage(error instanceof Error ? error.message : "작업 생성 실패");
@@ -336,26 +465,33 @@ export function OrchestratorBoard({
     if (!job) return;
     const idemKey = `exec-${job.id}`;
     const effectivePositionId = preCreatedPositionId ?? linkedPositionId;
-    const result = await executeJob(job.id, {
-      idempotencyKey: idemKey,
-      correlationId,
-      positionId: effectivePositionId,
-      requestedMode: executionModeIntent
-    });
+      const result = await executeJob(job.id, {
+        idempotencyKey: idemKey,
+        correlationId,
+        positionId: effectivePositionId,
+        requestedMode: executionModeIntent,
+        protocolReadiness
+      });
     setIsExecutionDone(true);
     setLastExecution(result);
     const rid = result.requestId ? ` · requestId=${result.requestId}` : "";
-    setApiMessage(`실행 결과: ${result.message}${rid}${authNote}`);
+    const skippedCount = isLiveExecution ? Math.max(0, protocolReadiness.length - (result.payload?.adapterResults?.length ?? 0)) : 0;
+    const skippedNote = skippedCount > 0 ? ` · skipped ${skippedCount}` : "";
+    setApiMessage(`실행 결과: ${result.message}${rid}${skippedNote}${authNote}`);
     await onExecutionComplete?.();
   };
 
   const onExecute = async () => {
     if (!canUseServerJobs) {
-      setApiMessage("최종 입금처리를 요청하려면 먼저 로그인하세요.");
+      setApiMessage("내 입금 실행을 요청하려면 먼저 로그인하세요.");
       return;
     }
     if (!job) {
       setApiMessage("먼저 작업을 생성하세요.");
+      return;
+    }
+    if (isLiveExecution && protocolReadyCount === 0) {
+      setApiMessage("REAL-RUN으로 실행할 준비된 프로토콜이 없습니다. Solana 키 또는 미구현 어댑터 상태를 확인하세요.");
       return;
     }
     try {
@@ -383,7 +519,7 @@ export function OrchestratorBoard({
         setApiMessage(
           isLinkedWallet === false && connectedAddress.length > 0
             ? "연결된 Phantom 지갑이 이 계정에 등록된 지갑과 다릅니다. 비밀번호로 본인 확인 후 진행하세요."
-            : "최종 입금처리를 위해 비밀번호를 입력해 주세요."
+            : "내 입금 실행을 위해 비밀번호를 입력해 주세요."
         );
       }
     } catch (error) {
@@ -421,7 +557,7 @@ export function OrchestratorBoard({
 
   const onConfirmExecution = () => {
     if (!job) {
-      setApiMessage("먼저 입금내역을 확인하세요.");
+      setApiMessage("먼저 내 입금 작업을 생성하세요.");
       return;
     }
     if (!assetReadiness.isSufficient) {
@@ -431,12 +567,12 @@ export function OrchestratorBoard({
     setIsExecutionConfirmed(true);
     setApiMessage(
       hasWallet
-        ? "리스크 검토 완료. 4번 버튼으로 최종 입금처리를 요청하세요."
-        : "리스크 검토 완료. dry-run은 지갑 없이 최종 입금처리를 기록할 수 있고, live는 Phantom(Solana) 서명이 필요합니다."
+        ? "리스크 검토 완료. 5번 버튼으로 내 입금 실행을 요청하세요."
+        : "리스크 검토 완료. dry-run은 지갑 없이 내 실행 기록을 남길 수 있고, REAL-RUN은 준비된 프로토콜만 실제 실행합니다."
     );
   };
 
-  const step4Label = isLiveExecution ? "4. 실제 입금처리" : "4. 최종 입금처리 (dry-run)";
+  const executionButtonLabel = isLiveExecution ? "4. REAL-RUN 입금 실행" : "4. 내 입금 실행 (dry-run)";
 
   return (
     <section className="card orchestrator-card">
@@ -446,11 +582,11 @@ export function OrchestratorBoard({
           {runtime?.serverExecutionNote ? <p className="runtime-scope-sub">{runtime.serverExecutionNote}</p> : null}
           {!canUseServerJobs ? (
             <p className="runtime-scope-sub" role="status">
-          1~3단계는 <strong>로그인 · 계정</strong> 메뉴에서 아이디·비밀번호(JWT)로 로그인(또는 이용자 가입)한 뒤에 사용할 수 있습니다. dry-run은 Phantom 서명 없이도 최종 입금처리를 기록할 수 있습니다.
+          1~3단계는 <strong>로그인 · 계정</strong> 메뉴에서 아이디·비밀번호(JWT)로 로그인(또는 이용자 가입)한 뒤에 사용할 수 있습니다. dry-run은 Phantom 서명 없이도 내 실행 기록을 남길 수 있습니다.
             </p>
           ) : (
             <p className="runtime-scope-sub" role="status">
-              입금내역·리스크 검토·처리 이력은 현재 로그인한 이용자 계정에만 연결됩니다.
+              입금 작업·리스크 검토·처리 이력은 현재 로그인한 이용자 계정에만 연결됩니다.
             </p>
           )}
         </div>
@@ -471,6 +607,7 @@ export function OrchestratorBoard({
             <p className="deposit-asset-network-line">
               연결 지갑 네트워크: <strong>{connectedWalletNetwork ?? "미연결"}</strong>
               {assetReadiness.selectedAsset ? ` · 계정 자산 보관 체인: ${assetReadiness.selectedAsset.chain}` : ""}
+              · 잔고 기준: <strong>{assetSourceLabel}</strong>
             </p>
           </div>
           <label className="deposit-asset-select">
@@ -507,6 +644,7 @@ export function OrchestratorBoard({
                 ? `${assetReadiness.selectedAsset.amount.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${assetReadiness.selectedAsset.symbol}`
                 : "자산 없음"}
             </em>
+            <em>{assetSourceLabel}</em>
           </div>
           <div className={assetReadiness.isSufficient ? "deposit-asset-summary ok" : "deposit-asset-summary warn"}>
             <span>입금 가능 여부</span>
@@ -576,7 +714,7 @@ export function OrchestratorBoard({
       <div className="deposit-risk-review">
         <div className="deposit-risk-review-title">
           <p className="section-eyebrow">Risk Review</p>
-          <h3>입금 후 보안 체크</h3>
+          <h3>입금 전 본인 리스크 체크</h3>
         </div>
         <div className="deposit-risk-check-grid">
           {autoChecks.slice(1).map((item) => (
@@ -620,15 +758,20 @@ export function OrchestratorBoard({
                 setLastExecution(null);
                 setApiMessage(
                   executionModeIntent === "dry-run"
-                    ? "실제입금처리 모드로 전환했습니다. 리스크 검토 후 Phantom 서명이 필요합니다."
+                    ? "REAL-RUN 모드로 전환했습니다. 준비된 프로토콜만 실제 실행됩니다."
                     : "dry-run 모드로 전환했습니다. 지갑 서명 없이 시뮬레이션 기록이 가능합니다."
                 );
               }}
-              title="dry-run과 실제입금처리 요청 모드를 전환합니다."
+              title="dry-run과 REAL-RUN 모드를 전환합니다."
             >
-              {isLiveExecution ? "실제입금처리" : "DRY-RUN"}
+              {livePresetLabel}
             </button>
           </div>
+        </div>
+        <div className="quote-readiness-summary" aria-label="프로토콜 준비 상태">
+          <span className="quote-readiness-pill quote-readiness-pill--ready">실행 가능 {protocolReadyCount}</span>
+          <span className="quote-readiness-pill quote-readiness-pill--flag">플래그만 ON {protocolFlagOnlyCount}</span>
+          <span className="quote-readiness-pill quote-readiness-pill--blocked">미구현 {protocolUnsupportedCount}</span>
         </div>
         {quoteRows.length > 0 ? (
           <div className="quote-card-grid">
@@ -638,6 +781,21 @@ export function OrchestratorBoard({
                 <span className="quote-card-cell quote-card-chain">{row.chain}</span>
                 <span className="quote-card-cell quote-card-action">{row.action}</span>
                 <span className="quote-card-cell quote-card-usd">${row.allocationUsd.toFixed(2)}</span>
+                <span
+                  className={
+                    protocolReadiness[idx]?.ready
+                      ? "quote-card-cell quote-card-readiness quote-card-readiness--ready"
+                      : protocolReadiness[idx]?.implemented
+                        ? "quote-card-cell quote-card-readiness quote-card-readiness--flag"
+                        : "quote-card-cell quote-card-readiness quote-card-readiness--blocked"
+                  }
+                >
+                  {protocolReadiness[idx]?.ready
+                    ? "실행 가능"
+                    : protocolReadiness[idx]?.implemented
+                      ? "플래그만 ON"
+                      : "미구현"}
+                </span>
                 {!isResultQuote ? (
                   <label className="quote-card-slider" aria-label={`${row.protocol} 배분 조율`}>
                     <input
@@ -664,6 +822,7 @@ export function OrchestratorBoard({
         <p className="quote-card-foot">
           입금 전·후 동일한 표 형식으로 예상 배분과 서버 응답을 비교합니다.
           {!isResultQuote ? ` 조율 합계 $${adjustedAllocationTotal.toFixed(2)}` : ""}
+          {isLiveExecution ? ` · 실행 가능 ${protocolReadyCount}/${protocolReadiness.length}` : ""}
         </p>
       </div>
 
@@ -718,7 +877,7 @@ export function OrchestratorBoard({
           <div className="exec-verify-box">
             <p className="exec-verify-title">🔐 본인 확인</p>
             <p className="exec-verify-desc">
-              최종 입금처리를 위해 계정 비밀번호를 입력하거나,
+              내 입금 실행을 위해 계정 비밀번호를 입력하거나,
               이 계정에 등록된 Phantom 지갑을 연결하세요.
             </p>
             <label className="exec-verify-label">
@@ -775,7 +934,7 @@ export function OrchestratorBoard({
           onClick={onCreateJob}
           disabled={!canUseServerJobs || !canFundDeposit}
         >
-          3. 입금내역 확인
+          3. 내 입금 작업 생성
         </button>
         <button className={isExecutionConfirmed ? "flow-step-btn done" : "flow-step-btn waiting"} onClick={onConfirmExecution} disabled={!job}>
           4. 리스크 검토
@@ -785,7 +944,7 @@ export function OrchestratorBoard({
           onClick={onExecute}
           disabled={!canExecute}
         >
-          {step4Label.replace("4.", "5.")}
+          {executionButtonLabel.replace("4.", "5.")}
         </button>
       </div>
 
@@ -809,9 +968,9 @@ export function OrchestratorBoard({
           </p>
         </div>
         <div className="kpi-item">
-          <p className="kpi-label">입금 처리 상태</p>
+          <p className="kpi-label">내 입금 실행 상태</p>
           <p className="kpi-value">{job?.id ? `Job ${job.id.slice(-8)}` : "작업 없음"}</p>
-          <p className="kpi-label">{apiMessage || (job ? "상태: 최종 입금처리 대기" : "상태: 대기 중")}</p>
+          <p className="kpi-label">{apiMessage || (job ? "상태: 내 입금 실행 대기" : "상태: 대기 중")}</p>
         </div>
       </div>
 
@@ -826,7 +985,7 @@ export function OrchestratorBoard({
           <h3>상세 옵션</h3>
           <p className="kpi-label">
             서버 실효 모드: {runtime ? runtime.executionMode.toUpperCase() : "조회 중"} (요청 {runtime?.executionModeRequested ?? "—"}) · 화면 선택:{" "}
-            {displayExecutionMode === "live" ? "실제입금처리" : "dry-run"}
+            {displayExecutionMode === "live" ? "실제 입금 실행" : "dry-run"}
           </p>
           <div className="orchestrator-auto-checks">
             {autoChecks.map((item) => (
