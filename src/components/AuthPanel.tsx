@@ -63,12 +63,7 @@ export function AuthPanel() {
     if (!hasInjected) {
       throw new Error("Phantom 지갑이 설치되어 있지 않습니다. Phantom을 설치한 뒤 다시 시도해 주세요.");
     }
-    try {
-      await connect({ provider: "phantom" });
-      return;
-    } catch {
-      await connect({ provider: "injected" });
-    }
+    await connect({ provider: "injected" });
   };
 
   // ── 로그인 ──────────────────────────────────────────

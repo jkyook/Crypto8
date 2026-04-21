@@ -7,6 +7,7 @@ import {
   AUTH_UPDATED_EVENT,
   clearSession,
   fetchMarketPrices,
+  fetchRuntimeInfo,
   getSession,
   linkAccountWallet,
   listAccountAssets,
@@ -16,6 +17,7 @@ import {
   type AccountAssetSymbol,
   type AuthSession,
   type DepositPositionPayload,
+  type RuntimeInfo,
   type UserWallet
 } from "../lib/api";
 import { fetchEvmPortfolioWithFallback, getEvmRpcCandidates, type EvmChainName } from "../lib/evmChainAssets";
@@ -297,6 +299,7 @@ export function WalletPanel({
   const [linkedWallets, setLinkedWallets] = useState<UserWallet[]>([]);
   const [accountAssets, setAccountAssets] = useState<AccountAssetBalance[]>([]);
   const [accountMenuError, setAccountMenuError] = useState("");
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeInfo["executionMode"]>("dry-run");
   const accountMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -325,7 +328,10 @@ export function WalletPanel({
     }
     const controller = new AbortController();
     setAccountMenuError("");
-    void Promise.allSettled([listAccountWallets({ signal: controller.signal }), listAccountAssets({ signal: controller.signal })])
+    void Promise.allSettled([
+      listAccountWallets({ signal: controller.signal }),
+      listAccountAssets({ signal: controller.signal }, runtimeMode)
+    ])
       .then(([walletsResult, assetsResult]) => {
         if (controller.signal.aborted) return;
         setLinkedWallets(walletsResult.status === "fulfilled" ? walletsResult.value : []);
@@ -333,9 +339,34 @@ export function WalletPanel({
         if (walletsResult.status === "rejected") {
           setAccountMenuError("연결 지갑 정보를 불러오지 못했습니다. API 서버를 새 코드로 재시작하면 복구됩니다.");
         }
-      });
+    });
     return () => controller.abort();
-  }, [appUsername]);
+  }, [appUsername, runtimeMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const loadRuntimeMode = async () => {
+      try {
+        const info = await fetchRuntimeInfo();
+        if (!cancelled) {
+          setRuntimeMode(info.executionMode);
+        }
+      } catch {
+        if (!cancelled) {
+          setRuntimeMode("dry-run");
+        }
+      }
+    };
+    void loadRuntimeMode();
+    timer = window.setInterval(() => {
+      void loadRuntimeMode();
+    }, 2000);
+    return () => {
+      cancelled = true;
+      if (timer) window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -387,12 +418,7 @@ export function WalletPanel({
     if (!hasInjected) {
       throw new Error("Phantom 지갑이 설치되어 있지 않습니다. Phantom을 설치한 뒤 다시 시도해 주세요.");
     }
-    try {
-      await connect({ provider: "phantom" });
-      return;
-    } catch {
-      await connect({ provider: "injected" });
-    }
+    await connect({ provider: "injected" });
   };
 
   const ledgerRows = useMemo(() => {

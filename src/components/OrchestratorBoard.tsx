@@ -132,24 +132,17 @@ export function OrchestratorBoard({
   const jwtAccess = useSyncExternalStore(subscribeLocalAuth, readAccessTokenSnapshot, () => "");
   const canUseServerJobs = jwtAccess.length > 0 && allowJobExecutionProp !== false;
   useEffect(() => {
-    if (!canUseServerJobs) {
-      setAccountAssets([]);
-      setAssetError("");
-      setAssetLoading(false);
-      setAssetSourceLabel("가상 잔고");
-      return;
-    }
     const controller = new AbortController();
     setAssetLoading(true);
     setAssetError("");
     const loadAssets = async () => {
       try {
+        const prices = await fetchMarketPrices({ signal: controller.signal });
+        if (controller.signal.aborted) return;
         if (executionModeIntent === "live") {
           if (!hasWallet) {
             throw new Error("REAL-RUN은 실제 지갑 연결이 필요합니다.");
           }
-          const prices = await fetchMarketPrices({ signal: controller.signal });
-          if (controller.signal.aborted) return;
           const evmAddress = evmAccount?.address as `0x${string}` | undefined;
           const [solanaPortfolio, evmPortfolios] = await Promise.all([
             solanaAccount?.address
@@ -223,8 +216,16 @@ export function OrchestratorBoard({
           if (!nextAssets.some((row) => row.symbol === selectedSourceAsset) && nextAssets[0]) {
             setSelectedSourceAsset(nextAssets[0].symbol);
           }
-        } else {
+        } else if (canUseServerJobs) {
           const rows = await listAccountAssets({ signal: controller.signal }, "dry-run");
+          if (controller.signal.aborted) return;
+          setAccountAssets(rows);
+          setAssetSourceLabel("가상 잔고");
+          if (!rows.some((row) => row.symbol === selectedSourceAsset) && rows[0]) {
+            setSelectedSourceAsset(rows[0].symbol);
+          }
+        } else {
+          const rows = buildFallbackDryRunAssets(prices.prices, prices.source, prices.updatedAt);
           if (controller.signal.aborted) return;
           setAccountAssets(rows);
           setAssetSourceLabel("가상 잔고");
@@ -370,7 +371,32 @@ export function OrchestratorBoard({
       });
     return () => controller.abort();
   }, [canUseServerJobs, isResultQuote, quoteRows]);
-  const canFundDeposit = !canUseServerJobs || assetReadiness.isSufficient;
+  function buildFallbackDryRunAssets(
+    prices: Partial<Record<AccountAssetSymbol, number>>,
+    priceSource: string,
+    priceUpdatedAt: string
+  ): AccountAssetBalance[] {
+    const defaults: Array<{ symbol: AccountAssetSymbol; chain: string; amount: number }> = [
+      { symbol: "USDC", chain: "Arbitrum", amount: 10000 },
+      { symbol: "USDT", chain: "Arbitrum", amount: 2500 },
+      { symbol: "ETH", chain: "Arbitrum", amount: 0.5 },
+      { symbol: "SOL", chain: "Solana", amount: 20 }
+    ];
+    return defaults.map((row) => {
+      const usdPrice = prices[row.symbol] ?? 0;
+      return {
+        symbol: row.symbol,
+        chain: row.chain,
+        amount: row.amount,
+        usdPrice,
+        usdValue: Number((row.amount * usdPrice).toFixed(2)),
+        priceSource,
+        priceUpdatedAt
+      };
+    });
+  }
+
+  const canFundDeposit = assetReadiness.isSufficient;
   const canExecute = Boolean(job) && isExecutionConfirmed && canUseServerJobs && canFundDeposit && (!isLiveExecution || protocolReadyCount > 0);
   const quoteTitle = lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0)
     ? "실행 결과 배분"
