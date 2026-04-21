@@ -914,7 +914,11 @@ export async function listAccountWallets(init: Pick<RequestInit, "signal"> = {})
   return Array.isArray(raw.wallets) ? raw.wallets : [];
 }
 
-export async function linkAccountWallet(walletAddress: string, chain = "Solana", provider = "phantom"): Promise<UserWallet> {
+export async function linkAccountWallet(
+  walletAddress: string,
+  chain: string = "Solana",
+  provider: string = "phantom"
+): Promise<UserWallet> {
   const response = await authedFetch("/api/account/wallets", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
