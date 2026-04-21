@@ -3,6 +3,8 @@ import ReactDOM from "react-dom/client";
 import { AddressType, type AuthProviderType } from "@phantom/browser-sdk";
 import { PhantomProvider } from "@phantom/react-sdk";
 import App from "./App";
+import { PortfolioProvider } from "./contexts/PortfolioContext";
+import { SessionProvider } from "./contexts/SessionContext";
 import "./styles.css";
 
 const appId = import.meta.env.VITE_PHANTOM_APP_ID ?? "";
@@ -22,7 +24,11 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         }
       }}
     >
-      <App />
+      <SessionProvider>
+        <PortfolioProvider>
+          <App />
+        </PortfolioProvider>
+      </SessionProvider>
     </PhantomProvider>
   </React.StrictMode>
 );
