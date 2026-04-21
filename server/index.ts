@@ -456,10 +456,11 @@ app.get("/api/whitepaper.pdf", (_req, res) => {
   });
 });
 
-app.get("/api/account/assets", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {
+app.get("/api/account/assets", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
   const username = res.locals.user.username as string;
   const role = res.locals.user.role as UserRole;
-  res.json({ ok: true, assets: await listAccountAssets(username, role) });
+  const mode = req.query.mode === "dry-run" ? "dry-run" : "live";
+  res.json({ ok: true, assets: await listAccountAssets(username, role, mode) });
 });
 
 app.get("/api/account/wallets", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {

@@ -17,15 +17,12 @@ const BCRYPT_ROUNDS = (() => {
 
 /**
  * `users`가 비어 있으면 prisma/seed.ts와 동일한 데모 계정을 넣습니다(로컬·첫 기동 편의).
- * 보안: 프로덕션 환경에서는 사고 방지를 위해 자동 생성을 절대 수행하지 않습니다.
- *  - `NODE_ENV=production` 이거나
- *  - `DISABLE_DEMO_USERS=true`(또는 `1`)
- *  중 하나라도 해당하면 시드를 건너뜁니다.
+ * 운영 배포에서도 데모 로그인 경로가 유지되어야 하는 MVP 특성상,
+ * `DISABLE_DEMO_USERS=true`(또는 `1`)일 때만 자동 생성을 건너뜁니다.
  */
 export async function ensureDemoUsersIfEmpty(): Promise<void> {
-  const isProduction = process.env.NODE_ENV === "production";
   const disabledByFlag = ["1", "true", "yes"].includes((process.env.DISABLE_DEMO_USERS ?? "").toLowerCase());
-  if (isProduction || disabledByFlag) {
+  if (disabledByFlag) {
     return;
   }
   const db = getDb();

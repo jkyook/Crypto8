@@ -867,8 +867,11 @@ export async function listSelfRegistrations(): Promise<SelfRegistrationRow[]> {
   return Array.isArray(regs) ? regs : [];
 }
 
-export async function listAccountAssets(init: Pick<RequestInit, "signal"> = {}): Promise<AccountAssetBalance[]> {
-  const response = await authedFetch("/api/account/assets", init);
+export async function listAccountAssets(
+  init: Pick<RequestInit, "signal"> = {},
+  mode: "dry-run" | "live" = "live"
+): Promise<AccountAssetBalance[]> {
+  const response = await authedFetch(`/api/account/assets?mode=${mode}`, init);
   const raw = (await readJsonFromApiResponse(response, "계정 자산 조회")) as {
     message?: string;
     assets?: AccountAssetBalance[];

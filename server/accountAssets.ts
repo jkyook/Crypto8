@@ -312,8 +312,22 @@ function defaultBalancesForRole(role: UserRole): Array<Pick<AccountAssetBalance,
   ];
 }
 
-export async function listAccountAssets(username: string, role: UserRole): Promise<AccountAssetBalance[]> {
+export async function listAccountAssets(
+  username: string,
+  role: UserRole,
+  mode: "dry-run" | "live" = "live"
+): Promise<AccountAssetBalance[]> {
   const priceSnapshot = await getMarketPriceSnapshot();
+  if (mode === "dry-run") {
+    const rows = DEMO_BALANCES[username] ?? defaultBalancesForRole(role);
+    return rows.map((row) => ({
+      ...row,
+      usdPrice: priceSnapshot.prices[row.symbol],
+      usdValue: Number((row.amount * priceSnapshot.prices[row.symbol]).toFixed(2)),
+      priceSource: priceSnapshot.source,
+      priceUpdatedAt: priceSnapshot.updatedAt
+    }));
+  }
   const linkedWallets = await listUserWallets(username);
   if (linkedWallets.length > 0) {
     const results = await Promise.allSettled(

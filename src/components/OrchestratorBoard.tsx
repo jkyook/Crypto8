@@ -224,7 +224,7 @@ export function OrchestratorBoard({
             setSelectedSourceAsset(nextAssets[0].symbol);
           }
         } else {
-          const rows = await listAccountAssets({ signal: controller.signal });
+          const rows = await listAccountAssets({ signal: controller.signal }, "dry-run");
           if (controller.signal.aborted) return;
           setAccountAssets(rows);
           setAssetSourceLabel("가상 잔고");
