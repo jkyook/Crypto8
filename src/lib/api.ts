@@ -365,36 +365,34 @@ export type MarketPriceSnapshot = {
   source: string;
 };
 
+export type LiveProtocol = "aave" | "uniswap" | "orca" | "aerodrome" | "raydium" | "curve";
+
+export type LiveAdapterFlagMap = Record<LiveProtocol, boolean>;
+export type LiveAdapterSourceMap = Record<LiveProtocol, "env" | "override">;
+
+export type ProtocolReadiness = {
+  ready: boolean;
+  implemented: boolean;
+  blockers: string[];
+};
+
 export type RuntimeInfo = {
   executionMode: "dry-run" | "live";
   executionModeRequested: string;
   executionModeOverride?: "dry-run" | "live" | null;
   executionModeSource?: "env" | "override";
   liveExecutionConfirmed: boolean;
-  liveAdapterFlags?: {
-    aave: boolean;
-    uniswap: boolean;
-    orca: boolean;
-    aerodrome: boolean;
-    raydium: boolean;
-    curve: boolean;
+  liveAdapterFlags?: LiveAdapterFlagMap;
+  configuredLiveAdapterFlags?: LiveAdapterFlagMap;
+  liveAdapterFlagSources?: LiveAdapterSourceMap;
+  protocolReadiness?: Record<LiveProtocol, ProtocolReadiness>;
+  rpcConfigured?: {
+    ethereum: boolean;
+    arbitrum: boolean;
+    base: boolean;
+    solana: boolean;
   };
-  configuredLiveAdapterFlags?: {
-    aave: boolean;
-    uniswap: boolean;
-    orca: boolean;
-    aerodrome: boolean;
-    raydium: boolean;
-    curve: boolean;
-  };
-  liveAdapterFlagSources?: {
-    aave: "env" | "override";
-    uniswap: "env" | "override";
-    orca: "env" | "override";
-    aerodrome: "env" | "override";
-    raydium: "env" | "override";
-    curve: "env" | "override";
-  };
+  solanaKeyConfigured?: boolean;
   walletUiPolicy: string;
   serverExecutionNote: string;
 };
@@ -1540,7 +1538,7 @@ export async function updateRuntimeExecutionMode(mode: "dry-run" | "live"): Prom
   return raw;
 }
 
-export async function updateRuntimeLiveFlag(protocol: "uniswap", enabled: boolean): Promise<RuntimeInfo> {
+export async function updateRuntimeLiveFlag(protocol: LiveProtocol, enabled: boolean): Promise<RuntimeInfo> {
   const response = await authedFetch("/api/runtime/live-flags", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1549,6 +1547,19 @@ export async function updateRuntimeLiveFlag(protocol: "uniswap", enabled: boolea
   const raw = (await readJsonFromApiResponse(response, "프로토콜 live 플래그 변경")) as RuntimeInfo & { message?: string };
   if (!response.ok || !raw.executionMode) {
     throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "프로토콜 live 플래그 변경 실패");
+  }
+  return raw;
+}
+
+export async function setRuntimePreset(preset: "dry-run" | "real-run"): Promise<RuntimeInfo> {
+  const response = await authedFetch("/api/runtime/preset", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ preset })
+  });
+  const raw = (await readJsonFromApiResponse(response, "실행 프리셋 변경")) as RuntimeInfo & { message?: string };
+  if (!response.ok || !raw.executionMode) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "실행 프리셋 변경 실패");
   }
   return raw;
 }

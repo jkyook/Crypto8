@@ -36,7 +36,8 @@ import {
   getRuntimeLiveFlagSources,
   getRuntimeExecutionModeOverride,
   setRuntimeExecutionModeOverride,
-  setRuntimeLiveFlagOverride
+  setRuntimeLiveFlagOverride,
+  getProtocolReadiness
 } from "./runtimeMode";
 import { ensureDemoUsersIfEmpty } from "./ensureDemoUsers";
 import rateLimit from "express-rate-limit";
@@ -678,36 +679,7 @@ app.get("/api/market/pool-apy-history-csv", (req, res) => {
 });
 
 app.get("/api/runtime/info", (_req, res) => {
-  const requested = getExecutionModeRequestedFromEnv();
-  const liveConfirmed = process.env.LIVE_EXECUTION_CONFIRM === "YES";
-  const executionMode = getEffectiveExecutionMode();
-  const executionModeOverride = getRuntimeExecutionModeOverride();
-  const liveAdapterFlags = getEffectiveLiveAdapterFlags();
-  const configuredLiveAdapterFlags = getConfiguredLiveAdapterFlags();
-  const liveAdapterFlagSources = getRuntimeLiveFlagSources();
-
-  // RPC 설정 여부 (URL 값은 노출하지 않음)
-  const rpcConfigured = {
-    ethereum: Boolean(process.env.ETHEREUM_RPC_URL),
-    arbitrum: Boolean(process.env.ARBITRUM_RPC_URL),
-    base: Boolean(process.env.BASE_RPC_URL),
-    solana: Boolean(process.env.SOLANA_RPC_URL)
-  };
-
-  res.json({
-    ok: true,
-    executionMode,
-    executionModeRequested: requested,
-    executionModeOverride,
-    executionModeSource: executionModeOverride ? "override" : "env",
-    liveExecutionConfirmed: liveConfirmed,
-    liveAdapterFlags,
-    configuredLiveAdapterFlags,
-    liveAdapterFlagSources,
-    rpcConfigured,
-    walletUiPolicy: "phantom-solana",
-    serverExecutionNote: buildRuntimeExecutionNote()
-  });
+  res.json(buildRuntimeInfoPayload());
 });
 
 app.post("/api/runtime/execution-mode", requireAuth(["orchestrator", "security"]), async (req, res) => {
@@ -723,26 +695,39 @@ app.post("/api/runtime/execution-mode", requireAuth(["orchestrator", "security"]
   }
   const db = getDb();
   await setRuntimeExecutionModeOverride(db, mode);
-  res.json({
+  res.json(buildRuntimeInfoPayload());
+});
+
+const ALLOWED_LIVE_FLAG_PROTOCOLS = ["aave", "uniswap", "orca", "aerodrome", "raydium", "curve"] as const;
+type AllowedLiveFlagProtocol = (typeof ALLOWED_LIVE_FLAG_PROTOCOLS)[number];
+
+function buildRuntimeInfoPayload() {
+  return {
     ok: true,
     executionMode: getEffectiveExecutionMode(),
     executionModeRequested: getExecutionModeRequestedFromEnv(),
     executionModeOverride: getRuntimeExecutionModeOverride(),
-    executionModeSource: "override",
+    executionModeSource: getRuntimeExecutionModeOverride() ? "override" : ("env" as const),
     liveExecutionConfirmed: process.env.LIVE_EXECUTION_CONFIRM === "YES",
     liveAdapterFlags: getEffectiveLiveAdapterFlags(),
     configuredLiveAdapterFlags: getConfiguredLiveAdapterFlags(),
     liveAdapterFlagSources: getRuntimeLiveFlagSources(),
+    protocolReadiness: getProtocolReadiness(),
     rpcConfigured: {
       ethereum: Boolean(process.env.ETHEREUM_RPC_URL),
       arbitrum: Boolean(process.env.ARBITRUM_RPC_URL),
       base: Boolean(process.env.BASE_RPC_URL),
       solana: Boolean(process.env.SOLANA_RPC_URL)
     },
+    solanaKeyConfigured: Boolean(
+      process.env.SOLANA_EXECUTOR_PRIVATE_KEY_FILE ||
+        process.env.SOLANA_EXECUTOR_PRIVATE_KEY_JSON ||
+        process.env.SOLANA_EXECUTOR_PRIVATE_KEY
+    ),
     walletUiPolicy: "phantom-solana",
     serverExecutionNote: buildRuntimeExecutionNote()
-  });
-});
+  };
+}
 
 app.post("/api/runtime/live-flags", requireAuth(["orchestrator", "security"]), async (req, res) => {
   if (!verifyCsrfToken(req)) {
@@ -750,9 +735,11 @@ app.post("/api/runtime/live-flags", requireAuth(["orchestrator", "security"]), a
     return;
   }
   const body = req.body as { protocol?: unknown; enabled?: unknown };
-  const protocol = body.protocol === "uniswap" ? "uniswap" : null;
+  const protocol = ALLOWED_LIVE_FLAG_PROTOCOLS.includes(body.protocol as AllowedLiveFlagProtocol)
+    ? (body.protocol as AllowedLiveFlagProtocol)
+    : null;
   if (!protocol) {
-    res.status(400).json({ ok: false, message: "protocol must be uniswap" });
+    res.status(400).json({ ok: false, message: `protocol must be one of: ${ALLOWED_LIVE_FLAG_PROTOCOLS.join(", ")}` });
     return;
   }
   if (typeof body.enabled !== "boolean") {
@@ -761,25 +748,36 @@ app.post("/api/runtime/live-flags", requireAuth(["orchestrator", "security"]), a
   }
   const db = getDb();
   await setRuntimeLiveFlagOverride(db, protocol, body.enabled);
-  res.json({
-    ok: true,
-    executionMode: getEffectiveExecutionMode(),
-    executionModeRequested: getExecutionModeRequestedFromEnv(),
-    executionModeOverride: getRuntimeExecutionModeOverride(),
-    executionModeSource: getRuntimeExecutionModeOverride() ? "override" : "env",
-    liveExecutionConfirmed: process.env.LIVE_EXECUTION_CONFIRM === "YES",
-    liveAdapterFlags: getEffectiveLiveAdapterFlags(),
-    configuredLiveAdapterFlags: getConfiguredLiveAdapterFlags(),
-    liveAdapterFlagSources: getRuntimeLiveFlagSources(),
-    rpcConfigured: {
-      ethereum: Boolean(process.env.ETHEREUM_RPC_URL),
-      arbitrum: Boolean(process.env.ARBITRUM_RPC_URL),
-      base: Boolean(process.env.BASE_RPC_URL),
-      solana: Boolean(process.env.SOLANA_RPC_URL)
-    },
-    walletUiPolicy: "phantom-solana",
-    serverExecutionNote: buildRuntimeExecutionNote()
-  });
+  res.json(buildRuntimeInfoPayload());
+});
+
+/** dry-run / real-run 프리셋 — 모드 + 모든 프로토콜 플래그를 한 번에 전환 */
+app.post("/api/runtime/preset", requireAuth(["orchestrator", "security"]), async (req, res) => {
+  if (!verifyCsrfToken(req)) {
+    res.status(403).json({ ok: false, message: "forbidden: csrf token mismatch" });
+    return;
+  }
+  const body = req.body as { preset?: unknown };
+  if (body.preset !== "dry-run" && body.preset !== "real-run") {
+    res.status(400).json({ ok: false, message: "preset must be dry-run or real-run" });
+    return;
+  }
+  const db = getDb();
+  if (body.preset === "real-run") {
+    await setRuntimeExecutionModeOverride(db, "live");
+    const readiness = getProtocolReadiness();
+    for (const protocol of ALLOWED_LIVE_FLAG_PROTOCOLS) {
+      // 구현되지 않았거나 전제 조건 미충족 프로토콜은 활성화하지 않음
+      const enabled = readiness[protocol].ready;
+      await setRuntimeLiveFlagOverride(db, protocol, enabled);
+    }
+  } else {
+    await setRuntimeExecutionModeOverride(db, "dry-run");
+    for (const protocol of ALLOWED_LIVE_FLAG_PROTOCOLS) {
+      await setRuntimeLiveFlagOverride(db, protocol, false);
+    }
+  }
+  res.json(buildRuntimeInfoPayload());
 });
 
 function stripUsername<T extends { username: string }>(row: T): Omit<T, "username"> {

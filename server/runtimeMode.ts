@@ -72,6 +72,51 @@ export function isProtocolLiveExecutionEnabled(protocol: LiveProtocol): boolean 
   return process.env.LIVE_EXECUTION_CONFIRM === "YES" && getConfiguredLiveFlag(protocol);
 }
 
+export type ProtocolReadiness = {
+  ready: boolean;
+  implemented: boolean;
+  blockers: string[];
+};
+
+/**
+ * 각 프로토콜의 실제 live 실행 가능 여부를 판단한다.
+ * - implemented: 어댑터가 실제 live 코드를 갖추고 있는지
+ * - ready: implemented + 모든 전제 조건(RPC, 키 등) 충족
+ * - blockers: 준비 안 된 이유 목록
+ */
+export function getProtocolReadiness(): Record<LiveProtocol, ProtocolReadiness> {
+  const liveConfirmed = process.env.LIVE_EXECUTION_CONFIRM === "YES";
+  const hasSolanaRpc = Boolean(process.env.SOLANA_RPC_URL);
+  const hasSolanaKey = Boolean(
+    process.env.SOLANA_EXECUTOR_PRIVATE_KEY_FILE ||
+      process.env.SOLANA_EXECUTOR_PRIVATE_KEY_JSON ||
+      process.env.SOLANA_EXECUTOR_PRIVATE_KEY
+  );
+  const hasArbitrumRpc = Boolean(process.env.ARBITRUM_RPC_URL);
+  const hasBaseRpc = Boolean(process.env.BASE_RPC_URL);
+
+  function build(implemented: boolean, blockers: string[]): ProtocolReadiness {
+    if (!liveConfirmed) blockers.push("LIVE_EXECUTION_CONFIRM=YES 미설정");
+    return { implemented, ready: implemented && blockers.length === 0, blockers };
+  }
+
+  return {
+    aave: build(true, [
+      ...(!hasArbitrumRpc && !hasBaseRpc ? ["ARBITRUM_RPC_URL 또는 BASE_RPC_URL 미설정"] : [])
+    ]),
+    uniswap: build(true, [
+      ...(!hasArbitrumRpc ? ["ARBITRUM_RPC_URL 미설정"] : [])
+    ]),
+    orca: build(true, [
+      ...(!hasSolanaRpc ? ["SOLANA_RPC_URL 미설정"] : []),
+      ...(!hasSolanaKey ? ["SOLANA_EXECUTOR_PRIVATE_KEY 미설정"] : [])
+    ]),
+    aerodrome: build(false, ["어댑터 미구현 (예정)"]),
+    raydium: build(false, ["어댑터 미구현 (예정)"]),
+    curve: build(false, ["어댑터 미구현 (예정)"])
+  };
+}
+
 export function getRuntimeLiveFlagSources(): Record<LiveProtocol, LiveFlagSource> {
   return LIVE_FLAG_PROTOCOLS.reduce((acc, protocol) => {
     acc[protocol] = getLiveFlagSource(protocol);

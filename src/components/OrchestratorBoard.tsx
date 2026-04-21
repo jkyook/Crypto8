@@ -35,6 +35,7 @@ import {
   type RuntimeInfo,
   type UserWallet
 } from "../lib/api";
+import { NetworkSettingsPanel } from "./NetworkSettingsPanel";
 import { buildDepositAssetReadiness } from "../lib/depositAssetPlan";
 import { buildExecutionPreviewRows } from "../lib/executionPreview";
 import { buildAgentTasks, evaluateRisk } from "../lib/orchestrator";
@@ -113,6 +114,7 @@ export function OrchestratorBoard({
   const [copiedTxHash, setCopiedTxHash] = useState("");
   const [aaveWithdrawLoading, setAaveWithdrawLoading] = useState(false);
   const [executionModeIntent, setExecutionModeIntent] = useState<"dry-run" | "live">("dry-run");
+  const [showNetworkSettings, setShowNetworkSettings] = useState(false);
   const [lastExecution, setLastExecution] = useState<ExecuteJobResponse | null>(null);
   /** 현재 로그인 계정에 등록된 지갑 목록 (계정 연동 검증용) */
   const [linkedWallets, setLinkedWallets] = useState<UserWallet[]>([]);
@@ -877,84 +879,44 @@ export function OrchestratorBoard({
 
   return (
     <section className="card orchestrator-card">
-      <h2>입금 처리</h2>
-      {runtime?.serverExecutionNote || !canUseServerJobs ? (
-        <div className="runtime-scope-notice" role="note">
-          {runtime?.serverExecutionNote ? <p className="runtime-scope-sub">{runtime.serverExecutionNote}</p> : null}
-          {runtimeModeError ? <p className="runtime-scope-sub runtime-scope-sub--error">{runtimeModeError}</p> : null}
-          <div className="runtime-mode-switcher" role="group" aria-label="서버 실행 모드 토글">
-            <span className="runtime-mode-switcher-label">
-              현재 서버 모드: <strong>{runtime?.executionMode?.toUpperCase() ?? "조회 중"}</strong>
-              {runtime?.executionModeOverride ? ` · 오버라이드 ${runtime.executionModeOverride.toUpperCase()}` : ""}
+      <div className="orchestrator-card-header">
+        <h2>입금 처리</h2>
+        <button
+          type="button"
+          className="net-settings-trigger-btn"
+          onClick={() => setShowNetworkSettings(true)}
+          title="네트워크 및 실행 모드 설정"
+        >
+          ⚙ 네트워크 설정
+          {runtime && (
+            <span className={`net-mode-badge${runtime.executionMode === "live" ? " badge--live" : " badge--dry"}`}>
+              {runtime.executionMode === "live" ? "REAL" : "DRY"}
             </span>
-            {canToggleServerMode ? (
-              <div className="button-row">
-                <button
-                  type="button"
-                  className={runtime?.executionMode === "dry-run" ? "ghost-btn active" : "ghost-btn"}
-                  onClick={() => void setServerExecutionMode("dry-run")}
-                  disabled={runtimeModeUpdating}
-                >
-                  서버 dry-run
-                </button>
-                <button
-                  type="button"
-                  className={runtime?.executionMode === "live" ? "ghost-btn active" : "ghost-btn"}
-                  onClick={() => void setServerExecutionMode("live")}
-                  disabled={runtimeModeUpdating}
-                >
-                  서버 live
-                </button>
-              </div>
-            ) : (
-              <p className="runtime-scope-sub">
-                서버 모드 토글은 orchestrator 또는 security 권한이 있는 계정만 사용할 수 있습니다.
-              </p>
-            )}
-            <div className="runtime-live-flag-switcher" role="group" aria-label="Uniswap live 플래그 토글">
-              <span className="runtime-mode-switcher-label">
-                Uniswap live 설정: <strong>{runtime?.configuredLiveAdapterFlags?.uniswap ? "ON" : "OFF"}</strong>
-                {runtime?.liveAdapterFlagSources?.uniswap ? ` · ${runtime.liveAdapterFlagSources.uniswap}` : ""}
-              </span>
-              {canToggleRuntimeFlags ? (
-                <div className="button-row">
-                  <button
-                    type="button"
-                    className={runtime?.configuredLiveAdapterFlags?.uniswap ? "ghost-btn active" : "ghost-btn"}
-                    onClick={() => void setUniswapLiveFlag(true)}
-                    disabled={runtimeFlagUpdating}
-                  >
-                    Uniswap live ON
-                  </button>
-                  <button
-                    type="button"
-                    className={!runtime?.configuredLiveAdapterFlags?.uniswap ? "ghost-btn active" : "ghost-btn"}
-                    onClick={() => void setUniswapLiveFlag(false)}
-                    disabled={runtimeFlagUpdating}
-                  >
-                    Uniswap live OFF
-                  </button>
-                </div>
-              ) : (
-                <p className="runtime-scope-sub">Uniswap live 플래그 변경은 orchestrator 또는 security 권한이 있는 계정만 사용할 수 있습니다.</p>
-              )}
-              <p className="runtime-scope-sub">
-                현재 live 실행 가능한 Uniswap 경로는 Arbitrum USDC-USDT뿐입니다. 실효 상태는{" "}
-                <strong>{runtime?.liveAdapterFlags?.uniswap ? "ON" : "OFF"}</strong>이며, LIVE_EXECUTION_CONFIRM=YES가 추가로 필요합니다.
-              </p>
-              {runtimeFlagError ? <p className="runtime-scope-sub runtime-scope-sub--error">{runtimeFlagError}</p> : null}
-            </div>
-            {isLiveExecution && liveExecutionBlockers.length > 0 ? (
-              <ul className="runtime-live-blockers">
-                {liveExecutionBlockers.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            ) : null}
-          </div>
+          )}
+        </button>
+      </div>
+      {showNetworkSettings && (
+        <NetworkSettingsPanel
+          runtime={runtime}
+          canToggle={canToggleServerMode}
+          onUpdate={(info) => setRuntime(info)}
+          onClose={() => setShowNetworkSettings(false)}
+        />
+      )}
+      {(!canUseServerJobs || runtimeModeError || runtimeFlagError) ? (
+        <div className="runtime-scope-notice" role="note">
+          {runtimeModeError ? <p className="runtime-scope-sub runtime-scope-sub--error">{runtimeModeError}</p> : null}
+          {runtimeFlagError ? <p className="runtime-scope-sub runtime-scope-sub--error">{runtimeFlagError}</p> : null}
+          {isLiveExecution && liveExecutionBlockers.length > 0 ? (
+            <ul className="runtime-live-blockers">
+              {liveExecutionBlockers.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          ) : null}
           {!canUseServerJobs ? (
             <p className="runtime-scope-sub" role="status">
-          1~3단계는 <strong>로그인 · 계정</strong> 메뉴에서 아이디·비밀번호(JWT)로 로그인(또는 이용자 가입)한 뒤에 사용할 수 있습니다. dry-run은 Phantom 서명 없이도 내 실행 기록을 남길 수 있습니다.
+              1~3단계는 <strong>로그인 · 계정</strong> 메뉴에서 아이디·비밀번호(JWT)로 로그인(또는 이용자 가입)한 뒤에 사용할 수 있습니다. dry-run은 Phantom 서명 없이도 내 실행 기록을 남길 수 있습니다.
             </p>
           ) : (
             <p className="runtime-scope-sub" role="status">

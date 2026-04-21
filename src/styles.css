@@ -6103,3 +6103,446 @@ body[data-theme="light"] .pnl-negative strong { color: #dc2626; }
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* ── NetworkSettingsPanel ──────────────────────────────────────── */
+.orchestrator-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.orchestrator-card-header h2 {
+  margin: 0;
+}
+
+.net-settings-trigger-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: var(--c8-radius-sm);
+  border: 1px solid rgba(91, 140, 255, 0.35);
+  background: rgba(91, 140, 255, 0.08);
+  color: var(--c8-accent);
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.net-settings-trigger-btn:hover {
+  background: rgba(91, 140, 255, 0.16);
+  border-color: rgba(91, 140, 255, 0.6);
+}
+
+.net-mode-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.net-mode-badge.badge--live {
+  background: rgba(251, 113, 133, 0.2);
+  color: #fb7185;
+  border: 1px solid rgba(251, 113, 133, 0.4);
+}
+
+.net-mode-badge.badge--dry {
+  background: rgba(147, 197, 253, 0.12);
+  color: #93c5fd;
+  border: 1px solid rgba(147, 197, 253, 0.3);
+}
+
+/* overlay */
+.net-settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 10, 20, 0.75);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+
+.net-settings-panel {
+  background: #0d1829;
+  border: 1px solid rgba(91, 140, 255, 0.3);
+  border-radius: var(--c8-radius-lg);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  width: 100%;
+  max-width: 540px;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.net-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.net-settings-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: #ecf2ff;
+}
+
+.net-settings-close {
+  background: none;
+  border: none;
+  color: var(--c8-text-muted);
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.net-settings-close:hover {
+  color: #ecf2ff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.net-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.net-settings-section:last-of-type {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.net-settings-section-title {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--c8-text-muted);
+}
+
+/* mode toggle */
+.net-settings-mode-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.net-settings-mode-btn {
+  flex: 1;
+  padding: 10px 0;
+  border-radius: var(--c8-radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--c8-text-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.net-settings-mode-btn:hover:not(:disabled) {
+  border-color: rgba(147, 197, 253, 0.4);
+  color: #93c5fd;
+  background: rgba(147, 197, 253, 0.06);
+}
+
+.net-settings-mode-btn.active {
+  background: rgba(147, 197, 253, 0.12);
+  border-color: rgba(147, 197, 253, 0.5);
+  color: #93c5fd;
+}
+
+.net-settings-mode-btn.active.active--live {
+  background: rgba(251, 113, 133, 0.12);
+  border-color: rgba(251, 113, 133, 0.5);
+  color: #fb7185;
+}
+
+.net-settings-spinner {
+  color: var(--c8-text-muted);
+  animation: spin 0.9s linear infinite;
+  display: inline-block;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* prereqs */
+.net-settings-prereq-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.net-settings-prereq {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: var(--c8-radius-sm);
+  font-size: 0.8rem;
+  border: 1px solid transparent;
+}
+
+.net-settings-prereq.ok {
+  background: rgba(52, 211, 153, 0.07);
+  border-color: rgba(52, 211, 153, 0.25);
+  color: #6ee7b7;
+}
+
+.net-settings-prereq.warn {
+  background: rgba(251, 191, 36, 0.07);
+  border-color: rgba(251, 191, 36, 0.25);
+  color: #fcd34d;
+}
+
+.prereq-icon {
+  font-size: 0.9rem;
+  flex-shrink: 0;
+}
+
+/* hint */
+.net-settings-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--c8-text-muted);
+  line-height: 1.5;
+}
+
+.net-settings-hint--warn {
+  color: #fcd34d;
+}
+
+.net-settings-hint code {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+
+.net-settings-badge {
+  margin: 0;
+  font-size: 0.75rem;
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  align-self: flex-start;
+}
+
+.badge--override {
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  color: #fcd34d;
+}
+
+/* protocol list */
+.net-settings-protocol-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.net-settings-protocol-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: var(--c8-radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  gap: 10px;
+}
+
+.net-settings-protocol-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.protocol-label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #ecf2ff;
+  white-space: nowrap;
+}
+
+.protocol-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+}
+
+.protocol-badge.badge--live {
+  background: rgba(251, 113, 133, 0.18);
+  border: 1px solid rgba(251, 113, 133, 0.4);
+  color: #fb7185;
+}
+
+.protocol-badge.badge--dry {
+  background: rgba(147, 197, 253, 0.1);
+  border: 1px solid rgba(147, 197, 253, 0.25);
+  color: #93c5fd;
+}
+
+.protocol-source {
+  font-size: 0.72rem;
+  color: var(--c8-text-muted);
+}
+
+.net-settings-protocol-btns {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.toggle-btn {
+  padding: 3px 10px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: none;
+  color: var(--c8-text-muted);
+  font-size: 0.76rem;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.toggle-btn:hover:not(:disabled) {
+  border-color: rgba(147, 197, 253, 0.4);
+  color: #93c5fd;
+}
+
+.toggle-btn.active {
+  background: rgba(91, 140, 255, 0.18);
+  border-color: rgba(91, 140, 255, 0.45);
+  color: var(--c8-accent);
+}
+
+.toggle-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.net-settings-error {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--c8-radius-sm);
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+  font-size: 0.82rem;
+}
+
+/* ── NetworkSettingsPanel 개선 ────────────────────────────────── */
+.net-settings-mode-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.net-settings-mode-btn small {
+  font-size: 0.68rem;
+  font-weight: 400;
+  opacity: 0.75;
+  letter-spacing: 0;
+}
+
+/* readiness chip */
+.readiness-chip {
+  font-size: 0.66rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+.chip--ready {
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  color: #6ee7b7;
+}
+
+.chip--blocked {
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  color: #fcd34d;
+}
+
+.chip--unimpl {
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  color: #94a3b8;
+}
+
+/* protocol row improvements */
+.protocol-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.protocol-chain {
+  font-size: 0.72rem;
+  color: var(--c8-text-muted);
+}
+
+.protocol-status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 3px;
+}
+
+.protocol-blocker {
+  font-size: 0.71rem;
+  color: #fcd34d;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.net-settings-protocol-row.row--unimpl {
+  opacity: 0.55;
+}
+
+/* prereq sub-text */
+.net-settings-prereq div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 0.78rem;
+}
+
+.net-settings-prereq code {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 0.7rem;
+  opacity: 0.85;
+}
