@@ -16,63 +16,17 @@ import {
 } from "./positions";
 import { approveJob, cancelJob, createJob, executeJob, getJob, listApprovals, listExecutionEvents, listJobs } from "./store";
 import type { ApprovalLog, JobInput } from "./types";
-import {
-  authenticate,
-  authenticateWallet,
-  createWalletLoginChallenge,
-  refreshAccessToken,
-  registerUser,
-  revokeRefreshToken,
-  type UserRole,
-  verifyToken
-} from "./auth";
+import { authenticate, authenticateWallet, refreshAccessToken, registerUser, revokeRefreshToken, type UserRole, verifyToken } from "./auth";
 import { getDb, initDb } from "./db";
-import {
-  buildRuntimeExecutionNote,
-  getConfiguredLiveAdapterFlags,
-  getEffectiveLiveAdapterFlags,
-  getEffectiveExecutionMode,
-  getExecutionModeRequestedFromEnv,
-  getRuntimeLiveFlagSources,
-  getRuntimeExecutionModeOverride,
-  setRuntimeExecutionModeOverride,
-  setRuntimeLiveFlagOverride,
-  getProtocolReadiness
-} from "./runtimeMode";
 import { ensureDemoUsersIfEmpty } from "./ensureDemoUsers";
 import rateLimit from "express-rate-limit";
 import { gatherProtocolInsightsNews } from "./protocolNews";
 import { getDailyApySeriesFromCsv, getPoolApySeriesFromCsv, listMarketRatesHistory, maybeAppendMarketRatesSnapshot } from "./marketAprHistory";
-import { listAccountAssets, listWalletAssets } from "./accountAssets";
+import { listAccountAssets } from "./accountAssets";
 import { estimateProtocolFees, type FeeEstimateInputRow } from "./feeEstimator";
 import { getMarketPriceSnapshot } from "./marketPricing";
 import { linkUserWallet, listUserWallets } from "./userWallets";
-import {
-  buildAaveUsdcSupplyTransactions,
-  buildAaveUsdcWithdrawTransaction,
-  checkAaveUsdcTransaction,
-  confirmAaveUsdcTransaction,
-  getAaveUsdcPosition
-} from "./aaveUsdc";
-import {
-  createPositionFromExecution,
-  getExecution,
-  listPositionsByUser,
-  updateExecutionConfirmed,
-  updateExecutionFailed,
-  listDepositIntentsByUser,
-  createWithdrawalIntent,
-  createWithdrawalExecution,
-  updateWithdrawalExecutionConfirmed,
-  getPositionById,
-  finalizePositionOnClose
-} from "./intentStore";
-import {
-  verifyPosition,
-  verifyAllPositions,
-  enrichPositionsWithOnchain,
-  isPositionStale
-} from "./positionVerifier";
+import type { ProtocolExecutionReadiness } from "./adapters/types";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
@@ -425,27 +379,13 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
   res.json({ ok: true, role: auth.role, username, csrfToken });
 });
 
-app.post("/api/auth/wallet/challenge", authLimiter, async (req, res) => {
+app.post("/api/auth/wallet", authLimiter, async (req, res) => {
   const body = req.body as { walletAddress?: unknown };
   if (typeof body.walletAddress !== "string") {
     res.status(400).json({ ok: false, message: "walletAddress required" });
     return;
   }
-  const challenge = createWalletLoginChallenge(body.walletAddress);
-  if (!challenge.ok || !challenge.nonce || !challenge.message || !challenge.expiresAt) {
-    res.status(400).json({ ok: false, message: challenge.message ?? "wallet challenge failed" });
-    return;
-  }
-  res.json({ ok: true, nonce: challenge.nonce, message: challenge.message, expiresAt: challenge.expiresAt });
-});
-
-app.post("/api/auth/wallet", authLimiter, async (req, res) => {
-  const body = req.body as { walletAddress?: unknown; nonce?: unknown; signature?: unknown };
-  if (typeof body.walletAddress !== "string" || typeof body.nonce !== "string" || typeof body.signature !== "string") {
-    res.status(400).json({ ok: false, message: "walletAddress, nonce, signature required" });
-    return;
-  }
-  const auth = await authenticateWallet(body.walletAddress, body.nonce, body.signature);
+  const auth = await authenticateWallet(body.walletAddress);
   if (!auth.ok || !auth.accessToken || !auth.refreshToken || !auth.role || !auth.username) {
     res.status(400).json({ ok: false, message: auth.message ?? "wallet login failed" });
     return;
@@ -520,22 +460,6 @@ app.get("/api/account/assets", requireAuth(["orchestrator", "security", "viewer"
   const username = res.locals.user.username as string;
   const role = res.locals.user.role as UserRole;
   res.json({ ok: true, assets: await listAccountAssets(username, role) });
-});
-
-// wallet-assets: 지갑 주소는 온체인 공개 데이터이므로 인증 불필요.
-// 로그인 없이 지갑 연결만으로 잔고를 표시할 수 있어야 한다.
-app.get("/api/account/wallet-assets", async (req, res) => {
-  const walletAddress = typeof req.query.walletAddress === "string" ? req.query.walletAddress : "";
-  const evmAddress = typeof req.query.evmAddress === "string" ? req.query.evmAddress : "";
-  if (!walletAddress && !evmAddress) {
-    res.status(400).json({ ok: false, message: "walletAddress or evmAddress required" });
-    return;
-  }
-  try {
-    res.json({ ok: true, assets: await listWalletAssets(walletAddress, evmAddress) });
-  } catch (error) {
-    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "wallet asset lookup failed" });
-  }
 });
 
 app.get("/api/account/wallets", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {
@@ -679,105 +603,18 @@ app.get("/api/market/pool-apy-history-csv", (req, res) => {
 });
 
 app.get("/api/runtime/info", (_req, res) => {
-  res.json(buildRuntimeInfoPayload());
-});
-
-app.post("/api/runtime/execution-mode", requireAuth(["orchestrator", "security"]), async (req, res) => {
-  if (!verifyCsrfToken(req)) {
-    res.status(403).json({ ok: false, message: "forbidden: csrf token mismatch" });
-    return;
-  }
-  const body = req.body as { mode?: unknown };
-  const mode = body.mode === "live" || body.mode === "dry-run" ? body.mode : null;
-  if (!mode) {
-    res.status(400).json({ ok: false, message: "mode must be live or dry-run" });
-    return;
-  }
-  const db = getDb();
-  await setRuntimeExecutionModeOverride(db, mode);
-  res.json(buildRuntimeInfoPayload());
-});
-
-const ALLOWED_LIVE_FLAG_PROTOCOLS = ["aave", "uniswap", "orca", "aerodrome", "raydium", "curve"] as const;
-type AllowedLiveFlagProtocol = (typeof ALLOWED_LIVE_FLAG_PROTOCOLS)[number];
-
-function buildRuntimeInfoPayload() {
-  return {
+  const requested = process.env.EXECUTION_MODE === "live" ? "live" : "dry-run";
+  const liveConfirmed = process.env.LIVE_EXECUTION_CONFIRM === "YES";
+  const executionMode = requested === "live" && liveConfirmed ? "live" : "dry-run";
+  res.json({
     ok: true,
-    executionMode: getEffectiveExecutionMode(),
-    executionModeRequested: getExecutionModeRequestedFromEnv(),
-    executionModeOverride: getRuntimeExecutionModeOverride(),
-    executionModeSource: getRuntimeExecutionModeOverride() ? "override" : ("env" as const),
-    liveExecutionConfirmed: process.env.LIVE_EXECUTION_CONFIRM === "YES",
-    liveAdapterFlags: getEffectiveLiveAdapterFlags(),
-    configuredLiveAdapterFlags: getConfiguredLiveAdapterFlags(),
-    liveAdapterFlagSources: getRuntimeLiveFlagSources(),
-    protocolReadiness: getProtocolReadiness(),
-    rpcConfigured: {
-      ethereum: Boolean(process.env.ETHEREUM_RPC_URL),
-      arbitrum: Boolean(process.env.ARBITRUM_RPC_URL),
-      base: Boolean(process.env.BASE_RPC_URL),
-      solana: Boolean(process.env.SOLANA_RPC_URL)
-    },
-    solanaKeyConfigured: Boolean(
-      process.env.SOLANA_EXECUTOR_PRIVATE_KEY_FILE ||
-        process.env.SOLANA_EXECUTOR_PRIVATE_KEY_JSON ||
-        process.env.SOLANA_EXECUTOR_PRIVATE_KEY
-    ),
+    executionMode,
+    executionModeRequested: requested,
+    liveExecutionConfirmed: liveConfirmed,
     walletUiPolicy: "phantom-solana",
-    serverExecutionNote: buildRuntimeExecutionNote()
-  };
-}
-
-app.post("/api/runtime/live-flags", requireAuth(["orchestrator", "security"]), async (req, res) => {
-  if (!verifyCsrfToken(req)) {
-    res.status(403).json({ ok: false, message: "forbidden: csrf token mismatch" });
-    return;
-  }
-  const body = req.body as { protocol?: unknown; enabled?: unknown };
-  const protocol = ALLOWED_LIVE_FLAG_PROTOCOLS.includes(body.protocol as AllowedLiveFlagProtocol)
-    ? (body.protocol as AllowedLiveFlagProtocol)
-    : null;
-  if (!protocol) {
-    res.status(400).json({ ok: false, message: `protocol must be one of: ${ALLOWED_LIVE_FLAG_PROTOCOLS.join(", ")}` });
-    return;
-  }
-  if (typeof body.enabled !== "boolean") {
-    res.status(400).json({ ok: false, message: "enabled must be boolean" });
-    return;
-  }
-  const db = getDb();
-  await setRuntimeLiveFlagOverride(db, protocol, body.enabled);
-  res.json(buildRuntimeInfoPayload());
-});
-
-/** dry-run / real-run 프리셋 — 모드 + 모든 프로토콜 플래그를 한 번에 전환 */
-app.post("/api/runtime/preset", requireAuth(["orchestrator", "security"]), async (req, res) => {
-  if (!verifyCsrfToken(req)) {
-    res.status(403).json({ ok: false, message: "forbidden: csrf token mismatch" });
-    return;
-  }
-  const body = req.body as { preset?: unknown };
-  if (body.preset !== "dry-run" && body.preset !== "real-run") {
-    res.status(400).json({ ok: false, message: "preset must be dry-run or real-run" });
-    return;
-  }
-  const db = getDb();
-  if (body.preset === "real-run") {
-    await setRuntimeExecutionModeOverride(db, "live");
-    const readiness = getProtocolReadiness();
-    for (const protocol of ALLOWED_LIVE_FLAG_PROTOCOLS) {
-      // 구현되지 않았거나 전제 조건 미충족 프로토콜은 활성화하지 않음
-      const enabled = readiness[protocol].ready;
-      await setRuntimeLiveFlagOverride(db, protocol, enabled);
-    }
-  } else {
-    await setRuntimeExecutionModeOverride(db, "dry-run");
-    for (const protocol of ALLOWED_LIVE_FLAG_PROTOCOLS) {
-      await setRuntimeLiveFlagOverride(db, protocol, false);
-    }
-  }
-  res.json(buildRuntimeInfoPayload());
+    serverExecutionNote:
+      "현재 MVP는 로그인한 사용자가 본인 Job을 직접 실행 요청하는 구조입니다. Phantom signMessage는 실행 의사 확인용이며, 프로토콜 전송은 EXECUTION_MODE에 따라 서버 어댑터가 처리합니다."
+  });
 });
 
 function stripUsername<T extends { username: string }>(row: T): Omit<T, "username"> {
@@ -805,45 +642,25 @@ function buildProtocolMixFromExecutionPayload(
   }));
 }
 
-function estimateExpectedAprForJob(job: Awaited<ReturnType<typeof getJob>>): number {
-  switch (job.input.productSubtype) {
-    case "multi-stable":
-      return 0.04718;
-    case "multi-balanced":
-      return 0.14285;
-    case "arb-stable":
-      return 0.10922;
-    case "base-stable":
-      return 0.1173;
-    case "sol-stable":
-      return 0.07882;
-    case "eth-stable":
-      return 0.03325;
-    case "eth-bluechip":
-      return 0.0554;
-    default:
-      return 0.08;
-  }
-}
-
 async function recordExecutionPositionIfNeeded(args: {
   username: string;
   job: Awaited<ReturnType<typeof getJob>>;
   result: Awaited<ReturnType<typeof executeJob>>;
   positionId?: string;
 }): Promise<void> {
-  if (!args.job || args.positionId || args.result.message !== "execution accepted" || args.result.payload?.mode !== "live") {
+  if (!args.job || args.positionId || args.result.message !== "execution accepted") {
     return;
   }
   const depositUsd = args.job.input.depositUsd;
   if (!Number.isFinite(depositUsd) || depositUsd <= 0) {
     return;
   }
+  const mode = args.result.payload?.mode ?? "dry-run";
   const protocolMix = buildProtocolMixFromExecutionPayload(args.result.payload, depositUsd);
   await createDepositPosition(args.username, {
-    productName: `Server execution ${args.job.id.slice(-6)}`,
+    productName: `${mode === "live" ? "Server execution" : "Dry-run execution"} ${args.job.id.slice(-6)}`,
     amountUsd: depositUsd,
-    expectedApr: estimateExpectedAprForJob(args.job),
+    expectedApr: 0.08,
     protocolMix
   });
 }
@@ -906,7 +723,7 @@ app.post("/api/portfolio/withdraw", requireAuth(["orchestrator", "security", "vi
     return;
   }
   const withdrawnUsd = await withdrawDepositAmount(username, body.amountUsd);
-  res.json({ ok: true, withdrawnUsd, mode: "ledger" });
+  res.json({ ok: true, withdrawnUsd });
 });
 
 app.post("/api/portfolio/withdraw-product", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
@@ -923,7 +740,7 @@ app.post("/api/portfolio/withdraw-product", requireAuth(["orchestrator", "securi
   try {
     assertValidWithdrawAmount(body.amountUsd);
     const withdrawnUsd = await withdrawProductDepositAmount(username, body.productName, body.amountUsd);
-    res.json({ ok: true, withdrawnUsd, mode: "ledger" });
+    res.json({ ok: true, withdrawnUsd });
   } catch (error) {
     res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "withdraw failed" });
   }
@@ -947,96 +764,9 @@ app.post("/api/portfolio/withdraw-protocol", requireAuth(["orchestrator", "secur
       chain: typeof body.chain === "string" ? body.chain : undefined,
       pool: typeof body.pool === "string" ? body.pool : undefined
     });
-    res.json({ ok: true, withdrawnUsd, mode: "ledger" });
+    res.json({ ok: true, withdrawnUsd });
   } catch (error) {
     res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "withdraw failed" });
-  }
-});
-
-app.get("/api/aave/usdc/position", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
-  const chain = req.query.chain;
-  const walletAddress = req.query.walletAddress;
-  if (typeof chain !== "string" || typeof walletAddress !== "string") {
-    res.status(400).json({ ok: false, message: "chain and walletAddress required" });
-    return;
-  }
-  try {
-    const position = await getAaveUsdcPosition(chain, walletAddress);
-    res.json({ ok: true, position });
-  } catch (error) {
-    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "Aave position lookup failed" });
-  }
-});
-
-app.post("/api/aave/usdc/supply-tx", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
-  const body = req.body as { chain?: unknown; walletAddress?: unknown; amountUsdc?: unknown };
-  if (typeof body.walletAddress !== "string" || typeof body.amountUsdc !== "number") {
-    res.status(400).json({ ok: false, message: "walletAddress and amountUsdc required" });
-    return;
-  }
-  try {
-    const result = await buildAaveUsdcSupplyTransactions({
-      chain: body.chain,
-      walletAddress: body.walletAddress,
-      amountUsdc: body.amountUsdc
-    });
-    res.json({ ok: true, ...result });
-  } catch (error) {
-    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "Aave supply tx build failed" });
-  }
-});
-
-app.post("/api/aave/usdc/withdraw-tx", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
-  const body = req.body as { chain?: unknown; walletAddress?: unknown; amountUsdc?: unknown };
-  if (typeof body.walletAddress !== "string" || typeof body.amountUsdc !== "number") {
-    res.status(400).json({ ok: false, message: "walletAddress and amountUsdc required" });
-    return;
-  }
-  try {
-    const result = await buildAaveUsdcWithdrawTransaction({
-      chain: body.chain,
-      walletAddress: body.walletAddress,
-      amountUsdc: body.amountUsdc
-    });
-    res.json({ ok: true, ...result });
-  } catch (error) {
-    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "Aave withdraw tx build failed" });
-  }
-});
-
-app.get("/api/aave/usdc/tx/:chain/:txHash", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
-  const { chain, txHash } = req.params as { chain: string; txHash: string };
-  try {
-    const result = await checkAaveUsdcTransaction(chain, txHash);
-    res.json({ ok: true, ...result });
-  } catch (error) {
-    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "Aave tx receipt lookup failed" });
-  }
-});
-
-app.post("/api/aave/usdc/confirm", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
-  const body = req.body as { chain?: unknown; walletAddress?: unknown; txHash?: unknown; kind?: unknown; amountUsdc?: unknown };
-  const username = res.locals.user.username as string;
-  if (
-    typeof body.walletAddress !== "string" ||
-    typeof body.txHash !== "string" ||
-    (body.kind !== "supply" && body.kind !== "withdraw") ||
-    typeof body.amountUsdc !== "number"
-  ) {
-    res.status(400).json({ ok: false, message: "chain, walletAddress, txHash, kind and amountUsdc required" });
-    return;
-  }
-  try {
-    const result = await confirmAaveUsdcTransaction(username, {
-      chain: body.chain,
-      walletAddress: body.walletAddress,
-      txHash: body.txHash,
-      kind: body.kind,
-      amountUsdc: body.amountUsdc
-    });
-    res.json({ ok: true, ...result });
-  } catch (error) {
-    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "Aave tx confirm failed" });
   }
 });
 
@@ -1205,6 +935,7 @@ app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orche
     correlationId?: unknown;
     positionId?: unknown;
     requestedMode?: unknown;
+    protocolReadiness?: unknown;
   };
   const headerCorr = req.headers["x-correlation-id"];
   const correlationId =
@@ -1215,9 +946,24 @@ app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orche
         : undefined;
   const positionId = typeof body.positionId === "string" ? body.positionId : undefined;
   const requestedMode = body.requestedMode === "live" || body.requestedMode === "dry-run" ? body.requestedMode : undefined;
+  const protocolReadiness = Array.isArray(body.protocolReadiness)
+    ? body.protocolReadiness.filter((item): item is ProtocolExecutionReadiness => {
+        if (!item || typeof item !== "object") return false;
+        const row = item as Partial<ProtocolExecutionReadiness>;
+        return (
+          typeof row.protocol === "string" &&
+          typeof row.chain === "string" &&
+          typeof row.action === "string" &&
+          typeof row.implemented === "boolean" &&
+          typeof row.flagOn === "boolean" &&
+          typeof row.ready === "boolean" &&
+          typeof row.reason === "string"
+        );
+      })
+    : undefined;
   const username = res.locals.user.username as string;
   const role = res.locals.user.role as string;
-  const result = await executeJob(jobId, idempotencyKey, { correlationId, positionId, requestedMode }, { username, role });
+  const result = await executeJob(jobId, idempotencyKey, { correlationId, positionId, requestedMode, protocolReadiness }, { username, role });
   const requestId = typeof (res.locals as Record<string, unknown>).requestId === "string" ? (res.locals as Record<string, string>).requestId : undefined;
   if (!result.ok) {
     const forbidden = typeof result.message === "string" && result.message.startsWith("forbidden:");
@@ -1230,357 +976,6 @@ app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orche
     console.warn(JSON.stringify({ level: "warn", msg: "execution_position_record_failed", jobId, error: String(error) }));
   }
   res.json({ ...result, requestId });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  새 Intent / Execution / Position API
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * GET /api/intents — 현재 사용자의 DepositIntent 목록
- */
-app.get("/api/intents", requireAuth, async (req, res) => {
-  const username = res.locals.user.username as string;
-  const intents = await listDepositIntentsByUser(username);
-  res.json({ ok: true, intents });
-});
-
-/**
- * GET /api/positions
- * 현재 사용자의 확정 Position 목록 + 온체인 검증 데이터.
- *
- * Query params:
- *   verify=true          — 온체인 실시간 재조회 강제 (slow, ~2초)
- *   wallet=0x...         — EVM 지갑 주소 전달 (Aave 검증에 필요)
- *   stale_only=true      — last_synced_at 기준 스테일한 포지션만 재검증
- *
- * 기본값: 캐시된 onchainDataJson 반환 (5분 캐시).
- * 스테일하거나 verify=true 이면 온체인 재조회.
- */
-app.get("/api/positions", requireAuth, async (req, res) => {
-  const username = res.locals.user.username as string;
-  const forceVerify = req.query["verify"] === "true";
-  const staleOnly = req.query["stale_only"] === "true";
-  const walletAddress = typeof req.query["wallet"] === "string" ? req.query["wallet"] : undefined;
-
-  const positions = await listPositionsByUser(username);
-  if (positions.length === 0) {
-    res.json({ ok: true, positions: [], verificationSummary: null });
-    return;
-  }
-
-  // 검증 대상 필터링
-  const toVerify = forceVerify
-    ? positions
-    : staleOnly
-    ? positions.filter(isPositionStale)
-    : positions.filter(p => isPositionStale(p));  // 기본: 스테일한 것만 재조회
-
-  // 검증 실행 (비동기, 타임아웃 10초)
-  let enriched: Array<(typeof positions)[number] & { verify: Awaited<ReturnType<typeof verifyPosition>> | null }>;
-  try {
-    enriched = await Promise.race([
-      enrichPositionsWithOnchain(positions, walletAddress, forceVerify),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("verification timeout")), 10_000)
-      )
-    ]);
-  } catch {
-    // 타임아웃/에러 시 캐시 데이터만 반환
-    enriched = positions.map(pos => ({
-      ...pos,
-      verify: pos.onchainDataJson
-        ? (() => { try { return JSON.parse(pos.onchainDataJson) as Awaited<ReturnType<typeof verifyPosition>>; } catch { return null; } })()
-        : null
-    }));
-  }
-
-  // 검증 요약
-  const verifyResults = enriched.map(p => p.verify).filter(Boolean) as Awaited<ReturnType<typeof verifyPosition>>[];
-  const summary = {
-    total: positions.length,
-    verified: verifyResults.filter(v => v.status === "verified").length,
-    drift: verifyResults.filter(v => v.status === "drift").length,
-    closed_onchain: verifyResults.filter(v => v.status === "closed_onchain").length,
-    rpc_error: verifyResults.filter(v => v.status === "rpc_error").length,
-    unsupported: verifyResults.filter(v => v.status === "unsupported").length
-  };
-
-  res.json({
-    ok: true,
-    positions: enriched,
-    verificationSummary: summary
-  });
-});
-
-/**
- * GET /api/positions/:id/verify
- * 단일 포지션 온체인 즉시 재검증.
- * 항상 온체인을 새로 조회하며 DB를 갱신한다.
- *
- * Query params:
- *   wallet=0x...  — EVM 지갑 주소 (없으면 aave_usdc_positions에서 자동 조회)
- */
-app.get("/api/positions/:positionId/verify", requireAuth, async (req, res) => {
-  const { positionId } = req.params as { positionId: string };
-  const walletAddress = typeof req.query["wallet"] === "string" ? req.query["wallet"] : undefined;
-  const username = res.locals.user.username as string;
-
-  const position = await getPositionById(positionId);
-  if (!position || position.username !== username) {
-    res.status(404).json({ ok: false, message: "position not found" });
-    return;
-  }
-
-  const result = await verifyPosition(position, walletAddress);
-
-  res.json({
-    ok: true,
-    positionId,
-    verify: result,
-    // closed_onchain 감지 시 명시적 경고
-    alert: result.status === "closed_onchain"
-      ? "⚠️ 온체인에서 포지션이 감지되지 않습니다. 외부 출금 여부를 확인하세요."
-      : result.status === "drift"
-      ? `⚠️ DB 잔고와 온체인 잔고 차이: ${result.driftPct?.toFixed(1)}%`
-      : null
-  });
-});
-
-/**
- * POST /api/positions/verify-all
- * 현재 사용자의 모든 active 포지션을 일괄 온체인 재검증.
- * Body: { wallet?: string }
- */
-app.post("/api/positions/verify-all", requireAuth, async (req, res) => {
-  const username = res.locals.user.username as string;
-  const body = req.body as { wallet?: unknown };
-  const walletAddress = typeof body.wallet === "string" ? body.wallet : undefined;
-
-  const positions = await listPositionsByUser(username);
-  if (positions.length === 0) {
-    res.json({ ok: true, results: [], message: "active 포지션 없음" });
-    return;
-  }
-
-  const results = await verifyAllPositions(
-    positions,
-    walletAddress ? { "*": walletAddress } : undefined
-  );
-
-  const closedOnchain = results.filter(r => r.status === "closed_onchain");
-  const drifted = results.filter(r => r.status === "drift");
-  const errors = results.filter(r => r.status === "rpc_error");
-
-  res.json({
-    ok: true,
-    results,
-    summary: {
-      total: results.length,
-      verified: results.filter(r => r.status === "verified").length,
-      drift: drifted.length,
-      closed_onchain: closedOnchain.length,
-      rpc_error: errors.length,
-      unsupported: results.filter(r => r.status === "unsupported").length
-    },
-    alerts: [
-      ...closedOnchain.map(r => `[CLOSED_ONCHAIN] ${r.protocol}/${r.chain} positionId=${r.positionId}: ${r.detail}`),
-      ...drifted.map(r => `[DRIFT] ${r.protocol}/${r.chain} positionId=${r.positionId}: ${r.detail}`)
-    ]
-  });
-});
-
-/**
- * POST /api/executions/:executionId/confirm
- * 프론트엔드가 지갑으로 서명 후 tx hash를 제출하면,
- * 서버가 receipt를 확인하고 Execution + Position을 확정한다.
- *
- * Body: { txHash: string, blockNumber?: number, receiptJson: string }
- */
-app.post("/api/executions/:executionId/confirm", requireAuth, async (req, res) => {
-  const { executionId } = req.params as { executionId: string };
-  const body = req.body as {
-    txHash?: unknown;
-    blockNumber?: unknown;
-    receiptJson?: unknown;
-    amountUsd?: unknown;
-    asset?: unknown;
-    positionToken?: unknown;
-    positionRaw?: unknown;
-    poolAddress?: unknown;
-  };
-
-  if (typeof body.txHash !== "string" || !body.txHash) {
-    res.status(400).json({ ok: false, message: "txHash is required" });
-    return;
-  }
-  if (typeof body.receiptJson !== "string" || !body.receiptJson) {
-    res.status(400).json({ ok: false, message: "receiptJson is required (tx receipt without receipt is not allowed)" });
-    return;
-  }
-
-  const execution = await getExecution(executionId);
-  if (!execution) {
-    res.status(404).json({ ok: false, message: "execution not found" });
-    return;
-  }
-
-  const username = res.locals.user.username as string;
-
-  // 이미 confirmed인 경우 idempotent 처리
-  if (execution.status === "confirmed") {
-    res.json({ ok: true, message: "already confirmed (idempotent)", executionId });
-    return;
-  }
-
-  // receipt 확인 — 현재는 제출된 데이터를 신뢰 (추후 RPC 검증 강화)
-  await updateExecutionConfirmed({
-    executionId,
-    txHash: body.txHash,
-    blockNumber: typeof body.blockNumber === "number" ? body.blockNumber : undefined,
-    receiptJson: body.receiptJson
-  });
-
-  // Position 생성 (receipt 확인 후에만 허용)
-  const confirmedExecution = await getExecution(executionId);
-  if (!confirmedExecution) {
-    res.status(500).json({ ok: false, message: "execution not found after update" });
-    return;
-  }
-
-  try {
-    const position = await createPositionFromExecution({
-      execution: confirmedExecution,
-      username,
-      asset: typeof body.asset === "string" ? body.asset : "USDC",
-      amountUsd: typeof body.amountUsd === "number" ? body.amountUsd : 0,
-      poolAddress: typeof body.poolAddress === "string" ? body.poolAddress : undefined,
-      positionToken: typeof body.positionToken === "string" ? body.positionToken : undefined,
-      positionRaw: typeof body.positionRaw === "string" ? body.positionRaw : undefined
-    });
-    res.json({ ok: true, message: "execution confirmed and position created", executionId, positionId: position.id });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    res.status(400).json({ ok: false, message: msg });
-  }
-});
-
-/**
- * POST /api/executions/:executionId/fail
- * 실행 실패 보고 — 사용자가 서명 거부하거나 tx가 revert된 경우
- */
-app.post("/api/executions/:executionId/fail", requireAuth, async (req, res) => {
-  const { executionId } = req.params as { executionId: string };
-  const body = req.body as { errorMessage?: unknown };
-  const errorMessage = typeof body.errorMessage === "string"
-    ? body.errorMessage
-    : "execution failed (no error message provided)";
-
-  await updateExecutionFailed({ executionId, errorMessage });
-  res.json({ ok: true, message: "execution marked as failed", executionId });
-});
-
-/**
- * POST /api/withdrawals/intent
- * 출금 요청 생성
- */
-app.post("/api/withdrawals/intent", requireAuth, async (req, res) => {
-  const body = req.body as {
-    positionId?: unknown;
-    amountUsd?: unknown;
-    isFullClose?: unknown;
-  };
-  const username = res.locals.user.username as string;
-
-  if (typeof body.positionId !== "string") {
-    res.status(400).json({ ok: false, message: "positionId is required" });
-    return;
-  }
-
-  const position = await getPositionById(body.positionId);
-  if (!position || position.username !== username) {
-    res.status(404).json({ ok: false, message: "position not found" });
-    return;
-  }
-  if (position.status !== "active") {
-    res.status(400).json({ ok: false, message: `position is already ${position.status}` });
-    return;
-  }
-
-  const isFullClose = Boolean(body.isFullClose);
-  const amountUsd = isFullClose
-    ? position.amountUsd
-    : (typeof body.amountUsd === "number" ? body.amountUsd : 0);
-
-  if (amountUsd <= 0) {
-    res.status(400).json({ ok: false, message: "amountUsd must be > 0" });
-    return;
-  }
-
-  const intent = await createWithdrawalIntent({ username, positionId: position.id, amountUsd, isFullClose });
-  res.json({ ok: true, intent });
-});
-
-/**
- * POST /api/withdrawals/:intentId/confirm
- * 출금 tx receipt 제출 → WithdrawalExecution 확정 → Position 닫기
- */
-app.post("/api/withdrawals/:intentId/confirm", requireAuth, async (req, res) => {
-  const { intentId } = req.params as { intentId: string };
-  const body = req.body as {
-    positionId?: unknown;
-    txHash?: unknown;
-    blockNumber?: unknown;
-    receiptJson?: unknown;
-    action?: unknown;
-    protocol?: unknown;
-    chain?: unknown;
-    amountReturnedUsd?: unknown;
-  };
-  const username = res.locals.user.username as string;
-
-  if (typeof body.txHash !== "string" || !body.txHash) {
-    res.status(400).json({ ok: false, message: "txHash is required" });
-    return;
-  }
-  if (typeof body.receiptJson !== "string" || !body.receiptJson) {
-    res.status(400).json({ ok: false, message: "receiptJson is required" });
-    return;
-  }
-  if (typeof body.positionId !== "string") {
-    res.status(400).json({ ok: false, message: "positionId is required" });
-    return;
-  }
-
-  const position = await getPositionById(body.positionId);
-  if (!position || position.username !== username) {
-    res.status(404).json({ ok: false, message: "position not found" });
-    return;
-  }
-
-  const wExec = await createWithdrawalExecution({
-    intentId,
-    positionId: position.id,
-    protocol: typeof body.protocol === "string" ? body.protocol : position.protocol,
-    chain: typeof body.chain === "string" ? body.chain : position.chain,
-    action: typeof body.action === "string" ? body.action : "withdraw",
-    txHash: body.txHash,
-    status: "submitted"
-  });
-
-  await updateWithdrawalExecutionConfirmed({
-    withdrawalExecutionId: wExec.id,
-    txHash: body.txHash,
-    blockNumber: typeof body.blockNumber === "number" ? body.blockNumber : undefined,
-    receiptJson: body.receiptJson,
-    amountReturnedUsd: typeof body.amountReturnedUsd === "number" ? body.amountReturnedUsd : undefined
-  });
-
-  // 실현 손익 확정 후 포지션 close
-  const returnedUsd = typeof body.amountReturnedUsd === "number" ? body.amountReturnedUsd : position.amountUsd;
-  await finalizePositionOnClose(position.id, returnedUsd);
-
-  res.json({ ok: true, message: "withdrawal confirmed and position closed", positionId: position.id });
 });
 
 /** 모든 라우트 등록 직후(부트스트랩·listen 전)에 두어 경로 누락을 방지합니다. */

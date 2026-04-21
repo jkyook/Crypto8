@@ -172,8 +172,27 @@ export type ExecutionEventPayload = {
     txId: string;
     status: "simulated" | "submitted" | "confirmed" | "unsupported" | "failed";
   }>;
+  skippedProtocols?: Array<{
+    protocol: string;
+    chain: string;
+    action: string;
+    implemented: boolean;
+    flagOn: boolean;
+    ready: boolean;
+    reason: string;
+  }>;
   retries?: number;
   errorMessage?: string;
+};
+
+export type ProtocolExecutionReadiness = {
+  protocol: string;
+  chain: string;
+  action: string;
+  implemented: boolean;
+  flagOn: boolean;
+  ready: boolean;
+  reason: string;
 };
 
 export type ExecutionEvent = {
@@ -1122,13 +1141,24 @@ export type ExecuteJobResponse = {
 
 export async function executeJob(
   jobId: string,
-  options?: { idempotencyKey?: string; correlationId?: string; positionId?: string; requestedMode?: "dry-run" | "live" }
+  options?: {
+    idempotencyKey?: string;
+    correlationId?: string;
+    positionId?: string;
+    requestedMode?: "dry-run" | "live";
+    protocolReadiness?: ProtocolExecutionReadiness[];
+  }
 ): Promise<ExecuteJobResponse> {
   const headers = new Headers({ "Content-Type": "application/json" });
   if (options?.idempotencyKey) {
     headers.set("Idempotency-Key", options.idempotencyKey);
   }
-  const body: { correlationId?: string; positionId?: string; requestedMode?: "dry-run" | "live" } = {};
+  const body: {
+    correlationId?: string;
+    positionId?: string;
+    requestedMode?: "dry-run" | "live";
+    protocolReadiness?: ProtocolExecutionReadiness[];
+  } = {};
   if (options?.correlationId) {
     body.correlationId = options.correlationId;
   }
@@ -1137,6 +1167,9 @@ export async function executeJob(
   }
   if (options?.requestedMode) {
     body.requestedMode = options.requestedMode;
+  }
+  if (options?.protocolReadiness) {
+    body.protocolReadiness = options.protocolReadiness;
   }
   const response = await authedFetch(`/api/orchestrator/execute/${jobId}`, {
     method: "POST",

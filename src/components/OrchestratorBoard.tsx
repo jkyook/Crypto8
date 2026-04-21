@@ -1,51 +1,37 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { AddressType } from "@phantom/browser-sdk";
-import { useAccounts, useEthereum, usePhantom } from "@phantom/react-sdk";
+import { useAccounts, usePhantom } from "@phantom/react-sdk";
 import {
-  buildAaveUsdcSupplyTx,
-  buildAaveUsdcWithdrawTx,
-  checkAaveUsdcTxReceipt,
-  confirmAaveUsdcTx,
-  fetchAaveUsdcPosition,
-  fetchMarketPrices,
   listAccountAssets,
   listAccountWallets,
-  listWalletAssets,
   login,
   getSession,
   createOrchestratorJob,
+  createDepositPositionRemote,
   estimateProtocolFees,
   executeJob,
   fetchRuntimeInfo,
-  linkAccountWallet,
+  fetchMarketPrices,
   readAccessTokenSnapshot,
   subscribeLocalAuth,
-  updateRuntimeExecutionMode,
-  updateRuntimeLiveFlag,
   type AccountAssetBalance,
   type AccountAssetSymbol,
-  type AaveUsdcChain,
-  type AaveUsdcPositionSnapshot,
-  type AaveTxRequest,
   type ExecuteJobResponse,
   type Job,
+  type ProtocolExecutionReadiness,
   type ProductNetwork,
   type ProductSubtype,
   type ProtocolFeeEstimate,
   type RuntimeInfo,
   type UserWallet
 } from "../lib/api";
-import { NetworkSettingsPanel } from "./NetworkSettingsPanel";
 import { buildDepositAssetReadiness } from "../lib/depositAssetPlan";
 import { buildExecutionPreviewRows } from "../lib/executionPreview";
 import { buildAgentTasks, evaluateRisk } from "../lib/orchestrator";
 import { checkGuardrails } from "../lib/strategyEngine";
 import type { ExecutionPreviewRow } from "../lib/executionPreview";
-import {
-  fetchOnChainPortfolioWithFallback,
-  getSolanaRpcCandidates,
-  portfolioToAccountAssetBalances
-} from "../lib/solanaChainAssets";
+import { fetchEvmPortfolioWithFallback, getEvmRpcCandidates } from "../lib/evmChainAssets";
+import { fetchOnChainPortfolioWithFallback, getSolanaRpcCandidates } from "../lib/solanaChainAssets";
 
 type OrchestratorBoardProps = {
   initialDepositUsd?: number;
@@ -58,6 +44,8 @@ type OrchestratorBoardProps = {
   initialProductSubtype?: ProductSubtype;
   /** `false`이면 서버 예치 실행 단계를 막습니다(비로그인 상품 체험 등). JWT는 `localStorage` 구독으로 판별합니다. */
   allowJobExecution?: boolean;
+  /** 직전 예치 저장으로 생성된 포지션 id(실행 이벤트 페이로드에 연결). */
+  linkedPositionId?: string;
   previewRowsOverride?: ExecutionPreviewRow[];
   onActionNotice?: (notice: { variant: "error" | "info"; text: string }) => void;
   onOpenOperationsWithJob?: (jobId: string) => void;
@@ -72,17 +60,16 @@ export function OrchestratorBoard({
   initialProductNetwork,
   initialProductSubtype,
   allowJobExecution: allowJobExecutionProp,
+  linkedPositionId,
   previewRowsOverride,
   onActionNotice,
   onOpenOperationsWithJob,
   onExecutionComplete
 }: OrchestratorBoardProps) {
   const { isConnected } = usePhantom();
-  const { ethereum, isAvailable: isEthereumAvailable } = useEthereum();
   const accounts = useAccounts();
   const solanaAccount = accounts?.find((account) => account.addressType === AddressType.solana);
-  const ethereumAccount = accounts?.find((account) => account.addressType === AddressType.ethereum);
-  const [ethereumProviderAddress, setEthereumProviderAddress] = useState("");
+  const evmAccount = accounts?.find((account) => account.addressType === AddressType.ethereum);
   const isIdentityConfirmed = true;
   const [depositUsd, setDepositUsd] = useState(initialDepositUsd);
   useEffect(() => {
@@ -94,28 +81,18 @@ export function OrchestratorBoard({
   const [apiMessage, setApiMessage] = useState<string>("");
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
-  const [runtimeModeUpdating, setRuntimeModeUpdating] = useState(false);
-  const [runtimeModeError, setRuntimeModeError] = useState("");
-  const [runtimeFlagUpdating, setRuntimeFlagUpdating] = useState(false);
-  const [runtimeFlagError, setRuntimeFlagError] = useState("");
   const [accountAssets, setAccountAssets] = useState<AccountAssetBalance[]>([]);
   const [assetLoading, setAssetLoading] = useState(false);
   const [assetError, setAssetError] = useState("");
-  const assetRequestSeq = useRef(0);
+  const [assetSourceLabel, setAssetSourceLabel] = useState("가상 잔고");
   const [selectedSourceAsset, setSelectedSourceAsset] = useState<AccountAssetSymbol>("USDC");
   const [feeEstimate, setFeeEstimate] = useState<ProtocolFeeEstimate | null>(null);
   const [feeEstimateError, setFeeEstimateError] = useState("");
   const [feeEstimateLoading, setFeeEstimateLoading] = useState(false);
-  const [aavePosition, setAavePosition] = useState<AaveUsdcPositionSnapshot | null>(null);
-  const [aaveLoading, setAaveLoading] = useState(false);
-  const [aaveError, setAaveError] = useState("");
-  const [aaveTxStatus, setAaveTxStatus] = useState("");
-  const [aaveLiveTxHash, setAaveLiveTxHash] = useState("");
-  const [copiedTxHash, setCopiedTxHash] = useState("");
-  const [aaveWithdrawLoading, setAaveWithdrawLoading] = useState(false);
   const [executionModeIntent, setExecutionModeIntent] = useState<"dry-run" | "live">("dry-run");
-  const [showNetworkSettings, setShowNetworkSettings] = useState(false);
   const [lastExecution, setLastExecution] = useState<ExecuteJobResponse | null>(null);
+  /** Job 생성 시 quoteRows로 미리 만들어 둔 포지션 ID (서버 중복 생성 방지용) */
+  const [preCreatedPositionId, setPreCreatedPositionId] = useState<string | undefined>(undefined);
   /** 현재 로그인 계정에 등록된 지갑 목록 (계정 연동 검증용) */
   const [linkedWallets, setLinkedWallets] = useState<UserWallet[]>([]);
   /** 실행 요청 전 비밀번호 확인 다이얼로그 표시 여부 */
@@ -151,195 +128,130 @@ export function OrchestratorBoard({
     [isIdentityConfirmed, isRangeOut, isDepegAlert, hasPendingRelease]
   );
   const riskClass = `badge badge-${risk.toLowerCase()}`;
-  useEffect(() => {
-    if (!isConnected || !isEthereumAvailable) {
-      setEthereumProviderAddress("");
-      return;
-    }
-    let disposed = false;
-    const setFirstAddress = (accountsLike: unknown): void => {
-      const rows = Array.isArray(accountsLike) ? accountsLike : [];
-      const first = rows.find((row): row is string => typeof row === "string" && row.length > 0) ?? "";
-      if (!disposed) {
-        setEthereumProviderAddress(first);
-      }
-    };
-    const sync = async (): Promise<void> => {
-      try {
-        const existing = await ethereum.getAccounts();
-        setFirstAddress(existing);
-      } catch {
-        setFirstAddress(ethereum.accounts);
-      }
-    };
-    void sync();
-    ethereum.on("accountsChanged", setFirstAddress);
-    return () => {
-      disposed = true;
-      ethereum.off("accountsChanged", setFirstAddress);
-    };
-  }, [ethereum, isConnected, isEthereumAvailable]);
-
-  const evmWalletAddress = ethereumAccount?.address ?? ethereumProviderAddress;
-  const aaveUsdcChain =
-    initialProductNetwork === "Base" || initialProductNetwork === "Arbitrum" ? (initialProductNetwork as AaveUsdcChain) : null;
-  const isAaveUsdcProduct = Boolean(aaveUsdcChain && selectedSourceAsset === "USDC");
-  const needsEvmWalletForAave = isAaveUsdcProduct && !evmWalletAddress;
-  const hasWallet = Boolean(isConnected && (solanaAccount?.address || evmWalletAddress));
+  const hasWallet = Boolean(isConnected && (solanaAccount?.address || evmAccount?.address));
   const jwtAccess = useSyncExternalStore(subscribeLocalAuth, readAccessTokenSnapshot, () => "");
-  const session = useMemo(() => getSession(), [jwtAccess]);
-  const isWalletLoginSession = Boolean(session?.username.startsWith("wallet_"));
-  const canToggleServerMode = Boolean(session && (session.role === "orchestrator" || session.role === "security"));
-  const canToggleRuntimeFlags = canToggleServerMode;
   const canUseServerJobs = jwtAccess.length > 0 && allowJobExecutionProp !== false;
-  const linkedEvmWalletAddress = useMemo(
-    () => linkedWallets.find((wallet) => {
-      const chain = wallet.chain.toLowerCase();
-      return chain === "ethereum" || chain === "evm" || chain === "arbitrum" || chain === "base";
-    })?.walletAddress ?? "",
-    [linkedWallets]
-  );
-  const effectiveEvmWalletAddress = evmWalletAddress || linkedEvmWalletAddress;
-  const aaveWalletNotice = needsEvmWalletForAave
-    ? `${aaveUsdcChain ?? "Aave"} USDC 상품은 EVM 지갑이 필요합니다. Phantom의 EVM 계정을 연결하면 잔고 조회와 입금 버튼이 활성화됩니다.`
-    : aaveUsdcChain
-      ? `EVM 지갑 ${effectiveEvmWalletAddress ? `${effectiveEvmWalletAddress.slice(0, 6)}...${effectiveEvmWalletAddress.slice(-4)}` : "미연결"} 기준으로 ${aaveUsdcChain} USDC 잔고를 조회합니다.`
-      : "";
-
-  const setServerExecutionMode = async (mode: "dry-run" | "live") => {
-    setRuntimeModeUpdating(true);
-    setRuntimeModeError("");
-    try {
-      const info = await updateRuntimeExecutionMode(mode);
-      setRuntime(info);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "서버 실행 모드 변경 실패";
-      setRuntimeModeError(msg);
-      setApiMessage(msg);
-    } finally {
-      setRuntimeModeUpdating(false);
-    }
-  };
-  const setUniswapLiveFlag = async (enabled: boolean) => {
-    setRuntimeFlagUpdating(true);
-    setRuntimeFlagError("");
-    try {
-      const info = await updateRuntimeLiveFlag("uniswap", enabled);
-      setRuntime(info);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "프로토콜 live 플래그 변경 실패";
-      setRuntimeFlagError(msg);
-      setApiMessage(msg);
-    } finally {
-      setRuntimeFlagUpdating(false);
-    }
-  };
   useEffect(() => {
-    const walletAddress = solanaAccount?.address ?? "";
-    const evmAddress = effectiveEvmWalletAddress ?? "";
-    const hasWalletAddress = Boolean(walletAddress || evmAddress);
-
-    // ── Case 1: 지갑 주소 보유 시 블록체인 잔고 직접 조회 (로그인 불필요, 공개 온체인 데이터)
-    if (hasWallet && hasWalletAddress) {
-      const controller = new AbortController();
-      const requestSeq = assetRequestSeq.current + 1;
-      assetRequestSeq.current = requestSeq;
-      setAssetLoading(true);
-      setAssetError("");
-      void listWalletAssets(walletAddress, { signal: controller.signal }, evmAddress || undefined)
-        .then(async (rows) => {
-          if (controller.signal.aborted || requestSeq !== assetRequestSeq.current) return;
-          if (rows.length === 0 && walletAddress) {
-            try {
-              const [priceSnapshot, onChain] = await Promise.all([
-                fetchMarketPrices({ signal: controller.signal }),
-                fetchOnChainPortfolioWithFallback(getSolanaRpcCandidates("mainnet"), walletAddress, "mainnet")
-              ]);
-              if (controller.signal.aborted || requestSeq !== assetRequestSeq.current) return;
-              rows = portfolioToAccountAssetBalances(
-                onChain.portfolio,
-                priceSnapshot.prices,
-                priceSnapshot.source,
-                priceSnapshot.updatedAt
-              );
-            } catch {
-              // 서버 경로가 비어 있어도 그대로 이어서 아래에서 빈 상태를 반영한다.
-            }
-          }
-          setAccountAssets(rows);
-          setSelectedSourceAsset((current) => (rows.some((row) => row.symbol === current) || !rows[0] ? current : rows[0].symbol));
-        })
-        .catch((error) => {
-          if (controller.signal.aborted || requestSeq !== assetRequestSeq.current) return;
-          setAccountAssets([]);
-          setAssetError(error instanceof Error ? error.message : "연결 지갑 자산을 불러오지 못했습니다.");
-        })
-        .finally(() => {
-          if (!controller.signal.aborted && requestSeq === assetRequestSeq.current) setAssetLoading(false);
-        });
-      return () => controller.abort();
-    }
-
-    // ── Case 2: 지갑 미연결 + 서버 잡 불가 → 빈 목록
     if (!canUseServerJobs) {
       setAccountAssets([]);
       setAssetError("");
       setAssetLoading(false);
-      return;
-    }
-
-    // ── Case 3: 지갑 미연결 + 로그인됨 → 서버 계정 자산 (연결된 지갑 DB 조회 or 데모)
-    if (isWalletLoginSession) {
-      setAccountAssets([]);
-      setAssetError("지갑 로그인 세션은 연결 지갑 잔고 확인이 필요합니다.");
-      setAssetLoading(false);
+      setAssetSourceLabel("가상 잔고");
       return;
     }
     const controller = new AbortController();
-    const requestSeq = assetRequestSeq.current + 1;
-    assetRequestSeq.current = requestSeq;
     setAssetLoading(true);
     setAssetError("");
-    void listAccountAssets({ signal: controller.signal })
-      .then((rows) => {
-        if (controller.signal.aborted || requestSeq !== assetRequestSeq.current) return;
-        setAccountAssets(rows);
-        setSelectedSourceAsset((current) => (rows.some((row) => row.symbol === current) || !rows[0] ? current : rows[0].symbol));
-      })
-      .catch((error) => {
-        if (controller.signal.aborted || requestSeq !== assetRequestSeq.current) return;
+    const loadAssets = async () => {
+      try {
+        if (executionModeIntent === "live") {
+          if (!hasWallet) {
+            throw new Error("REAL-RUN은 실제 지갑 연결이 필요합니다.");
+          }
+          const prices = await fetchMarketPrices({ signal: controller.signal });
+          if (controller.signal.aborted) return;
+          const evmAddress = evmAccount?.address as `0x${string}` | undefined;
+          const [solanaPortfolio, evmPortfolios] = await Promise.all([
+            solanaAccount?.address
+              ? fetchOnChainPortfolioWithFallback(getSolanaRpcCandidates("mainnet"), solanaAccount.address, "mainnet")
+              : Promise.resolve(null),
+            evmAddress
+              ? Promise.allSettled(
+                  (["Ethereum", "Arbitrum", "Base"] as const).map((chainName) =>
+                    fetchEvmPortfolioWithFallback(
+                      getEvmRpcCandidates(chainName),
+                      evmAddress,
+                      chainName,
+                      prices.prices,
+                      prices.source,
+                      prices.updatedAt
+                    )
+                  )
+                )
+              : Promise.resolve([])
+          ]);
+          const nextAssets: AccountAssetBalance[] = [];
+          if (solanaPortfolio) {
+            const solanaRows: AccountAssetBalance[] = [
+              {
+                symbol: "SOL",
+                chain: "Solana",
+                amount: solanaPortfolio.portfolio.sol,
+                usdPrice: prices.prices.SOL,
+                usdValue: Number((solanaPortfolio.portfolio.sol * prices.prices.SOL).toFixed(2)),
+                priceSource: prices.source,
+                priceUpdatedAt: prices.updatedAt
+              },
+              ...solanaPortfolio.portfolio.tokens
+                .map((token) => {
+                  const symbol: AccountAssetSymbol | null = token.symbol.includes("USDC")
+                    ? "USDC"
+                    : token.symbol.includes("USDT")
+                      ? "USDT"
+                      : token.symbol.includes("ETH")
+                        ? "ETH"
+                        : null;
+                  if (!symbol) return null;
+                  const usdPrice = prices.prices[symbol] ?? 0;
+                  const row: AccountAssetBalance = {
+                    symbol,
+                    chain: "Solana",
+                    amount: token.amount,
+                    usdPrice,
+                    usdValue: Number((token.amount * usdPrice).toFixed(2)),
+                    priceSource: prices.source,
+                    priceUpdatedAt: prices.updatedAt
+                  };
+                  return row;
+                })
+                .filter((row): row is AccountAssetBalance => row !== null)
+            ];
+            nextAssets.push(...solanaRows);
+          }
+          evmPortfolios.forEach((result, idx) => {
+            if (result.status === "fulfilled") {
+              nextAssets.push(...result.value.portfolio);
+            } else if (!controller.signal.aborted) {
+              console.warn(`EVM ${(["Ethereum", "Arbitrum", "Base"] as const)[idx]} balance fetch failed:`, result.reason);
+            }
+          });
+          if (nextAssets.length === 0) {
+            throw new Error("실잔고를 불러오지 못했습니다.");
+          }
+          setAccountAssets(nextAssets);
+          setAssetSourceLabel("실잔고");
+          if (!nextAssets.some((row) => row.symbol === selectedSourceAsset) && nextAssets[0]) {
+            setSelectedSourceAsset(nextAssets[0].symbol);
+          }
+        } else {
+          const rows = await listAccountAssets({ signal: controller.signal });
+          if (controller.signal.aborted) return;
+          setAccountAssets(rows);
+          setAssetSourceLabel("가상 잔고");
+          if (!rows.some((row) => row.symbol === selectedSourceAsset) && rows[0]) {
+            setSelectedSourceAsset(rows[0].symbol);
+          }
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return;
         setAccountAssets([]);
         setAssetError(error instanceof Error ? error.message : "계정 자산을 불러오지 못했습니다.");
-      })
-      .finally(() => {
-        if (!controller.signal.aborted && requestSeq === assetRequestSeq.current) setAssetLoading(false);
-      });
+      } finally {
+        if (!controller.signal.aborted) setAssetLoading(false);
+      }
+    };
+    void loadAssets();
     return () => controller.abort();
-  }, [canUseServerJobs, effectiveEvmWalletAddress, hasWallet, isWalletLoginSession, solanaAccount?.address]);
+  }, [canUseServerJobs, evmAccount?.address, executionModeIntent, hasWallet, solanaAccount?.address]);
+
   useEffect(() => {
-    if (!canUseServerJobs || !aaveUsdcChain || !effectiveEvmWalletAddress) {
-      setAavePosition(null);
-      setAaveError("");
-      setAaveLoading(false);
+    if (accountAssets.length === 0) {
       return;
     }
-    const controller = new AbortController();
-    setAaveLoading(true);
-    setAaveError("");
-    void fetchAaveUsdcPosition(aaveUsdcChain, effectiveEvmWalletAddress, { signal: controller.signal })
-      .then((position) => {
-        if (!controller.signal.aborted) setAavePosition(position);
-      })
-      .catch((error) => {
-        if (controller.signal.aborted) return;
-        setAavePosition(null);
-        setAaveError(error instanceof Error ? error.message : "Aave USDC 포지션을 조회하지 못했습니다.");
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setAaveLoading(false);
-      });
-    return () => controller.abort();
-  }, [aaveUsdcChain, canUseServerJobs, effectiveEvmWalletAddress]);
+    if (!accountAssets.some((row) => row.symbol === selectedSourceAsset) && accountAssets[0]) {
+      setSelectedSourceAsset(accountAssets[0].symbol);
+    }
+  }, [accountAssets, selectedSourceAsset]);
   // 로그인 상태가 바뀔 때마다 계정에 연결된 지갑 목록을 가져옴
   useEffect(() => {
     if (!canUseServerJobs) {
@@ -357,10 +269,9 @@ export function OrchestratorBoard({
     return () => controller.abort();
   }, [canUseServerJobs]);
 
-  const serverExecutionMode = runtime?.executionMode ?? "dry-run";
   const displayExecutionMode = executionModeIntent;
   const isLiveExecution = displayExecutionMode === "live";
-  const isLiveExecutionEnabled = serverExecutionMode === "live";
+  const livePresetLabel = isLiveExecution ? "REAL-RUN" : "DRY-RUN";
   const [customAllocationPercents, setCustomAllocationPercents] = useState<number[] | null>(null);
   const baseQuoteRows = useMemo(() => {
     const ar = lastExecution?.payload?.adapterResults;
@@ -400,90 +311,37 @@ export function OrchestratorBoard({
     return baseQuoteRows.map((row) => Number(((row.allocationUsd / total) * 100).toFixed(2)));
   }, [baseQuoteRows, depositUsd, job]);
   const isResultQuote = Boolean(lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0));
-  const liveExecutionBlockers = useMemo(() => {
-    if (!isLiveExecution) {
-      return [] as string[];
-    }
-    const blockers = new Set<string>();
-    for (const row of quoteRows) {
-      switch (row.protocol) {
-        case "Aave":
-          blockers.add("Aave 메인 서버 실행은 아직 미구현입니다. Aave 실입금은 아래 Aave 패널에서만 가능합니다.");
-          break;
-        case "Uniswap":
-          if (!runtime?.liveAdapterFlags?.uniswap) {
-            blockers.add(
-              runtime?.configuredLiveAdapterFlags?.uniswap
-                ? "Uniswap live는 현재 설정상 켜져 있지만 LIVE_EXECUTION_CONFIRM=YES가 아직 아닙니다."
-                : "Uniswap live는 현재 OFF입니다. 상단 토글로 켜거나 ENABLE_UNISWAP_LIVE=true + LIVE_EXECUTION_CONFIRM=YES가 필요합니다."
-            );
-          }
-          break;
-        case "Orca":
-          if (!runtime?.liveAdapterFlags?.orca) {
-            blockers.add("Orca live는 ENABLE_ORCA_LIVE=true + LIVE_EXECUTION_CONFIRM=YES + SOLANA_EXECUTOR_PRIVATE_KEY_FILE가 필요합니다.");
-          }
-          break;
-        case "Aerodrome":
-          blockers.add("Aerodrome live는 아직 미구현입니다.");
-          break;
-        case "Curve":
-          blockers.add("Curve live는 아직 미구현입니다.");
-          break;
-        default:
-          break;
-      }
-    }
-    if (serverExecutionMode !== "live") {
-      blockers.add("서버 실행 모드가 dry-run입니다. 아래 토글에서 서버 live로 바꿔야 합니다.");
-    }
-    return Array.from(blockers);
-  }, [isLiveExecution, quoteRows, runtime?.liveAdapterFlags?.uniswap, serverExecutionMode]);
-  const canRunServerLive = isLiveExecution && serverExecutionMode === "live" && liveExecutionBlockers.length === 0;
-  const canRunAaveDirectLive = isLiveExecution && isAaveUsdcProduct && quoteRows.every((row) => row.protocol === "Aave");
-  const canRunActualLive = canRunServerLive || canRunAaveDirectLive;
-  const adapterResultStatus = (index: number): string | undefined => lastExecution?.payload?.adapterResults?.[index]?.status;
-  const adapterResultStatusClass = (status?: string): string => {
-    if (status === "confirmed" || status === "simulated") return "badge badge-low";
-    if (status === "submitted") return "badge badge-medium";
-    if (status === "unsupported") return "badge badge-high";
-    if (status === "failed") return "badge badge-critical";
-    return "badge badge-medium";
-  };
-  const compactTxIdList = (raw?: string): string => {
-    if (!raw) return "";
-    const ids = Array.from(new Set(raw.split(",").map((item) => item.trim()).filter(Boolean)));
-    const compact = ids
-      .map((id) => (id.length <= 18 ? id : `${id.slice(0, 8)}...${id.slice(-8)}`))
-      .join(" · ");
-    return ids.length > 3 ? `${compact} · +${ids.length - 3}` : compact;
-  };
-  const compactExecutionId = (raw?: string): string => {
-    if (!raw) return "";
-    return raw.length <= 18 ? raw : `${raw.slice(0, 8)}...${raw.slice(-8)}`;
-  };
-  const copyToClipboard = async (value: string) => {
-    if (!value || typeof navigator === "undefined" || !navigator.clipboard) return;
-    await navigator.clipboard.writeText(value);
-    setCopiedTxHash(value);
-    window.setTimeout(() => {
-      setCopiedTxHash((current) => (current === value ? "" : current));
-    }, 1800);
-  };
   const adjustedAllocationTotal = quoteRows.reduce((acc, row) => acc + row.allocationUsd, 0);
-  const connectedWalletNetwork = useMemo(() => {
-    const assetChains = Array.from(new Set(accountAssets.map((asset) => asset.chain)));
-    if (assetChains.length === 1) {
-      return assetChains[0];
-    }
-    if (assetChains.length > 1) {
-      return "Multi";
-    }
-    if (solanaAccount?.address && evmWalletAddress) return "Multi";
-    if (solanaAccount?.address) return "Solana";
-    if (evmWalletAddress) return "EVM";
-    return undefined;
-  }, [accountAssets, evmWalletAddress, solanaAccount?.address]);
+  const connectedWalletNetwork = solanaAccount?.address ? "Solana" : evmAccount?.address ? "Ethereum" : undefined;
+  const protocolReadiness = useMemo<ProtocolExecutionReadiness[]>(
+    () =>
+      quoteRows.map((row) => {
+        const implemented = !["Aerodrome", "Raydium", "Curve"].includes(row.protocol);
+        const requiresSolanaWallet = row.chain === "Solana" || row.protocol === "Orca";
+        const requiresEvmWallet = !requiresSolanaWallet && ["Ethereum", "Arbitrum", "Base"].includes(row.chain);
+        const hasRequiredWallet = requiresSolanaWallet ? Boolean(solanaAccount?.address) : requiresEvmWallet ? Boolean(evmAccount?.address) : true;
+        const ready = implemented && hasRequiredWallet;
+        return {
+          protocol: row.protocol,
+          chain: row.chain,
+          action: row.action,
+          implemented,
+          flagOn: isLiveExecution,
+          ready,
+          reason: !implemented
+            ? "라이브 미구현"
+            : !hasRequiredWallet
+              ? requiresSolanaWallet
+                ? "Solana 키 필요"
+                : "EVM 키 필요"
+              : "실행 가능"
+        };
+      }),
+    [evmAccount?.address, isLiveExecution, quoteRows, solanaAccount?.address]
+  );
+  const protocolReadyCount = protocolReadiness.filter((row) => row.ready).length;
+  const protocolFlagOnlyCount = protocolReadiness.filter((row) => row.flagOn && !row.ready).length;
+  const protocolUnsupportedCount = protocolReadiness.filter((row) => !row.implemented).length;
   const assetReadiness = useMemo(
     () => buildDepositAssetReadiness(accountAssets, selectedSourceAsset, depositUsd, quoteRows, connectedWalletNetwork),
     [accountAssets, connectedWalletNetwork, depositUsd, quoteRows, selectedSourceAsset]
@@ -512,10 +370,8 @@ export function OrchestratorBoard({
       });
     return () => controller.abort();
   }, [canUseServerJobs, isResultQuote, quoteRows]);
-  const aaveFundingOk = !isAaveUsdcProduct || Boolean(effectiveEvmWalletAddress && aavePosition && aavePosition.walletUsdc >= depositUsd);
-  const canFundDeposit = canUseServerJobs && hasWallet && assetReadiness.isSufficient && aaveFundingOk;
-  const canStartDepositFlow = canUseServerJobs && hasWallet && canFundDeposit;
-  const canExecute = Boolean(job) && isExecutionConfirmed && canStartDepositFlow && (!isLiveExecution || canRunActualLive);
+  const canFundDeposit = !canUseServerJobs || assetReadiness.isSufficient;
+  const canExecute = Boolean(job) && isExecutionConfirmed && canUseServerJobs && canFundDeposit && (!isLiveExecution || protocolReadyCount > 0);
   const quoteTitle = lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0)
     ? "실행 결과 배분"
     : "입금 처리할 항목";
@@ -526,15 +382,8 @@ export function OrchestratorBoard({
     {
       key: "asset",
       label: "계정 자산",
-      ok: assetReadiness.isSufficient && aaveFundingOk,
-      detail:
-        needsEvmWalletForAave
-          ? "Aave USDC는 Arbitrum/Base EVM 지갑 연결이 필요합니다."
-          : isAaveUsdcProduct && !aaveFundingOk
-          ? `${aaveUsdcChain ?? ""} USDC 온체인 잔고 부족`
-          : assetReadiness.isSufficient
-            ? `${selectedSourceAsset} 잔고 충분`
-            : `$${assetReadiness.missingUsd.toLocaleString()} 부족`
+      ok: assetReadiness.isSufficient,
+      detail: assetReadiness.isSufficient ? `${selectedSourceAsset} 잔고 충분` : `$${assetReadiness.missingUsd.toLocaleString()} 부족`
     },
     { key: "guardrail", label: "전략 가드레일", ok: guardrail.maxPoolOk && guardrail.maxChainOk && guardrail.minProtocolOk, detail: "pool/chain/protocol 점검" },
     { key: "identity", label: "본인 확인", ok: isIdentityConfirmed, detail: isIdentityConfirmed ? "계정 기준 진행" : "확인 대기" },
@@ -542,42 +391,23 @@ export function OrchestratorBoard({
   ] as const;
   const findFeeForRoute = (route: (typeof assetReadiness.swapRows)[number]) =>
     feeEstimate?.rows.find((fee) => fee.protocol === route.protocol && fee.chain === route.chain && fee.action === route.action);
-  const sendAaveTransaction = async (tx: AaveTxRequest): Promise<string> => {
-    if (!ethereum || !effectiveEvmWalletAddress) {
-      throw new Error("Aave 입금·출금은 Phantom EVM 지갑 연결이 필요합니다.");
-    }
-    await ethereum.switchChain(tx.chainId);
-    return ethereum.sendTransaction({
-      from: effectiveEvmWalletAddress,
-      to: tx.to,
-      data: tx.data,
-      value: tx.value,
-      chainId: `0x${tx.chainId.toString(16)}`
-    });
-  };
-  const waitForAaveConfirmation = async (
-    chain: AaveUsdcChain,
-    walletAddress: string,
-    txHash: string,
-    kind: "supply" | "withdraw",
-    amountUsdc: number
-  ) => {
-    for (let i = 0; i < 20; i += 1) {
-      const result = await confirmAaveUsdcTx(chain, walletAddress, txHash, kind, amountUsdc);
-      if (result.status === "confirmed") {
-        return result;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-    }
-    return { status: "pending" as const };
-  };
+  /**
+   * quoteRows → protocolMix 변환 헬퍼.
+   * 풀별 인출이 정확히 동작하도록 protocol+chain으로 합치지 않고 실행 행 단위 풀을 유지한다.
+   */
+  function buildProtocolMixFromQuoteRows(rows: typeof quoteRows): { name: string; weight: number; pool?: string }[] {
+    const totalUsd = rows.reduce((acc, r) => acc + r.allocationUsd, 0);
+    if (totalUsd <= 0 || rows.length === 0) return [];
+    return rows.map((row) => ({
+      name: row.protocol,
+      weight: row.allocationUsd / totalUsd,
+      pool: `${row.chain} · ${row.action}`
+    }));
+  }
+
   const onCreateJob = async () => {
     if (!canUseServerJobs) {
       setApiMessage("내 계정에 입금 작업을 남기려면 먼저 로그인하세요.");
-      return;
-    }
-    if (!hasWallet || (!solanaAccount?.address && !evmWalletAddress)) {
-      setApiMessage("내 입금 작업을 만들려면 먼저 Phantom 지갑을 연결하세요.");
       return;
     }
     if (!assetReadiness.isSufficient) {
@@ -586,29 +416,7 @@ export function OrchestratorBoard({
       );
       return;
     }
-    if (needsEvmWalletForAave) {
-      setApiMessage("Aave 단일 상품은 Arbitrum/Base EVM 지갑 연결이 필요합니다.");
-      return;
-    }
-    if (!aaveFundingOk) {
-      setApiMessage(
-        `${aaveUsdcChain ?? "Aave"} USDC 온체인 잔고가 부족합니다. 가용 ${aavePosition?.walletUsdc.toLocaleString(undefined, {
-          maximumFractionDigits: 6
-        }) ?? "0"} USDC / 요청 ${depositUsd.toLocaleString()} USDC`
-      );
-      return;
-    }
     try {
-      const walletsToLink = [
-        solanaAccount?.address ? { address: solanaAccount.address, chain: "Solana" } : null,
-        evmWalletAddress ? { address: evmWalletAddress, chain: aaveUsdcChain ?? "Ethereum" } : null
-      ].filter((wallet): wallet is { address: string; chain: string } => Boolean(wallet));
-      for (const wallet of walletsToLink) {
-        if (!linkedWallets.some((linked) => linked.walletAddress.toLowerCase() === wallet.address.toLowerCase())) {
-          const linked = await linkAccountWallet(wallet.address, wallet.chain);
-          setLinkedWallets((prev) => [linked, ...prev.filter((item) => item.walletAddress !== linked.walletAddress)]);
-        }
-      }
       const created = await createOrchestratorJob({
         depositUsd,
         isRangeOut,
@@ -623,11 +431,29 @@ export function OrchestratorBoard({
       setIsExecutionConfirmed(false);
       setLastExecution(null);
       setCustomAllocationPercents(null);
+      setPreCreatedPositionId(undefined);
+
+      // quoteRows(사용자가 선택한 배분)로 포지션을 미리 생성 → 서버의 자동배분 덮어쓰기를 방지
+      try {
+        const protocolMix = buildProtocolMixFromQuoteRows(quoteRows);
+        if (protocolMix.length > 0) {
+          const expectedApr = depositUsd > 0 ? initialEstYieldUsd / depositUsd : 0.08;
+          const pos = await createDepositPositionRemote({
+            productName: initialProductName,
+            amountUsd: depositUsd,
+            expectedApr: Number.isFinite(expectedApr) && expectedApr > 0 ? expectedApr : 0.08,
+            protocolMix
+          });
+          setPreCreatedPositionId(pos.id);
+        }
+      } catch {
+        // 포지션 사전 생성 실패 시 서버 자동 생성에 위임 (무시)
+      }
 
       setApiMessage(
         hasWallet
           ? `내 입금 작업 생성 완료: ${created.id}`
-          : `내 입금 작업 생성 완료: ${created.id} · live 요청 전에는 Phantom(Solana) 지갑 서명이 필요합니다.`
+          : `내 입금 작업 생성 완료: ${created.id} · REAL-RUN에서는 준비되지 않은 프로토콜을 건너뜁니다.`
       );
     } catch (error) {
       setApiMessage(error instanceof Error ? error.message : "작업 생성 실패");
@@ -638,132 +464,21 @@ export function OrchestratorBoard({
   const runExecution = async (authNote: string) => {
     if (!job) return;
     const idemKey = `exec-${job.id}`;
-    const result = await executeJob(job.id, {
-      idempotencyKey: idemKey,
-      correlationId,
-      requestedMode: executionModeIntent
-    });
+    const effectivePositionId = preCreatedPositionId ?? linkedPositionId;
+      const result = await executeJob(job.id, {
+        idempotencyKey: idemKey,
+        correlationId,
+        positionId: effectivePositionId,
+        requestedMode: executionModeIntent,
+        protocolReadiness
+      });
     setIsExecutionDone(true);
     setLastExecution(result);
     const rid = result.requestId ? ` · requestId=${result.requestId}` : "";
-    const executionId =
-      result.simulationId
-        ? ` · simulationId=${result.simulationId}`
-        : result.txId
-          ? ` · txId=${result.txId}`
-          : "";
-    setApiMessage(`실행 결과: ${result.message}${rid}${executionId}${authNote}`);
+    const skippedCount = isLiveExecution ? Math.max(0, protocolReadiness.length - (result.payload?.adapterResults?.length ?? 0)) : 0;
+    const skippedNote = skippedCount > 0 ? ` · skipped ${skippedCount}` : "";
+    setApiMessage(`실행 결과: ${result.message}${rid}${skippedNote}${authNote}`);
     await onExecutionComplete?.();
-  };
-
-  const runAaveLiveSupply = async () => {
-    if (!job || !aaveUsdcChain) return;
-    if (!evmWalletAddress) {
-      setApiMessage("Aave 실제 입금 실행에는 Phantom EVM 지갑 연결이 필요합니다.");
-      return;
-    }
-    setAaveTxStatus("Aave V3 입금 트랜잭션 생성 중...");
-    const built = await buildAaveUsdcSupplyTx(aaveUsdcChain, evmWalletAddress, depositUsd);
-    let supplyHash = "";
-    for (const tx of built.transactions) {
-      setAaveTxStatus(`${tx.description} · 지갑 서명 대기`);
-      const txHash = await sendAaveTransaction(tx);
-      setAaveTxStatus(`${tx.kind === "approve" ? "승인" : "입금"} 제출됨: ${txHash}`);
-      if (tx.kind === "approve") {
-        let approveConfirmed = false;
-        const maxAttempts = 20;
-        for (let i = 0; i < maxAttempts; i += 1) {
-          setAaveTxStatus(`approve 온체인 확인 중... (${i + 1}/${maxAttempts})`);
-          const receipt = await checkAaveUsdcTxReceipt(aaveUsdcChain, txHash);
-          if (receipt.status === "confirmed") {
-            approveConfirmed = true;
-            setAaveTxStatus("approve 확인 완료 — supply 준비 중");
-            break;
-          }
-          await new Promise((resolve) => setTimeout(resolve, 1500));
-        }
-        if (!approveConfirmed) {
-          throw new Error("Aave approve receipt confirmation timed out");
-        }
-      }
-      if (tx.kind === "supply") {
-        supplyHash = txHash;
-      }
-    }
-    if (!supplyHash) {
-      throw new Error("Aave supply 트랜잭션 해시를 받지 못했습니다.");
-    }
-    setAaveTxStatus("Aave 입금 영수증 확인 중...");
-    const confirmed = await waitForAaveConfirmation(aaveUsdcChain, evmWalletAddress, supplyHash, "supply", depositUsd);
-    const message = confirmed.status === "confirmed" ? "Aave V3 USDC 입금 확정" : "Aave V3 USDC 입금 제출됨";
-    const result: ExecuteJobResponse = {
-      ok: true,
-      message,
-      txId: supplyHash,
-      summary:
-        confirmed.status === "confirmed"
-          ? "온체인 receipt 확인 후 포트폴리오 포지션을 확정했습니다."
-          : "트랜잭션이 아직 pending입니다. 잠시 뒤 포지션 조회를 다시 확인하세요.",
-      payload: {
-        v: 1,
-        mode: "live",
-        correlationId,
-        adapterResults: [
-          {
-            protocol: "Aave",
-            chain: aaveUsdcChain,
-            action: "USDC supply",
-            allocationUsd: depositUsd,
-            txId: supplyHash,
-            status: confirmed.status === "confirmed" ? "confirmed" : "submitted"
-          }
-        ]
-      }
-    };
-    setIsExecutionDone(true);
-    setLastExecution(result);
-    setAaveLiveTxHash(supplyHash);
-    setApiMessage(`${message} · txHash=${supplyHash}`);
-    setAaveTxStatus(`${result.summary ?? message} · txHash=${supplyHash}`);
-    await fetchAaveUsdcPosition(aaveUsdcChain, effectiveEvmWalletAddress).then(setAavePosition).catch(() => undefined);
-    await onExecutionComplete?.();
-  };
-
-  const onAaveWithdraw = async () => {
-    if (!aaveUsdcChain || !effectiveEvmWalletAddress) {
-      setApiMessage("Aave 출금은 Phantom EVM 지갑 연결이 필요합니다.");
-      return;
-    }
-    const amountUsdc = Math.min(depositUsd, aavePosition?.suppliedUsdc ?? 0);
-    if (!Number.isFinite(amountUsdc) || amountUsdc <= 0) {
-      setApiMessage("출금할 Aave USDC 공급 잔고가 없습니다.");
-      return;
-    }
-    setAaveWithdrawLoading(true);
-    setAaveTxStatus("Aave V3 출금 트랜잭션 생성 중...");
-    try {
-      const built = await buildAaveUsdcWithdrawTx(aaveUsdcChain, effectiveEvmWalletAddress, amountUsdc);
-      setAaveTxStatus(`${built.transaction.description} · 지갑 서명 대기`);
-      const txHash = await sendAaveTransaction(built.transaction);
-      setAaveTxStatus(`출금 제출됨: ${txHash} · 영수증 확인 중...`);
-      const confirmed = await waitForAaveConfirmation(aaveUsdcChain, effectiveEvmWalletAddress, txHash, "withdraw", amountUsdc);
-      const message = confirmed.status === "confirmed" ? "Aave V3 USDC 출금 확정" : "Aave V3 USDC 출금 제출됨";
-      setApiMessage(`${message} · txId=${txHash}`);
-      setAaveTxStatus(
-        confirmed.status === "confirmed"
-          ? "온체인 receipt 확인 후 포트폴리오와 출금 장부를 갱신했습니다."
-          : "트랜잭션이 아직 pending입니다. 잠시 뒤 포지션 조회를 다시 확인하세요."
-      );
-      await fetchAaveUsdcPosition(aaveUsdcChain, effectiveEvmWalletAddress).then(setAavePosition).catch(() => undefined);
-      await onExecutionComplete?.();
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "Aave 출금 실패";
-      setApiMessage(msg);
-      setAaveTxStatus(msg);
-      onActionNotice?.({ variant: "error", text: msg });
-    } finally {
-      setAaveWithdrawLoading(false);
-    }
   };
 
   const onExecute = async () => {
@@ -775,15 +490,11 @@ export function OrchestratorBoard({
       setApiMessage("먼저 작업을 생성하세요.");
       return;
     }
+    if (isLiveExecution && protocolReadyCount === 0) {
+      setApiMessage("REAL-RUN으로 실행할 준비된 프로토콜이 없습니다. Solana 키 또는 미구현 어댑터 상태를 확인하세요.");
+      return;
+    }
     try {
-      if (isLiveExecution && liveExecutionBlockers.length > 0 && !canRunAaveDirectLive) {
-        setApiMessage(`현재 선택 상품은 live 실행이 아직 지원되지 않습니다. ${liveExecutionBlockers.join(" / ")}`);
-        return;
-      }
-      if (canRunAaveDirectLive) {
-        await runAaveLiveSupply();
-        return;
-      }
       const walletProvider = (window as { phantom?: { solana?: { isPhantom?: boolean; signMessage?: (message: Uint8Array) => Promise<unknown> } } }).phantom
         ?.solana;
       const signMessage = walletProvider?.signMessage;
@@ -853,70 +564,25 @@ export function OrchestratorBoard({
       setApiMessage("계정 가용 자산이 입금액보다 작아 리스크 검토를 완료할 수 없습니다.");
       return;
     }
-    if (!aaveFundingOk) {
-      setApiMessage("Aave 단일 상품의 대상 체인 USDC 잔고가 입금액보다 작아 리스크 검토를 완료할 수 없습니다.");
-      return;
-    }
     setIsExecutionConfirmed(true);
     setApiMessage(
       hasWallet
-        ? isLiveExecution
-          ? canRunAaveDirectLive
-            ? "리스크 검토 완료. 5번 버튼을 누르면 Aave는 실제 네트워크로 입금됩니다."
-            : canRunServerLive
-              ? "리스크 검토 완료. 5번 버튼으로 내 입금 실행을 요청하세요."
-              : `리스크 검토 완료. 현재 선택 상품은 live 미지원입니다. ${liveExecutionBlockers.join(" / ")}`
-          : "리스크 검토 완료. 5번 버튼으로 내 입금 실행을 요청하세요."
-        : "리스크 검토 완료. dry-run은 지갑 없이 내 실행 기록을 남길 수 있고, live는 Phantom(Solana) 서명이 필요합니다."
+        ? "리스크 검토 완료. 5번 버튼으로 내 입금 실행을 요청하세요."
+        : "리스크 검토 완료. dry-run은 지갑 없이 내 실행 기록을 남길 수 있고, REAL-RUN은 준비된 프로토콜만 실제 실행합니다."
     );
   };
 
-  const executionButtonLabel = isLiveExecution
-    ? canRunActualLive
-      ? "4. 실제 입금 실행"
-      : "4. 실제 입금 불가 (live 미지원)"
-    : "4. 내 입금 실행 (dry-run)";
+  const executionButtonLabel = isLiveExecution ? "4. REAL-RUN 입금 실행" : "4. 내 입금 실행 (dry-run)";
 
   return (
     <section className="card orchestrator-card">
-      <div className="orchestrator-card-header">
-        <h2>입금 처리</h2>
-        <button
-          type="button"
-          className="net-settings-trigger-btn"
-          onClick={() => setShowNetworkSettings(true)}
-          title="네트워크 및 실행 모드 설정"
-        >
-          ⚙ 네트워크 설정
-          {runtime && (
-            <span className={`net-mode-badge${runtime.executionMode === "live" ? " badge--live" : " badge--dry"}`}>
-              {runtime.executionMode === "live" ? "REAL" : "DRY"}
-            </span>
-          )}
-        </button>
-      </div>
-      {showNetworkSettings && (
-        <NetworkSettingsPanel
-          runtime={runtime}
-          canToggle={canToggleServerMode}
-          onUpdate={(info) => setRuntime(info)}
-          onClose={() => setShowNetworkSettings(false)}
-        />
-      )}
-      {(!canUseServerJobs || runtimeModeError || runtimeFlagError) ? (
+      <h2>입금 처리</h2>
+      {runtime?.serverExecutionNote || !canUseServerJobs ? (
         <div className="runtime-scope-notice" role="note">
-          {runtimeModeError ? <p className="runtime-scope-sub runtime-scope-sub--error">{runtimeModeError}</p> : null}
-          {runtimeFlagError ? <p className="runtime-scope-sub runtime-scope-sub--error">{runtimeFlagError}</p> : null}
-          {isLiveExecution && liveExecutionBlockers.length > 0 ? (
-            <ul className="runtime-live-blockers">
-              {liveExecutionBlockers.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          ) : null}
+          {runtime?.serverExecutionNote ? <p className="runtime-scope-sub">{runtime.serverExecutionNote}</p> : null}
           {!canUseServerJobs ? (
             <p className="runtime-scope-sub" role="status">
-              1~3단계는 <strong>로그인 · 계정</strong> 메뉴에서 아이디·비밀번호(JWT)로 로그인(또는 이용자 가입)한 뒤에 사용할 수 있습니다. dry-run은 Phantom 서명 없이도 내 실행 기록을 남길 수 있습니다.
+          1~3단계는 <strong>로그인 · 계정</strong> 메뉴에서 아이디·비밀번호(JWT)로 로그인(또는 이용자 가입)한 뒤에 사용할 수 있습니다. dry-run은 Phantom 서명 없이도 내 실행 기록을 남길 수 있습니다.
             </p>
           ) : (
             <p className="runtime-scope-sub" role="status">
@@ -930,16 +596,6 @@ export function OrchestratorBoard({
         <p>금액: ${depositUsd.toFixed(2)}</p>
         <p>예상 수익: ${initialEstYieldUsd.toFixed(2)}</p>
         <p>예상 수수료: ${initialEstFeeUsd.toFixed(2)}</p>
-        <p>
-          실행 모드: <strong>{isLiveExecution ? "실제 입금" : "dry-run"}</strong>
-          {isLiveExecution && isAaveUsdcProduct
-            ? " · Aave는 Phantom EVM 서명 후 실제 네트워크로 전송"
-            : isLiveExecution
-              ? isLiveExecutionEnabled
-                ? " · 서버 live 모드로 실제 실행"
-                : " · 현재 서버는 dry-run"
-              : ""}
-        </p>
       </div>
 
       <div className="deposit-asset-routing-card" role="region" aria-label="계정 자산 및 스왑 준비">
@@ -951,6 +607,7 @@ export function OrchestratorBoard({
             <p className="deposit-asset-network-line">
               연결 지갑 네트워크: <strong>{connectedWalletNetwork ?? "미연결"}</strong>
               {assetReadiness.selectedAsset ? ` · 계정 자산 보관 체인: ${assetReadiness.selectedAsset.chain}` : ""}
+              · 잔고 기준: <strong>{assetSourceLabel}</strong>
             </p>
           </div>
           <label className="deposit-asset-select">
@@ -962,7 +619,7 @@ export function OrchestratorBoard({
                 setIsExecutionConfirmed(false);
                 setIsExecutionDone(false);
               }}
-              disabled={accountAssets.length === 0}
+              disabled={!canUseServerJobs || accountAssets.length === 0}
             >
               {accountAssets.length > 0 ? (
                 accountAssets.map((asset) => (
@@ -987,6 +644,7 @@ export function OrchestratorBoard({
                 ? `${assetReadiness.selectedAsset.amount.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${assetReadiness.selectedAsset.symbol}`
                 : "자산 없음"}
             </em>
+            <em>{assetSourceLabel}</em>
           </div>
           <div className={assetReadiness.isSufficient ? "deposit-asset-summary ok" : "deposit-asset-summary warn"}>
             <span>입금 가능 여부</span>
@@ -1014,99 +672,6 @@ export function OrchestratorBoard({
             <em>{feeEstimate ? `${feeEstimate.priceSource} · ${new Date(feeEstimate.updatedAt).toLocaleTimeString()}` : "가스·스왑 수수료 포함"}</em>
           </div>
         </div>
-        {aaveUsdcChain ? (
-          <div className="deposit-aave-panel" role="region" aria-label="Aave V3 USDC 온체인 포지션">
-            <div>
-              <p className="section-eyebrow">Aave V3 USDC</p>
-              <h3>{aaveUsdcChain} 단일 상품 온체인 조회</h3>
-              <p>
-                USDC 승인, Aave Pool 공급, aUSDC 잔고 조회, Pool 출금을 같은 지갑 주소 기준으로 처리합니다.
-              </p>
-            </div>
-            <div className={`deposit-asset-summary ${needsEvmWalletForAave ? "warn" : "ok"}`}>
-              <span>{needsEvmWalletForAave ? "EVM 지갑 필요" : "EVM 지갑 상태"}</span>
-              <strong>{needsEvmWalletForAave ? "연결 필요" : "준비 완료"}</strong>
-              <em>{aaveWalletNotice}</em>
-            </div>
-            {isLiveExecution && isAaveUsdcProduct ? (
-              <p className="deposit-asset-muted">
-                실입금은 서버 모드와 무관하게 Phantom EVM 서명으로 실제 Arbitrum/Base 네트워크에 전송됩니다.
-              </p>
-            ) : null}
-            {aaveLoading ? <p className="deposit-asset-muted">Aave 포지션 조회 중...</p> : null}
-            {aaveError ? <p className="deposit-asset-error">{aaveError}</p> : null}
-            {aavePosition ? (
-              <div className="deposit-aave-metrics">
-                <span>
-                  <em>지갑 USDC</em>
-                  <strong>{aavePosition.walletUsdc.toLocaleString(undefined, { maximumFractionDigits: 6 })}</strong>
-                </span>
-                <span>
-                  <em>Aave 공급 USDC</em>
-                  <strong>{aavePosition.suppliedUsdc.toLocaleString(undefined, { maximumFractionDigits: 6 })}</strong>
-                </span>
-                <span>
-                  <em>Pool</em>
-                  <code>{`${aavePosition.poolAddress.slice(0, 6)}...${aavePosition.poolAddress.slice(-4)}`}</code>
-                </span>
-                <span>
-                  <em>aToken</em>
-                  <code>{`${aavePosition.aTokenAddress.slice(0, 6)}...${aavePosition.aTokenAddress.slice(-4)}`}</code>
-                </span>
-              </div>
-            ) : null}
-            {isLiveExecution && isAaveUsdcProduct && aaveLiveTxHash ? (
-              <div className="deposit-aave-live-result" role="status">
-                <span className={`badge ${adapterResultStatusClass(lastExecution?.payload?.adapterResults?.[0]?.status)}`}>
-                  {lastExecution?.payload?.adapterResults?.[0]?.status ?? "submitted"}
-                </span>
-                <span className="deposit-aave-live-result-label">실제 txHash</span>
-                <code className="execution-summary-code deposit-aave-live-result-code" title={aaveLiveTxHash}>
-                  {compactExecutionId(aaveLiveTxHash)}
-                </code>
-                <button
-                  type="button"
-                  className="ghost-btn deposit-aave-copy-btn"
-                  onClick={() => void copyToClipboard(aaveLiveTxHash)}
-                >
-                  {copiedTxHash === aaveLiveTxHash ? "복사됨" : "복사"}
-                </button>
-              </div>
-            ) : null}
-            <div className="button-row">
-              <button
-                type="button"
-                className="ghost-btn"
-                onClick={() => {
-                  if (!aaveUsdcChain || !effectiveEvmWalletAddress) return;
-                  setAaveLoading(true);
-                  setAaveError("");
-                  void fetchAaveUsdcPosition(aaveUsdcChain, effectiveEvmWalletAddress)
-                    .then(setAavePosition)
-                    .catch((error) => setAaveError(error instanceof Error ? error.message : "Aave 포지션 조회 실패"))
-                    .finally(() => setAaveLoading(false));
-                }}
-                disabled={!effectiveEvmWalletAddress || aaveLoading}
-              >
-                {effectiveEvmWalletAddress ? "Aave 잔고 새로고침" : "EVM 지갑 먼저 연결"}
-              </button>
-              <button
-                type="button"
-                className="ghost-btn"
-                onClick={() => void onAaveWithdraw()}
-                disabled={!effectiveEvmWalletAddress || !aavePosition || aavePosition.suppliedUsdc <= 0 || aaveWithdrawLoading}
-              >
-                {aaveWithdrawLoading
-                  ? "출금 처리 중..."
-                  : effectiveEvmWalletAddress
-                    ? `Aave에서 ${Math.min(depositUsd, aavePosition?.suppliedUsdc ?? 0).toLocaleString()} USDC 출금`
-                    : "EVM 지갑 연결 후 출금"}
-              </button>
-            </div>
-            {needsEvmWalletForAave ? <p className="deposit-asset-error">Aave 입금/출금은 Arbitrum 또는 Base EVM 지갑 연결이 필요합니다.</p> : null}
-            {aaveTxStatus ? <p className="deposit-asset-muted">{aaveTxStatus}</p> : null}
-          </div>
-        ) : null}
         <div className="deposit-swap-route-list" aria-label="스왑 및 브릿지 계획">
           {assetReadiness.swapRows.map((row, idx) => {
             const fee = findFeeForRoute(row);
@@ -1193,19 +758,20 @@ export function OrchestratorBoard({
                 setLastExecution(null);
                 setApiMessage(
                   executionModeIntent === "dry-run"
-                    ? "실제 입금 실행 모드로 전환했습니다. 리스크 검토 후 Phantom 서명이 필요합니다."
-                    : canRunAaveDirectLive
-                      ? "실제 입금 실행 모드로 전환했습니다. Aave는 Phantom EVM 서명 후 실제 네트워크로 입금됩니다."
-                      : canRunServerLive
-                        ? "실제 입금 실행 모드로 전환했습니다."
-                        : `현재 선택 상품은 live 미지원입니다. ${liveExecutionBlockers.join(" / ")}`
+                    ? "REAL-RUN 모드로 전환했습니다. 준비된 프로토콜만 실제 실행됩니다."
+                    : "dry-run 모드로 전환했습니다. 지갑 서명 없이 시뮬레이션 기록이 가능합니다."
                 );
               }}
-              title="dry-run과 실제 입금 실행 요청 모드를 전환합니다."
+              title="dry-run과 REAL-RUN 모드를 전환합니다."
             >
-              {isLiveExecution ? (canRunActualLive ? "실제 입금 실행" : "실제 입금 불가") : "DRY-RUN"}
+              {livePresetLabel}
             </button>
           </div>
+        </div>
+        <div className="quote-readiness-summary" aria-label="프로토콜 준비 상태">
+          <span className="quote-readiness-pill quote-readiness-pill--ready">실행 가능 {protocolReadyCount}</span>
+          <span className="quote-readiness-pill quote-readiness-pill--flag">플래그만 ON {protocolFlagOnlyCount}</span>
+          <span className="quote-readiness-pill quote-readiness-pill--blocked">미구현 {protocolUnsupportedCount}</span>
         </div>
         {quoteRows.length > 0 ? (
           <div className="quote-card-grid">
@@ -1215,13 +781,21 @@ export function OrchestratorBoard({
                 <span className="quote-card-cell quote-card-chain">{row.chain}</span>
                 <span className="quote-card-cell quote-card-action">{row.action}</span>
                 <span className="quote-card-cell quote-card-usd">${row.allocationUsd.toFixed(2)}</span>
-                {isResultQuote ? (
-                  <span className="quote-card-cell quote-card-status">
-                    <span className={adapterResultStatusClass(adapterResultStatus(idx))}>
-                      {adapterResultStatus(idx) ?? "simulated"}
-                    </span>
-                  </span>
-                ) : null}
+                <span
+                  className={
+                    protocolReadiness[idx]?.ready
+                      ? "quote-card-cell quote-card-readiness quote-card-readiness--ready"
+                      : protocolReadiness[idx]?.implemented
+                        ? "quote-card-cell quote-card-readiness quote-card-readiness--flag"
+                        : "quote-card-cell quote-card-readiness quote-card-readiness--blocked"
+                  }
+                >
+                  {protocolReadiness[idx]?.ready
+                    ? "실행 가능"
+                    : protocolReadiness[idx]?.implemented
+                      ? "플래그만 ON"
+                      : "미구현"}
+                </span>
                 {!isResultQuote ? (
                   <label className="quote-card-slider" aria-label={`${row.protocol} 배분 조율`}>
                     <input
@@ -1248,6 +822,7 @@ export function OrchestratorBoard({
         <p className="quote-card-foot">
           입금 전·후 동일한 표 형식으로 예상 배분과 서버 응답을 비교합니다.
           {!isResultQuote ? ` 조율 합계 $${adjustedAllocationTotal.toFixed(2)}` : ""}
+          {isLiveExecution ? ` · 실행 가능 ${protocolReadyCount}/${protocolReadiness.length}` : ""}
         </p>
       </div>
 
@@ -1263,6 +838,11 @@ export function OrchestratorBoard({
           <p className="execution-summary-line">
             <span className="execution-summary-k">상관 ID</span> <code className="execution-summary-code">{correlationId}</code>
           </p>
+          {linkedPositionId ? (
+            <p className="execution-summary-line">
+              <span className="execution-summary-k">연결 포지션</span> <code className="execution-summary-code">{linkedPositionId}</code>
+            </p>
+          ) : null}
           {onOpenOperationsWithJob ? (
             <div className="button-row" style={{ marginTop: 8 }}>
               <button type="button" className="ghost-btn" onClick={() => onOpenOperationsWithJob(job.id)}>
@@ -1279,28 +859,9 @@ export function OrchestratorBoard({
           <p className="execution-summary-line">
             <span className="execution-summary-k">ok</span> {String(lastExecution.ok)}
           </p>
-          {lastExecution.payload?.adapterResults?.[0]?.status ? (
-            <p className="execution-summary-line execution-summary-status-line">
-              <span className="execution-summary-k">status</span>{" "}
-              <span className={`execution-summary-status-pill ${adapterResultStatusClass(lastExecution.payload.adapterResults[0].status)}`}>
-                {lastExecution.payload.adapterResults[0].status}
-              </span>
-            </p>
-          ) : null}
-          {lastExecution.simulationId ? (
-            <p className="execution-summary-line">
-              <span className="execution-summary-k">simulationId</span>{" "}
-              <code className="execution-summary-code" title={lastExecution.simulationId}>
-                {compactExecutionId(lastExecution.simulationId)}
-              </code>
-            </p>
-          ) : null}
           {lastExecution.txId ? (
             <p className="execution-summary-line">
-              <span className="execution-summary-k">txId</span>{" "}
-              <code className="execution-summary-code" title={lastExecution.txId}>
-                {compactTxIdList(lastExecution.txId)}
-              </code>
+              <span className="execution-summary-k">txId</span> <code className="execution-summary-code">{lastExecution.txId}</code>
             </p>
           ) : null}
           {lastExecution.summary ? <p className="execution-summary-line">{lastExecution.summary}</p> : null}
@@ -1371,7 +932,7 @@ export function OrchestratorBoard({
         <button
           className={job ? "flow-step-btn done" : "flow-step-btn waiting"}
           onClick={onCreateJob}
-          disabled={!canStartDepositFlow}
+          disabled={!canUseServerJobs || !canFundDeposit}
         >
           3. 내 입금 작업 생성
         </button>
@@ -1391,7 +952,7 @@ export function OrchestratorBoard({
         <div className="kpi-item">
           <p className="kpi-label">지갑 상태</p>
           <p className="kpi-value">{hasWallet ? `${solanaAccount?.address?.slice(0, 6)}...${solanaAccount?.address?.slice(-4)}` : "미연결"}</p>
-          <p className="kpi-label">{hasWallet ? "입금 잔고·서명 확인용" : "지갑 연결 후 진행 가능"}</p>
+          <p className="kpi-label">{hasWallet ? "서명·연결용 (Solana)" : "연결 후 진행 가능"}</p>
         </div>
         <div className="kpi-item">
           <p className="kpi-label">현재 위험도</p>
@@ -1409,9 +970,7 @@ export function OrchestratorBoard({
         <div className="kpi-item">
           <p className="kpi-label">내 입금 실행 상태</p>
           <p className="kpi-value">{job?.id ? `Job ${job.id.slice(-8)}` : "작업 없음"}</p>
-          <p className="kpi-label">
-            {apiMessage || (job ? "상태: 내 입금 실행 대기" : "상태: 대기 중")}
-          </p>
+          <p className="kpi-label">{apiMessage || (job ? "상태: 내 입금 실행 대기" : "상태: 대기 중")}</p>
         </div>
       </div>
 
@@ -1425,13 +984,8 @@ export function OrchestratorBoard({
         <div className="orchestrator-section">
           <h3>상세 옵션</h3>
           <p className="kpi-label">
-            서버 실효 모드: {runtime ? runtime.executionMode.toUpperCase() : "조회 중"} (요청 {runtime?.executionModeRequested ?? "—"}
-            {runtime?.executionModeOverride ? ` · override ${runtime.executionModeOverride.toUpperCase()}` : ""}
-            ) · 화면 선택:{" "}
+            서버 실효 모드: {runtime ? runtime.executionMode.toUpperCase() : "조회 중"} (요청 {runtime?.executionModeRequested ?? "—"}) · 화면 선택:{" "}
             {displayExecutionMode === "live" ? "실제 입금 실행" : "dry-run"}
-          </p>
-          <p className="kpi-label">
-            실제 전송 기준: Aave는 Phantom EVM 서명으로 바로 전송, 그 외 상품은 서버 live 모드가 있어야 실제 실행됩니다.
           </p>
           <div className="orchestrator-auto-checks">
             {autoChecks.map((item) => (

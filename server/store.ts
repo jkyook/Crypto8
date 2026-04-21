@@ -8,16 +8,10 @@ import type {
   RiskLevel
 } from "./types";
 import type { ExecutionAdapterBundle } from "./executionAdapter";
-import type { ExecutionMode } from "./adapters/types";
-import { runExecutionAdapter } from "./executionAdapter";
-import { getEffectiveExecutionMode } from "./runtimeMode";
+import type { ExecutionMode, ProtocolExecutionReadiness } from "./adapters/types";
+import { getEffectiveExecutionMode, runExecutionAdapter } from "./executionAdapter";
 import { getDb } from "./db";
 import { MAX_DEPOSIT_USD } from "./limits";
-import {
-  createDepositIntentsFromAdapterResults,
-  createExecution,
-  updateDepositIntentStatus
-} from "./intentStore";
 
 function evaluateRisk(input: JobInput): RiskLevel {
   if (input.isDepegAlert) {
@@ -41,33 +35,8 @@ function rowToExecutionJob(row: {
   isDepegAlert: number;
   hasPendingRelease: number;
   riskLevel: string;
-  sourceAsset?: string | null;
-  productNetwork?: string | null;
-  productSubtype?: string | null;
   requestedBy: string | null;
 }): ExecutionJob {
-  const sourceAsset =
-    row.sourceAsset === "USDC" || row.sourceAsset === "USDT" || row.sourceAsset === "ETH" || row.sourceAsset === "SOL"
-      ? row.sourceAsset
-      : undefined;
-  const productNetwork =
-    row.productNetwork === "Ethereum" ||
-    row.productNetwork === "Arbitrum" ||
-    row.productNetwork === "Base" ||
-    row.productNetwork === "Solana" ||
-    row.productNetwork === "Multi"
-      ? row.productNetwork
-      : undefined;
-  const productSubtype =
-    row.productSubtype === "multi-stable" ||
-    row.productSubtype === "multi-balanced" ||
-    row.productSubtype === "arb-stable" ||
-    row.productSubtype === "base-stable" ||
-    row.productSubtype === "sol-stable" ||
-    row.productSubtype === "eth-stable" ||
-    row.productSubtype === "eth-bluechip"
-      ? row.productSubtype
-      : undefined;
   return {
     id: row.id,
     createdAt: row.createdAt,
@@ -76,10 +45,7 @@ function rowToExecutionJob(row: {
       depositUsd: row.depositUsd,
       isRangeOut: Boolean(row.isRangeOut),
       isDepegAlert: Boolean(row.isDepegAlert),
-      hasPendingRelease: Boolean(row.hasPendingRelease),
-      sourceAsset,
-      productNetwork,
-      productSubtype
+      hasPendingRelease: Boolean(row.hasPendingRelease)
     },
     riskLevel: row.riskLevel as RiskLevel,
     requestedBy: row.requestedBy
@@ -100,96 +66,36 @@ export async function createJob(input: JobInput, requestedBy: string): Promise<E
     requestedBy
   };
   const db = getDb();
-  await db.$executeRawUnsafe(
-    `INSERT INTO jobs
-      (id, created_at, status, deposit_usd, is_range_out, is_depeg_alert, has_pending_release, risk_level, source_asset, product_network, product_subtype, requested_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    job.id,
-    job.createdAt,
-    job.status,
-    input.depositUsd,
-    input.isRangeOut ? 1 : 0,
-    input.isDepegAlert ? 1 : 0,
-    input.hasPendingRelease ? 1 : 0,
-    job.riskLevel,
-    input.sourceAsset ?? null,
-    input.productNetwork ?? null,
-    input.productSubtype ?? null,
-    requestedBy
-  );
+  await db.job.create({
+    data: {
+      id: job.id,
+      createdAt: job.createdAt,
+      status: job.status,
+      depositUsd: input.depositUsd,
+      isRangeOut: input.isRangeOut ? 1 : 0,
+      isDepegAlert: input.isDepegAlert ? 1 : 0,
+      hasPendingRelease: input.hasPendingRelease ? 1 : 0,
+      riskLevel: job.riskLevel,
+      requestedBy
+    }
+  });
   return job;
 }
 
 export async function listJobs(scope: JobListScope): Promise<ExecutionJob[]> {
   const db = getDb();
-  const rows = scope.role === "security"
-    ? await db.$queryRawUnsafe<Array<{
-        id: string;
-        createdAt: string;
-        status: string;
-        depositUsd: number;
-        isRangeOut: number;
-        isDepegAlert: number;
-        hasPendingRelease: number;
-        riskLevel: string;
-        sourceAsset?: string | null;
-        productNetwork?: string | null;
-        productSubtype?: string | null;
-        requestedBy: string | null;
-      }>>(
-        `SELECT id, created_at AS createdAt, status, deposit_usd AS depositUsd, is_range_out AS isRangeOut, is_depeg_alert AS isDepegAlert, has_pending_release AS hasPendingRelease, risk_level AS riskLevel, source_asset AS sourceAsset, product_network AS productNetwork, product_subtype AS productSubtype, requested_by AS requestedBy
-         FROM jobs
-         ORDER BY created_at DESC`
-      )
-    : await db.$queryRawUnsafe<Array<{
-        id: string;
-        createdAt: string;
-        status: string;
-        depositUsd: number;
-        isRangeOut: number;
-        isDepegAlert: number;
-        hasPendingRelease: number;
-        riskLevel: string;
-        sourceAsset?: string | null;
-        productNetwork?: string | null;
-        productSubtype?: string | null;
-        requestedBy: string | null;
-      }>>(
-        `SELECT id, created_at AS createdAt, status, deposit_usd AS depositUsd, is_range_out AS isRangeOut, is_depeg_alert AS isDepegAlert, has_pending_release AS hasPendingRelease, risk_level AS riskLevel, source_asset AS sourceAsset, product_network AS productNetwork, product_subtype AS productSubtype, requested_by AS requestedBy
-         FROM jobs
-         WHERE requested_by = ?
-         ORDER BY created_at DESC`,
-        scope.username
-      );
+  const where = scope.role === "security" ? {} : { requestedBy: scope.username };
+  const rows = await db.job.findMany({ where, orderBy: { createdAt: "desc" } });
   return rows.map(rowToExecutionJob);
 }
 
 export async function getJob(jobId: string): Promise<ExecutionJob | undefined> {
   const db = getDb();
-  const rows = await db.$queryRawUnsafe<Array<{
-    id: string;
-    createdAt: string;
-    status: string;
-    depositUsd: number;
-    isRangeOut: number;
-    isDepegAlert: number;
-    hasPendingRelease: number;
-    riskLevel: string;
-    sourceAsset?: string | null;
-    productNetwork?: string | null;
-    productSubtype?: string | null;
-    requestedBy: string | null;
-  }>>(
-    `SELECT id, created_at AS createdAt, status, deposit_usd AS depositUsd, is_range_out AS isRangeOut, is_depeg_alert AS isDepegAlert, has_pending_release AS hasPendingRelease, risk_level AS riskLevel, source_asset AS sourceAsset, product_network AS productNetwork, product_subtype AS productSubtype, requested_by AS requestedBy
-     FROM jobs
-     WHERE id = ?
-     LIMIT 1`,
-    jobId
-  );
-  if (!rows[0]) {
+  const row = await db.job.findUnique({ where: { id: jobId } });
+  if (!row) {
     return undefined;
   }
-  return rowToExecutionJob(rows[0]);
+  return rowToExecutionJob(row);
 }
 
 export async function cancelJob(jobId: string, auth: JobListScope): Promise<ExecutionJob> {
@@ -204,12 +110,8 @@ export async function cancelJob(jobId: string, auth: JobListScope): Promise<Exec
     throw new Error("executed job cannot be cancelled");
   }
   const db = getDb();
-  await db.$executeRawUnsafe(`UPDATE jobs SET status = 'cancelled' WHERE id = ?`, jobId);
-  const updated = await getJob(jobId);
-  if (!updated) {
-    throw new Error("job not found after cancel");
-  }
-  return updated;
+  const updated = await db.job.update({ where: { id: jobId }, data: { status: "cancelled" } });
+  return rowToExecutionJob(updated);
 }
 
 export async function approveJob(args: {
@@ -351,12 +253,13 @@ async function findIdempotentEvent(jobId: string, idempotencyKey?: string): Prom
 async function runExecutionWithRetry(
   job: ExecutionJob,
   retryCount: number,
-  requestedMode?: ExecutionMode
+  requestedMode?: ExecutionMode,
+  protocolReadiness?: ProtocolExecutionReadiness[]
 ): Promise<{ bundle: ExecutionAdapterBundle; attempts: number }> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= retryCount; attempt += 1) {
     try {
-      const bundle = await runExecutionAdapter(job, requestedMode);
+      const bundle = await runExecutionAdapter(job, requestedMode, protocolReadiness);
       return { bundle, attempts: attempt };
     } catch (error) {
       lastError = error;
@@ -427,6 +330,7 @@ export type ExecuteJobMeta = {
   correlationId?: string;
   positionId?: string;
   requestedMode?: ExecutionMode;
+  protocolReadiness?: ProtocolExecutionReadiness[];
 };
 
 export async function executeJob(
@@ -439,7 +343,6 @@ export async function executeJob(
   message: string;
   job?: ExecutionJob;
   txId?: string;
-  simulationId?: string;
   summary?: string;
   payload?: ExecutionEventPayloadV1;
 }> {
@@ -458,7 +361,6 @@ export async function executeJob(
       message: `idempotent replay: ${existingIdempotent.message}`,
       job,
       txId: existingIdempotent.txId,
-      simulationId: existingIdempotent.payload?.simulationId,
       summary: existingIdempotent.summary,
       payload: existingIdempotent.payload
     };
@@ -472,7 +374,6 @@ export async function executeJob(
     });
     const replayPayload = snapshotAdapterPayload(meta ?? {}, {
       mode: auditMode,
-      simulationId: latest?.payloadJson ? parsePayloadJson(latest.payloadJson)?.simulationId : undefined,
       adapterResults: latest?.payloadJson ? parsePayloadJson(latest.payloadJson)?.adapterResults : undefined
     });
     await createExecutionEvent({
@@ -483,7 +384,6 @@ export async function executeJob(
       message: "already executed - idempotent skip",
       idempotencyKey,
       txId: latest?.txId ?? undefined,
-      simulationId: parsePayloadJson(latest?.payloadJson)?.simulationId,
       summary: latest?.summary ?? undefined,
       payload: replayPayload
     });
@@ -492,7 +392,6 @@ export async function executeJob(
       message: "already executed - idempotent skip",
       job,
       txId: latest?.txId ?? undefined,
-      simulationId: parsePayloadJson(latest?.payloadJson)?.simulationId,
       summary: latest?.summary ?? undefined,
       payload: replayPayload
     };
@@ -525,108 +424,39 @@ export async function executeJob(
   let execution: ExecutionAdapterBundle;
   let attemptsUsed = maxAttempts;
   try {
-    const ran = await runExecutionWithRetry(job, maxAttempts, meta?.requestedMode);
+    const ran = await runExecutionWithRetry(job, maxAttempts, meta?.requestedMode, meta?.protocolReadiness);
     execution = ran.bundle;
     attemptsUsed = ran.attempts;
   } catch (error) {
-    const errorMessage = error instanceof Error
-      ? `[${error.name}] ${error.message}`
-      : `execution adapter error: ${String(error)}`;
     const failPayload = snapshotAdapterPayload(meta ?? {}, {
       mode: auditMode,
       adapterResults: [],
-      retries: maxAttempts,
-      errorMessage
+      retries: maxAttempts
     });
     await createExecutionEvent({
       id: `evt_${Date.now()}`,
       jobId,
       requestedAt,
       status: "failed",
-      message: errorMessage,
+      message: error instanceof Error ? error.message : "execution adapter failed",
       idempotencyKey,
       payload: failPayload
     });
-    return { ok: false, message: errorMessage, job, payload: failPayload };
+    return { ok: false, message: "execution adapter failed", job, payload: failPayload };
   }
   await db.job.update({ where: { id: jobId }, data: { status: "executed" } });
   job.status = "executed";
-
-  // ── 새 모델: DepositIntent + Execution 레코드 생성 ───────────────────────
-  // 어댑터 결과 중 allocationUsd > 0 인 항목만 기록
-  const username = job.requestedBy ?? "unknown";
-  try {
-    const intents = await createDepositIntentsFromAdapterResults(
-      jobId,
-      username,
-      execution.adapterResults,
-      job.input.sourceAsset
-    );
-
-    // 각 intent에 대해 어댑터 결과 기반 Execution 레코드 생성
-    for (let i = 0; i < intents.length; i++) {
-      const intent = intents[i];
-      const result = execution.adapterResults.find(
-        (r) => r.protocol === intent.protocol && r.chain === intent.chain && r.action === intent.action
-      );
-      if (!result) continue;
-
-      if (result.status === "submitted") {
-        await createExecution({
-          intentId: intent.id,
-          protocol: result.protocol,
-          chain: result.chain,
-          action: result.action,
-          txHash: result.txId,
-          status: "submitted",
-          idempotencyKey
-        });
-        await updateDepositIntentStatus(intent.id, "executing");
-      } else if (result.status === "failed") {
-        await createExecution({
-          intentId: intent.id,
-          protocol: result.protocol,
-          chain: result.chain,
-          action: result.action,
-          status: "failed",
-          errorMessage: result.errorMessage
-        });
-        await updateDepositIntentStatus(intent.id, "failed");
-      } else {
-        // dry-run / unsupported / simulated: Execution 레코드를 남기되 status=pending
-        await createExecution({
-          intentId: intent.id,
-          protocol: result.protocol,
-          chain: result.chain,
-          action: result.action,
-          status: "pending",
-          errorMessage: result.status === "unsupported" ? result.errorMessage : undefined
-        });
-      }
-    }
-  } catch (intentErr) {
-    // intent/execution 기록 실패는 non-fatal — 기존 실행 결과는 유지
-    console.error("intent store error (non-fatal):", intentErr);
-  }
-  // ─────────────────────────────────────────────────────────────────────────
-
-  // warnings(unsupported/failed 어댑터)를 summary에 포함
-  const warningNote = execution.warnings.length > 0
-    ? ` | ⚠ ${execution.warnings.length} unsupported/failed: ${execution.warnings.join("; ")}`
-    : "";
-
   const okPayload = snapshotAdapterPayload(meta ?? {}, {
     mode: execution.mode,
-    simulationId: execution.simulationId,
     adapterResults: execution.adapterResults.map((r) => ({
       protocol: r.protocol,
       chain: r.chain,
       action: r.action,
       allocationUsd: r.allocationUsd,
       txId: r.txId,
-      status: r.status,
-      errorMessage: r.errorMessage
+      status: r.status
     })),
+    skippedProtocols: execution.skippedProtocols,
     retries: attemptsUsed
   });
   await createExecutionEvent({
@@ -637,17 +467,8 @@ export async function executeJob(
     message: "execution accepted",
     idempotencyKey,
     txId: execution.txId,
-    simulationId: execution.simulationId,
-    summary: (execution.summary ?? "") + warningNote,
+    summary: execution.summary,
     payload: okPayload
   });
-  return {
-    ok: true,
-    message: "execution accepted",
-    job,
-    txId: execution.txId,
-    simulationId: execution.simulationId,
-    summary: (execution.summary ?? "") + warningNote,
-    payload: okPayload
-  };
+  return { ok: true, message: "execution accepted", job, txId: execution.txId, summary: execution.summary, payload: okPayload };
 }

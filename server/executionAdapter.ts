@@ -7,92 +7,119 @@ import { executeRaydiumPlan } from "./adapters/raydiumAdapter";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
-  AdapterResultStatus,
   ExecutionMode,
-  ProductNetwork
+  ProductNetwork,
+  ProtocolExecutionReadiness
 } from "./adapters/types";
 import { executeUniswapPlan } from "./adapters/uniswapAdapter";
-import { getEffectiveExecutionMode } from "./runtimeMode";
 
 export type ExecutionAdapterBundle = {
-  txId?: string;
-  simulationId?: string;
+  txId: string;
   summary: string;
   mode: ExecutionMode;
   adapterResults: AdapterExecutionResult[];
-  /** unsupported/failed 어댑터가 있을 때 집계된 경고 목록 */
-  warnings: string[];
+  skippedProtocols: ProtocolExecutionReadiness[];
 };
 
-/**
- * 요청된 모드를 안전하게 결정.
- * 외부에서 requestedMode를 넘겨도 환경변수 기반 실효 모드를 우선 적용.
- */
-function resolveExecutionMode(requestedMode?: ExecutionMode): ExecutionMode {
-  const effective = getEffectiveExecutionMode();
-  // 환경이 dry-run이면 요청 모드와 무관하게 dry-run 고정
-  if (effective === "dry-run") return "dry-run";
-  // 환경이 live여도 요청 모드가 dry-run이면 dry-run
-  if (requestedMode === "dry-run") return "dry-run";
-  return "live";
+/** 런타임 정보 API와 동일한 기준의 "실효" 실행 모드(라이브는 확인 플래그까지 필요). */
+export function getEffectiveExecutionMode(): ExecutionMode {
+  const requested = process.env.EXECUTION_MODE === "live" ? "live" : "dry-run";
+  if (requested === "live" && process.env.LIVE_EXECUTION_CONFIRM === "YES") {
+    return "live";
+  }
+  return "dry-run";
+}
+
+function getExecutionMode(requestedMode?: ExecutionMode): ExecutionMode {
+  const envMode = requestedMode ?? process.env.EXECUTION_MODE;
+  if (envMode === "live") {
+    return "live";
+  }
+  return "dry-run";
+}
+
+function ensureSafeLiveMode(mode: ExecutionMode): void {
+  if (mode !== "live") {
+    return;
+  }
+  if (process.env.LIVE_EXECUTION_CONFIRM !== "YES") {
+    throw new Error("live mode requires LIVE_EXECUTION_CONFIRM=YES");
+  }
 }
 
 function buildSummary(results: AdapterExecutionResult[], mode: ExecutionMode): string {
   const total = results.reduce((acc, item) => acc + item.allocationUsd, 0);
-  const statusIcon: Record<AdapterResultStatus, string> = {
-    "dry-run": "🔵",
-    simulated: "🟡",
-    unsupported: "⚫",
-    submitted: "🟢",
-    confirmed: "✅",
-    failed: "🔴"
+  const lines = results.map((item) => `${item.protocol}/${item.chain}:${item.allocationUsd.toFixed(2)}`);
+  return `${mode.toUpperCase()} execution total=$${total.toFixed(2)} | ${lines.join(", ")}`;
+}
+
+function isBuiltForLiveExecution(protocol: AdapterExecutionResult["protocol"]): boolean {
+  return protocol === "Aave" || protocol === "Uniswap" || protocol === "Orca";
+}
+
+function buildDefaultReadiness(result: AdapterExecutionResult, mode: ExecutionMode): ProtocolExecutionReadiness {
+  const implemented = isBuiltForLiveExecution(result.protocol);
+  const ready = mode !== "live" ? true : implemented;
+  return {
+    protocol: result.protocol,
+    chain: result.chain,
+    action: result.action,
+    implemented,
+    flagOn: mode === "live",
+    ready,
+    reason: ready ? "실행 가능" : implemented ? "플래그만 ON" : "라이브 미구현"
   };
-  const lines = results.map(
-    (item) => `${statusIcon[item.status]}${item.protocol}/${item.chain}:$${item.allocationUsd.toFixed(2)}`
-  );
-  return `[${mode.toUpperCase()}] total=$${total.toFixed(2)} | ${lines.join(", ")}`;
 }
 
-function uniqueTxIds(results: AdapterExecutionResult[]): string[] {
-  const seen = new Set<string>();
-  const ids: string[] = [];
+function readinessKey(row: Pick<ProtocolExecutionReadiness, "protocol" | "chain" | "action">): string {
+  return `${row.protocol}::${row.chain}::${row.action}`.toLowerCase();
+}
+
+function filterLiveResults(
+  results: AdapterExecutionResult[],
+  mode: ExecutionMode,
+  readiness?: ProtocolExecutionReadiness[]
+): { results: AdapterExecutionResult[]; skippedProtocols: ProtocolExecutionReadiness[] } {
+  if (mode !== "live") {
+    return { results, skippedProtocols: [] };
+  }
+  const readinessMap = new Map<string, ProtocolExecutionReadiness>();
+  for (const row of readiness ?? []) {
+    readinessMap.set(readinessKey(row), row);
+  }
+
+  const kept: AdapterExecutionResult[] = [];
+  const skippedProtocols: ProtocolExecutionReadiness[] = [];
   for (const result of results) {
-    if (result.status !== "submitted" && result.status !== "confirmed" && result.status !== "dry-run" && result.status !== "simulated") {
-      continue;
+    const defaultReadiness = buildDefaultReadiness(result, mode);
+    const row = readinessMap.get(readinessKey(result));
+    const effective = row ?? defaultReadiness;
+    if (effective.ready) {
+      kept.push(result);
+    } else {
+      skippedProtocols.push({
+        protocol: result.protocol,
+        chain: result.chain,
+        action: result.action,
+        implemented: effective.implemented,
+        flagOn: effective.flagOn,
+        ready: false,
+        reason: effective.reason
+      });
     }
-    const txId = result.txId.trim();
-    if (!txId || seen.has(txId)) {
-      continue;
-    }
-    seen.add(txId);
-    ids.push(txId);
   }
-  if (ids.length > 0) {
-    return ids;
-  }
-  return Array.from(new Set(results.map((r) => r.txId.trim()).filter(Boolean)));
-}
 
-function collectWarnings(results: AdapterExecutionResult[]): string[] {
-  return results
-    .filter((r) => r.status === "unsupported" || r.status === "failed")
-    .map((r) => {
-      const label = r.status === "failed" ? "FAILED" : "UNSUPPORTED";
-      const base = `[${label}] ${r.protocol}/${r.chain}/${r.action}`;
-      return r.errorMessage ? `${base}: ${r.errorMessage}` : base;
-    });
-}
-
-function buildSimulationId(job: ExecutionJob): string {
-  return `sim_${job.id}`;
+  return { results: kept, skippedProtocols };
 }
 
 /**
  * 네트워크별 어댑터 디스패치.
- * defi_anal.py 분석 기반 배분 비율:
+ * defi_anal.py 분석 기반 배분 비율 (풀별 APY 가중치):
  *
  * Arbitrum Stable  : Aave Arb USDC 50% + Uniswap Arb USDC-USDT 50%
+ * Arbitrum Growth  : Aave Arb USDC 35% + Uniswap Arb USDC-USDT 35% + Uniswap Arb ETH-USDC 30%
  * Base Stable      : Aave Base USDC 50% + Aerodrome Base USDC-USDT 50%
+ * Base Yield       : Aave Base USDC 35% + Uniswap Base ETH-USDC 40% + Aerodrome USDC-USDT 25%
  * Solana Stable    : Orca USDC-USDT 60% + Orca mSOL-SOL 40%
  * Solana Alpha     : Orca SOL-USDC+mSOL-SOL 65% + Raydium SOL-USDC 35%
  * Ethereum Stable  : Aave ETH USDC 40% + Curve 3pool 35% + Uniswap ETH USDC-USDT 25%
@@ -130,6 +157,8 @@ async function runAdaptersByNetwork(
     }
 
     case "Ethereum": {
+      // uniswapAdapter의 UNISWAP_ALLOC_TABLE에 "Ethereum:eth-stable / eth-bluechip" 항목이 있어
+      // executeUniswapPlan이 올바른 Ethereum 풀 결과를 반환한다.
       const [aave, curve, uniswap] = await Promise.all([
         executeAavePlan(context),
         executeCurvePlan(context),
@@ -139,7 +168,7 @@ async function runAdaptersByNetwork(
     }
 
     default: {
-      // Multi-chain: Aave + Uniswap + Orca
+      // Multi-chain: 기존 동작 유지
       const [aave, uniswap, orca] = await Promise.all([
         executeAavePlan(context),
         executeUniswapPlan(context),
@@ -152,9 +181,11 @@ async function runAdaptersByNetwork(
 
 export async function runExecutionAdapter(
   job: ExecutionJob,
-  requestedMode?: ExecutionMode
+  requestedMode?: ExecutionMode,
+  protocolReadiness?: ProtocolExecutionReadiness[]
 ): Promise<ExecutionAdapterBundle> {
-  const mode = resolveExecutionMode(requestedMode);
+  const mode = getExecutionMode(requestedMode);
+  ensureSafeLiveMode(mode);
 
   const context: AdapterExecutionContext = {
     jobId: job.id,
@@ -162,17 +193,13 @@ export async function runExecutionAdapter(
     depositUsd: job.input.depositUsd,
     timestamp: new Date().toISOString(),
     productNetwork: job.input.productNetwork,
-    productSubtype: job.input.productSubtype
+    productSubtype: job.input.productSubtype,
+    protocolReadiness
   };
 
   const adapterResults = await runAdaptersByNetwork(context);
-
-  // live 실행만 txId 연결하고, dry-run은 별도 simulationId로 구분
-  const txId = mode === "live" ? uniqueTxIds(adapterResults).join(",") : undefined;
-  const simulationId = mode === "dry-run" ? buildSimulationId(job) : undefined;
-
-  const summary = buildSummary(adapterResults, mode);
-  const warnings = collectWarnings(adapterResults);
-
-  return { txId, simulationId, summary, mode, adapterResults, warnings };
+  const { results, skippedProtocols } = filterLiveResults(adapterResults, mode, context.protocolReadiness);
+  const txId = results.map((item) => item.txId).join(",");
+  const summary = `${buildSummary(results, mode)}${mode === "live" && skippedProtocols.length > 0 ? ` | skipped=${skippedProtocols.length}` : ""}`;
+  return { txId, summary, mode, adapterResults: results, skippedProtocols };
 }
