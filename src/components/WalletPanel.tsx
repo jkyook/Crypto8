@@ -77,6 +77,30 @@ function shortAddress(address?: string | null): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
 
+function readConnectedSolanaAddress(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  const phantomSolana = (window as {
+    phantom?: {
+      solana?: {
+        publicKey?: {
+          toBase58?: () => string;
+          toString?: () => string;
+        };
+      };
+    };
+  }).phantom?.solana;
+  return phantomSolana?.publicKey?.toBase58?.() ?? phantomSolana?.publicKey?.toString?.();
+}
+
+async function waitForConnectedSolanaAddress(fallback?: string): Promise<string | undefined> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const addr = readConnectedSolanaAddress() ?? fallback;
+    if (addr) return addr;
+    await new Promise((resolve) => window.setTimeout(resolve, attempt === 0 ? 0 : 100));
+  }
+  return readConnectedSolanaAddress() ?? fallback;
+}
+
 function NetworkStatusBlock({ network, plain }: { network: "mainnet" | "devnet"; plain?: boolean }) {
   const clusterLabel = network === "mainnet" ? "Solana 메인넷" : "Solana 개발망(데브넷)";
   const inner = (
@@ -268,7 +292,6 @@ export function WalletPanel({
   const [marketPrices, setMarketPrices] = useState<Partial<Record<AccountAssetSymbol, number>>>({});
   const [priceMeta, setPriceMeta] = useState("");
   const [loginChoiceOpen, setLoginChoiceOpen] = useState(false);
-  const [pendingWalletLogin, setPendingWalletLogin] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [walletCreateOpen, setWalletCreateOpen] = useState(false);
   const [linkedWallets, setLinkedWallets] = useState<UserWallet[]>([]);
@@ -357,6 +380,20 @@ export function WalletPanel({
     return "주소 없음";
   }, [appUsername, evmAccount?.address, solanaAccount?.address]);
   const primaryWalletAddress = solanaAccount?.address ?? evmAccount?.address;
+
+  const connectPhantomWallet = async (): Promise<void> => {
+    const hasInjected =
+      typeof window !== "undefined" && Boolean((window as { phantom?: { solana?: { isPhantom?: boolean } } }).phantom?.solana?.isPhantom);
+    if (!hasInjected) {
+      throw new Error("Phantom 지갑이 설치되어 있지 않습니다. Phantom을 설치한 뒤 다시 시도해 주세요.");
+    }
+    try {
+      await connect({ provider: "phantom" });
+      return;
+    } catch {
+      await connect({ provider: "injected" });
+    }
+  };
 
   const ledgerRows = useMemo(() => {
     const rows: LedgerRow[] = [];
@@ -477,100 +514,83 @@ export function WalletPanel({
     return () => controller.abort();
   }, [evmAccount?.address, isConnected]);
 
-  useEffect(() => {
-    const addr = solanaAccount?.address;
-    if (!pendingWalletLogin || !addr) return;
-    setPendingWalletLogin(false);
-    void loginWithWallet(addr)
-      .then((session) => {
-        onSessionChange?.(session);
-        setAppUsername(session.username);
-        setLoginChoiceOpen(false);
-      })
-      .catch((error) => {
-        setConnectError(error instanceof Error ? error.message : "지갑 로그인 실패");
-      });
-  }, [onSessionChange, pendingWalletLogin, solanaAccount?.address]);
-
   const onConnect = async () => {
     setIsConnecting(true);
     setConnectError("");
     try {
-      const hasInjected =
-        typeof window !== "undefined" && Boolean((window as { phantom?: { solana?: { isPhantom?: boolean } } }).phantom?.solana?.isPhantom);
-      if (hasInjected) {
-        try {
-          await connect({ provider: "phantom" });
-          return;
-        } catch {
-          await connect({ provider: "injected" });
-          return;
-        }
-      }
-      try {
-        await connect({ provider: "google" });
-      } catch {
-        await connect({ provider: "apple" });
-      }
+      await connectPhantomWallet();
     } catch (error) {
       console.error("지갑 연결 실패:", error);
-      setConnectError("지갑 연결 실패: Phantom 확장 또는 소셜 로그인 설정을 확인하세요.");
+      setConnectError(error instanceof Error ? error.message : "지갑 연결 실패: Phantom 지갑을 확인하세요.");
     } finally {
       setIsConnecting(false);
     }
   };
 
   const onWalletLogin = async () => {
-    setPendingWalletLogin(true);
-    if (solanaAccount?.address) {
-      try {
-        const session = await loginWithWallet(solanaAccount.address);
-        onSessionChange?.(session);
-        setAppUsername(session.username);
-        setLoginChoiceOpen(false);
-        setPendingWalletLogin(false);
-        return;
-      } catch (error) {
-        setPendingWalletLogin(false);
-        setConnectError(error instanceof Error ? error.message : "지갑 로그인 실패");
+    setIsConnecting(true);
+    setConnectError("");
+    try {
+      if (!solanaAccount?.address) {
+        await connectPhantomWallet();
+      }
+      const addr = await waitForConnectedSolanaAddress(solanaAccount?.address);
+      if (!addr) {
+        setConnectError("지갑 연결은 됐지만 주소를 아직 읽지 못했습니다. 잠시 후 다시 눌러 주세요.");
         return;
       }
+      const session = await loginWithWallet(addr);
+      onSessionChange?.(session);
+      setAppUsername(session.username);
+      setLoginChoiceOpen(false);
+    } catch (error) {
+      setConnectError(error instanceof Error ? error.message : "지갑 로그인 실패");
+    } finally {
+      setIsConnecting(false);
     }
-    await onConnect();
   };
 
   const onLinkCurrentWallet = async () => {
     setConnectError("");
     let addr = primaryWalletAddress;
+    let chain = solanaAccount?.address ? "Solana" : evmAccount?.address ? "Ethereum" : "Solana";
     if (!addr) {
-      setPendingWalletLogin(true);
-      await onConnect();
-      setPendingWalletLogin(false);
+      setIsConnecting(true);
+      try {
+        await connectPhantomWallet();
+      } catch (error) {
+        setConnectError(error instanceof Error ? error.message : "지갑 연결 실패");
+        setIsConnecting(false);
+        return;
+      }
       addr =
         primaryWalletAddress ??
-        (window as {
-          phantom?: {
-            solana?: { publicKey?: { toString?: () => string } };
-            ethereum?: { selectedAddress?: string };
-          };
-        }).phantom?.solana?.publicKey?.toString?.() ??
+        readConnectedSolanaAddress() ??
         (window as {
           phantom?: {
             ethereum?: { selectedAddress?: string };
           };
         }).phantom?.ethereum?.selectedAddress;
+      if (!solanaAccount?.address && addr?.startsWith("0x")) {
+        chain = "Ethereum";
+      } else if (addr) {
+        chain = "Solana";
+      }
     }
     if (!addr) {
       setConnectError("지갑 주소를 아직 읽지 못했습니다. 연결 후 다시 시도해 주세요.");
+      setIsConnecting(false);
       return;
     }
     try {
-      const wallet = await linkAccountWallet(addr);
+      const wallet = await linkAccountWallet(addr, chain, "phantom");
       setLinkedWallets((prev) => [wallet, ...prev.filter((item) => item.walletAddress !== wallet.walletAddress)]);
       setWalletCreateOpen(false);
       setAccountMenuOpen(true);
     } catch (error) {
       setConnectError(error instanceof Error ? error.message : "지갑 연결 저장 실패");
+    } finally {
+      setIsConnecting(false);
     }
   };
 
@@ -598,8 +618,8 @@ export function WalletPanel({
       >
         아이디로 로그인
       </button>
-      <button type="button" onClick={() => void onWalletLogin()} disabled={isConnecting || pendingWalletLogin}>
-        {isConnecting || pendingWalletLogin ? "지갑 로그인 중..." : "지갑 연결로 로그인"}
+      <button type="button" onClick={() => void onWalletLogin()} disabled={isConnecting}>
+        {isConnecting ? "지갑 로그인 중..." : "지갑 연결로 로그인"}
       </button>
     </div>
   );
@@ -670,8 +690,8 @@ export function WalletPanel({
             </p>
             {connectError ? <p className="wallet-error">{connectError}</p> : null}
             <div className="button-row">
-              <button type="button" onClick={() => void onLinkCurrentWallet()} disabled={isConnecting || pendingWalletLogin}>
-                {isConnecting || pendingWalletLogin ? "연결 중..." : "현재 지갑 연결"}
+              <button type="button" onClick={() => void onLinkCurrentWallet()} disabled={isConnecting}>
+                {isConnecting ? "연결 중..." : "현재 지갑 연결"}
               </button>
               <button type="button" className="ghost-btn" onClick={() => window.open("https://phantom.app/download", "_blank", "noopener,noreferrer")}>
                 신규 지갑 만들기
@@ -692,7 +712,6 @@ export function WalletPanel({
       setTokensOnChain([]);
       setIsCompactDetailOpen(false);
       setCopyHint("");
-      setPendingWalletLogin(false);
       await disconnect();
       if (appUsername.startsWith("wallet_")) {
         await clearSession();
@@ -854,8 +873,8 @@ export function WalletPanel({
               </button>
             ) : (
               <>
-                <button type="button" onClick={() => setLoginChoiceOpen((prev) => !prev)} disabled={isConnecting || pendingWalletLogin}>
-                  {isConnecting || pendingWalletLogin ? "로그인 중…" : "로그인"}
+                <button type="button" onClick={() => setLoginChoiceOpen((prev) => !prev)} disabled={isConnecting}>
+                  {isConnecting ? "로그인 중…" : "로그인"}
                 </button>
                 {loginChoiceOpen ? loginChoice : null}
               </>
@@ -908,8 +927,8 @@ export function WalletPanel({
         </>
       ) : (
         <div className="wallet-login-panel">
-          <button type="button" onClick={() => setLoginChoiceOpen((prev) => !prev)} disabled={isConnecting || pendingWalletLogin}>
-            {isConnecting || pendingWalletLogin ? "로그인 중…" : "로그인"}
+          <button type="button" onClick={() => setLoginChoiceOpen((prev) => !prev)} disabled={isConnecting}>
+            {isConnecting ? "로그인 중…" : "로그인"}
           </button>
           {loginChoiceOpen ? loginChoice : null}
         </div>

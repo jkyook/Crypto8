@@ -10,6 +10,30 @@ type Props = {
 type MainTab = "login" | "signup";
 type LoginMode = "id" | "wallet";
 
+function readConnectedSolanaAddress(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  const phantomSolana = (window as {
+    phantom?: {
+      solana?: {
+        publicKey?: {
+          toBase58?: () => string;
+          toString?: () => string;
+        };
+      };
+    };
+  }).phantom?.solana;
+  return phantomSolana?.publicKey?.toBase58?.() ?? phantomSolana?.publicKey?.toString?.();
+}
+
+async function waitForConnectedSolanaAddress(fallback?: string): Promise<string | undefined> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const addr = readConnectedSolanaAddress() ?? fallback;
+    if (addr) return addr;
+    await new Promise((resolve) => window.setTimeout(resolve, attempt === 0 ? 0 : 100));
+  }
+  return readConnectedSolanaAddress() ?? fallback;
+}
+
 export function AuthPanel({ onSessionChange }: Props) {
   const { connect } = useConnect();
   const accounts = useAccounts();
@@ -35,6 +59,20 @@ export function AuthPanel({ onSessionChange }: Props) {
 
   const showMsg = (type: "ok" | "err" | "info", text: string) => setMessage({ type, text });
 
+  const connectPhantomWallet = async (): Promise<void> => {
+    const hasInjected =
+      typeof window !== "undefined" && Boolean((window as { phantom?: { solana?: { isPhantom?: boolean } } }).phantom?.solana?.isPhantom);
+    if (!hasInjected) {
+      throw new Error("Phantom 지갑이 설치되어 있지 않습니다. Phantom을 설치한 뒤 다시 시도해 주세요.");
+    }
+    try {
+      await connect({ provider: "phantom" });
+      return;
+    } catch {
+      await connect({ provider: "injected" });
+    }
+  };
+
   // ── 로그인 ──────────────────────────────────────────
   const onLogin = async () => {
     setMessage(null);
@@ -55,15 +93,10 @@ export function AuthPanel({ onSessionChange }: Props) {
     setWalletBusy(true);
     setMessage(null);
     try {
-      let addr = solanaAccount?.address;
-      if (!addr) {
-        await connect({ provider: "phantom" });
-        addr = accounts?.find((a) => a.addressType === AddressType.solana)?.address;
+      if (!solanaAccount?.address) {
+        await connectPhantomWallet();
       }
-      if (!addr && typeof window !== "undefined") {
-        addr = (window as { phantom?: { solana?: { publicKey?: { toString?: () => string } } } })
-          .phantom?.solana?.publicKey?.toString?.();
-      }
+      const addr = await waitForConnectedSolanaAddress(solanaAccount?.address);
       if (!addr) {
         showMsg("info", "지갑 연결은 됐지만 주소를 아직 읽지 못했습니다. 잠시 후 다시 눌러 주세요.");
         return;

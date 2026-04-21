@@ -744,11 +744,15 @@ export async function listAccountWallets(init: Pick<RequestInit, "signal"> = {})
   return Array.isArray(raw.wallets) ? raw.wallets : [];
 }
 
-export async function linkAccountWallet(walletAddress: string): Promise<UserWallet> {
+export async function linkAccountWallet(
+  walletAddress: string,
+  chain: string = "Solana",
+  provider: string = "phantom"
+): Promise<UserWallet> {
   const response = await authedFetch("/api/account/wallets", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ walletAddress, chain: "Solana", provider: "phantom" })
+    body: JSON.stringify({ walletAddress, chain, provider })
   });
   const raw = (await readJsonFromApiResponse(response, "계정 지갑 연결")) as { message?: string; wallet?: UserWallet };
   if (!response.ok || !raw.wallet) {
