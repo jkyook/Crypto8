@@ -153,6 +153,21 @@ export async function listWithdrawalLedger(username: string): Promise<Omit<Withd
   return rows.map(({ username: _u, ...rest }) => rest);
 }
 
+/** 예치 장부와 출금 장부를 모두 비운다. 실제 온체인 포지션 테이블은 건드리지 않는다. */
+export async function resetPortfolioLedger(
+  username: string
+): Promise<{ deletedPositions: number; deletedWithdrawals: number }> {
+  const db = getDb();
+  return db.$transaction(async (tx) => {
+    const deletedPositions = await tx.depositPosition.deleteMany({ where: { username } });
+    const deletedWithdrawals = await tx.withdrawalLedger.deleteMany({ where: { username } });
+    return {
+      deletedPositions: deletedPositions.count,
+      deletedWithdrawals: deletedWithdrawals.count
+    };
+  });
+}
+
 /** LIFO 인출. 실제 차감된 USD 합계를 반환하고, 0 초과 시 출금 장부에 한 줄 기록한다. */
 export async function withdrawDepositAmount(username: string, amountUsd: number): Promise<number> {
   assertValidWithdrawAmount(amountUsd);

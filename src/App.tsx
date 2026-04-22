@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { AddressType } from "@phantom/browser-sdk";
+import { useAccounts } from "@phantom/react-sdk";
 import { ApprovalsDashboard } from "./components/ApprovalsDashboard";
 import { AuthPanel } from "./components/AuthPanel";
 import { SignupRegistrationsPanel } from "./components/SignupRegistrationsPanel";
@@ -24,6 +26,7 @@ import {
   listOnchainPositions,
   listWithdrawalLedger,
   login,
+  resetPortfolioLedgerRemote,
   withdrawProtocolExposureRemote,
   withdrawProductDepositRemote,
   withdrawDepositRemote,
@@ -1539,14 +1542,21 @@ function PortfolioPanel({
   onExecutionComplete,
   onWithdraw,
   onWithdrawTarget,
-  canPersistToServer
+  canPersistToServer,
+  onResetLedger,
+  hasLedgerEntries
 }: {
   positions: DepositPosition[];
   onExecutionComplete?: () => void | Promise<void>;
   onWithdraw?: (amountUsd: number) => Promise<void>;
   onWithdrawTarget?: (amountUsd: number, target: Pick<ProtocolDetailRow, "name" | "chain" | "pool">) => Promise<void>;
   canPersistToServer?: boolean;
+  onResetLedger?: () => Promise<void>;
+  hasLedgerEntries?: boolean;
 }) {
+  const accounts = useAccounts();
+  const solanaAccount = accounts?.find((account) => account.addressType === AddressType.solana);
+  const evmAccount = accounts?.find((account) => account.addressType === AddressType.ethereum);
   const [protocolAmounts, setProtocolAmounts] = useState<Record<string, number>>({});
   const [protocolDepositDraft, setProtocolDepositDraft] = useState<ProtocolDetailRow | null>(null);
   const [protocolDepositKey, setProtocolDepositKey] = useState(0);
@@ -1555,6 +1565,8 @@ function PortfolioPanel({
   const [onchainMatchSummary, setOnchainMatchSummary] = useState("");
   const [onchainMatchLoading, setOnchainMatchLoading] = useState(false);
   const [onchainMatchError, setOnchainMatchError] = useState("");
+  const [ledgerResetLoading, setLedgerResetLoading] = useState(false);
+  const [ledgerResetError, setLedgerResetError] = useState("");
 
   // ── 인출 상태 ──────────────────────────────────────────────
   const [withdrawDraft, setWithdrawDraft] = useState<{ row: ProtocolDetailRow; maxUsd: number } | null>(null);
@@ -1655,7 +1667,14 @@ function PortfolioPanel({
     setOnchainMatchError("");
     setOnchainMatchSummary("");
     try {
-      const onchainRows = await listOnchainPositions({}, { forceRefresh: true });
+      if (!canPersistToServer) {
+        throw new Error("이 기능은 로그인한 뒤에만 사용할 수 있습니다.");
+      }
+      const walletAddress = evmAccount?.address ?? solanaAccount?.address;
+      if (!walletAddress) {
+        throw new Error("연결된 지갑 주소가 없습니다. Solana 또는 EVM 지갑을 연결한 뒤 다시 시도해 주세요.");
+      }
+      const onchainRows = await listOnchainPositions({}, { forceRefresh: true, walletAddress });
       const byProtocolChain = onchainRows.reduce<Record<string, OnchainPositionPayload[]>>((acc, row) => {
         const key = `${row.protocol.toLowerCase()}__${row.chain.toLowerCase()}`;
         acc[key] = [...(acc[key] ?? []), row];
@@ -1717,6 +1736,29 @@ function PortfolioPanel({
     }
   };
 
+  const resetLedger = async () => {
+    if (!canPersistToServer || ledgerResetLoading) return;
+    const confirmed = window.confirm(
+      "장부를 초기화하면 예치 장부와 출금 장부가 모두 삭제됩니다. 실제 온체인 포지션은 유지됩니다. 계속할까요?"
+    );
+    if (!confirmed) return;
+    setLedgerResetLoading(true);
+    setOnchainMatchError("");
+    setOnchainMatchSummary("");
+    setOnchainMatchMap({});
+    setLedgerResetError("");
+    try {
+      if (!onResetLedger) {
+        throw new Error("장부 초기화 기능을 사용할 수 없습니다.");
+      }
+      await onResetLedger();
+    } catch (error) {
+      setLedgerResetError(error instanceof Error ? error.message : "장부 리셋에 실패했습니다.");
+    } finally {
+      setLedgerResetLoading(false);
+    }
+  };
+
   return (
     <section className="card portfolio-panel-card">
       <div className="portfolio-overview-hero">
@@ -1743,12 +1785,32 @@ function PortfolioPanel({
       </div>
       <h3>프로토콜별 예치 상세</h3>
       <div className="button-row" style={{ marginBottom: 10 }}>
-        <button type="button" className="ghost-btn" onClick={() => void verifyProtocolPoolMatches()} disabled={onchainMatchLoading}>
+        <button
+          type="button"
+          className="ghost-btn"
+          onClick={() => void verifyProtocolPoolMatches()}
+          disabled={onchainMatchLoading || !canPersistToServer}
+          title={!canPersistToServer ? "로그인 후 사용할 수 있습니다." : "실제 지갑 기준으로 프로토콜 풀 매치를 다시 확인합니다."}
+        >
           {onchainMatchLoading ? "실제 포지션 조회 중..." : "실제 프로토콜 풀 조회 · 매치 확인"}
+        </button>
+        <button
+          type="button"
+          className="ghost-btn danger-btn"
+          onClick={() => void resetLedger()}
+          disabled={ledgerResetLoading || !canPersistToServer || (!positions.length && !hasLedgerEntries)}
+          title={
+            !canPersistToServer
+              ? "로그인 후 사용할 수 있습니다."
+              : "예치 장부와 출금 장부를 비우고 실제 온체인 포지션은 유지합니다."
+          }
+        >
+          {ledgerResetLoading ? "장부 초기화 중..." : "장부 리셋"}
         </button>
         {onchainMatchSummary ? <span className="kpi-label">{onchainMatchSummary}</span> : null}
       </div>
       {onchainMatchError ? <p className="exec-verify-error">{onchainMatchError}</p> : null}
+      {ledgerResetError ? <p className="exec-verify-error">{ledgerResetError}</p> : null}
       <table className="protocol-detail-table">
         <thead>
           <tr>
@@ -2143,7 +2205,9 @@ function PositionsPage({
   onExecutionComplete,
   onWithdraw,
   onWithdrawTarget,
-  canPersistToServer
+  canPersistToServer,
+  onResetLedger,
+  hasLedgerEntries
 }: {
   positions: DepositPosition[];
   onGo: (menu: MenuKey) => void;
@@ -2151,6 +2215,8 @@ function PositionsPage({
   onWithdraw?: (amountUsd: number) => Promise<void>;
   onWithdrawTarget?: (amountUsd: number, target: Pick<ProtocolDetailRow, "name" | "chain" | "pool">) => Promise<void>;
   canPersistToServer?: boolean;
+  onResetLedger?: () => Promise<void>;
+  hasLedgerEntries?: boolean;
 }) {
   return (
     <div className="page-shell positions-page-shell">
@@ -2173,6 +2239,8 @@ function PositionsPage({
         onWithdraw={onWithdraw}
         onWithdrawTarget={onWithdrawTarget}
         canPersistToServer={canPersistToServer}
+        onResetLedger={onResetLedger}
+        hasLedgerEntries={hasLedgerEntries}
       />
     </div>
   );
@@ -2380,6 +2448,19 @@ export default function App() {
     }
   };
 
+  const handleResetPortfolioLedger = async () => {
+    if (!session) {
+      throw new Error("세션이 만료되었습니다. 다시 로그인해 주세요.");
+    }
+    const { deletedPositions, deletedWithdrawals } = await resetPortfolioLedgerRemote();
+    await refreshPositions();
+    await refreshWithdrawLedgerFromServer();
+    setPortfolioNotice({
+      variant: "info",
+      text: `장부를 초기화했습니다. 예치 ${deletedPositions}건 / 인출 ${deletedWithdrawals}건을 삭제했고 실제 온체인 포지션은 유지했습니다.`
+    });
+  };
+
   const handleCancelJob = async (jobId: string) => {
     setPortfolioNotice(null);
     const before = recentJobs;
@@ -2535,6 +2616,8 @@ export default function App() {
             onWithdraw={handleWithdrawPosition}
             onWithdrawTarget={handleWithdrawProtocolExposure}
             canPersistToServer={canPersistPortfolio}
+            onResetLedger={handleResetPortfolioLedger}
+            hasLedgerEntries={withdrawLedger.length > 0}
             onExecutionComplete={async () => {
               await refreshPositions();
               await refreshWithdrawLedgerFromServer();

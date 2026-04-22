@@ -1,4 +1,6 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react";
+import { AddressType } from "@phantom/browser-sdk";
+import { useAccounts } from "@phantom/react-sdk";
 import { usePortfolio, type PortfolioNotice } from "../hooks/usePortfolio";
 import type { OnchainPositionPayload } from "../lib/api";
 import type { DepositPosition } from "../types/portfolio";
@@ -19,7 +21,11 @@ type PortfolioProviderProps = {
 
 export function PortfolioProvider({ children }: PortfolioProviderProps) {
   const { session } = useSessionContext();
-  const portfolio = usePortfolio(session);
+  const accounts = useAccounts();
+  const solanaAccount = accounts?.find((account) => account.addressType === AddressType.solana);
+  const evmAccount = accounts?.find((account) => account.addressType === AddressType.ethereum);
+  const walletAddress = evmAccount?.address ?? solanaAccount?.address;
+  const portfolio = usePortfolio(session, walletAddress);
   const value = useMemo(
     () => ({
       ...portfolio,

@@ -10,6 +10,7 @@ import {
   createDepositPosition,
   listDepositPositions,
   listWithdrawalLedger,
+  resetPortfolioLedger,
   withdrawProtocolExposureAmount,
   withdrawProductDepositAmount,
   withdrawDepositAmount
@@ -734,6 +735,22 @@ app.get("/api/portfolio/withdrawals", requireAuth(["orchestrator", "security", "
   res.json({ ok: true, withdrawals });
 });
 
+app.post("/api/portfolio/reset-ledger", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {
+  const username = res.locals.user.username as string;
+  try {
+    const deleted = await resetPortfolioLedger(username);
+    res.json({
+      ok: true,
+      ...deleted
+    });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      message: error instanceof Error ? error.message : "ledger reset failed"
+    });
+  }
+});
+
 app.post("/api/portfolio/positions", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
   const body = req.body as {
     productName?: string;
@@ -1022,13 +1039,13 @@ app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orche
     : undefined;
   const clientExecutionResults = Array.isArray(body.clientExecutionResults)
     ? body.clientExecutionResults.filter(
-        (item): item is {
+      (item): item is {
           protocol: string;
           chain: string;
           action: string;
           allocationUsd: number;
           txId: string;
-          status: "simulated" | "submitted";
+          status: "simulated" | "submitted" | "unsupported";
         } => {
           if (!item || typeof item !== "object") return false;
           const row = item as Record<string, unknown>;
@@ -1038,7 +1055,7 @@ app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orche
             typeof row.action === "string" &&
             typeof row.allocationUsd === "number" &&
             typeof row.txId === "string" &&
-            (row.status === "simulated" || row.status === "submitted")
+            (row.status === "simulated" || row.status === "submitted" || row.status === "unsupported")
           );
         }
       )

@@ -1259,7 +1259,8 @@ export async function listOnchainPositions(
   const suffix = query.toString();
   const response = await authedFetch(`/api/positions${suffix ? `?${suffix}` : ""}`, init);
   if (!response.ok) {
-    throw new Error("온체인 포지션 조회 실패");
+    const raw = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(raw?.message ?? "온체인 포지션 조회 실패");
   }
   const data = (await response.json()) as { positions?: OnchainPositionPayload[] };
   return data.positions ?? [];
@@ -1278,6 +1279,35 @@ export async function listWithdrawalLedger(init: Pick<RequestInit, "signal"> = {
   }
   const data = (await response.json()) as { withdrawals?: PortfolioWithdrawLine[] };
   return data.withdrawals ?? [];
+}
+
+export async function resetPortfolioLedgerRemote(): Promise<{ deletedPositions: number; deletedWithdrawals: number }> {
+  const response = await authedFetch("/api/portfolio/reset-ledger", {
+    method: "POST"
+  });
+  const text = await response.text();
+  let data = {} as { ok?: boolean; deletedPositions?: number; deletedWithdrawals?: number; message?: string };
+  try {
+    if (text) {
+      data = JSON.parse(text) as typeof data;
+    }
+  } catch {
+    /* 비 JSON */
+  }
+  if (!response.ok) {
+    let msg = data.message;
+    if (
+      response.status === 403 &&
+      (msg === "forbidden: insufficient role" || !msg || (typeof msg === "string" && msg.includes("insufficient role")))
+    ) {
+      msg = "권한이 없습니다. 로그인 후 다시 시도하세요.";
+    }
+    throw new Error(msg ?? "장부 리셋 실패");
+  }
+  return {
+    deletedPositions: typeof data.deletedPositions === "number" ? data.deletedPositions : 0,
+    deletedWithdrawals: typeof data.deletedWithdrawals === "number" ? data.deletedWithdrawals : 0
+  };
 }
 
 export async function createDepositPositionRemote(payload: {

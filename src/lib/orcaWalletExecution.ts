@@ -20,6 +20,7 @@ import {
   resolveSolanaTokenDecimals,
   resolveSolanaTokenMint
 } from "./solanaTokenMints";
+import { ORCA_MIN_LIVE_ALLOCATION_USD } from "./constants";
 
 export type OrcaClientExecutionResult = {
   protocol: "Orca";
@@ -27,7 +28,8 @@ export type OrcaClientExecutionResult = {
   action: string;
   allocationUsd: number;
   txId: string;
-  status: "submitted";
+  status: "submitted" | "unsupported";
+  errorMessage?: string;
 };
 
 type OrcaAlloc = { action: string; weight: number };
@@ -50,7 +52,6 @@ const SOL_MINT = "So11111111111111111111111111111111111111112";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 const MSOL_MINT = "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So";
-
 function normalizeSolanaPublicKey(value: unknown): string | undefined {
   if (!value) return undefined;
   if (typeof value === "string") return value;
@@ -399,6 +400,18 @@ export async function executeOrcaPlanWithWallet(input: {
   const results: OrcaClientExecutionResult[] = [];
   for (const alloc of allocs) {
     const allocationUsd = Number((input.depositUsd * alloc.weight).toFixed(2));
+    if (input.network === "mainnet" && allocationUsd < ORCA_MIN_LIVE_ALLOCATION_USD) {
+      results.push({
+        protocol: "Orca",
+        chain: "Solana",
+        action: alloc.action,
+        allocationUsd,
+        txId: "",
+        status: "unsupported",
+        errorMessage: `Orca live execution requires at least $${ORCA_MIN_LIVE_ALLOCATION_USD.toFixed(2)} per allocation`
+      });
+      continue;
+    }
     try {
       const candidates = await resolveOrcaPoolCandidatesForAction(alloc.action, input.network);
       const { live, pool } = await resolveOrcaPoolWithRpcFallback({

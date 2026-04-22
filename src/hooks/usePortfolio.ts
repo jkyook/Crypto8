@@ -30,7 +30,7 @@ export type PortfolioNotice = { variant: "error" | "info"; text: string };
  * App.tsx의 prop drilling을 줄이기 위한 1차 캡슐화 단계이며,
  * 이후 Context/React Query 도입 시 이 훅 내부만 교체하면 되도록 설계.
  */
-export function usePortfolio(session: AuthSession | null) {
+export function usePortfolio(session: AuthSession | null, walletAddress?: string) {
   const [positions, setPositions] = useState<DepositPosition[]>([]);
   const [onchainPositions, setOnchainPositions] = useState<OnchainPositionPayload[]>([]);
   const [withdrawLedger, setWithdrawLedger] = useState<WalletWithdrawLedgerLine[]>([]);
@@ -65,12 +65,12 @@ export function usePortfolio(session: AuthSession | null) {
   const refreshOnchainPositions = useCallback(async () => {
     if (!session) return;
     try {
-      const rows = await listOnchainPositions();
+      const rows = await listOnchainPositions({}, { walletAddress: walletAddress?.trim() || undefined });
       setOnchainPositions(rows);
     } catch {
       setOnchainPositions([]);
     }
-  }, [session]);
+  }, [session, walletAddress]);
 
   const appendGuestLedgerEntry = (amountUsd: number) => {
     setWithdrawLedger((prev) => {

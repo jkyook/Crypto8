@@ -18,6 +18,9 @@ export const WITHDRAW_DONE_TOAST_MS = 5_000;
 /** 기본 상품 targetApr로 사용하는 8% (0.08). */
 export const DEFAULT_TARGET_APR = 0.08;
 
+/** Orca live 실행 시 최소 배분 금액(USD). */
+export const ORCA_MIN_LIVE_ALLOCATION_USD = 25;
+
 /** APR을 기간 수익률로 환산할 때 기준으로 쓰는 연간 일수. */
 export const APR_DAYS_PER_YEAR = 365;
 

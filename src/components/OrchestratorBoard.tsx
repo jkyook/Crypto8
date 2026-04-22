@@ -37,6 +37,7 @@ import { buildDepositExecutionPlan, type DepositExecutionPlanStep } from "../lib
 import { buildExecutionPreviewRows } from "../lib/executionPreview";
 import { buildAgentTasks, evaluateRisk } from "../lib/orchestrator";
 import { checkGuardrails } from "../lib/strategyEngine";
+import { ORCA_MIN_LIVE_ALLOCATION_USD } from "../lib/constants";
 import type { ExecutionPreviewRow } from "../lib/executionPreview";
 import { fetchEvmPortfolioWithFallback, getEvmRpcCandidates } from "../lib/evmChainAssets";
 import { fetchOnChainPortfolioWithFallback, getSolanaRpcCandidates } from "../lib/solanaChainAssets";
@@ -66,7 +67,7 @@ type ExecutionStepLogEntry = {
   key: string;
   title: string;
   detail: string;
-  state: "pending" | "approved" | "executing" | "done" | "failed";
+  state: "pending" | "approved" | "executing" | "done" | "skipped" | "failed";
   txId?: string;
   message?: string;
 };
@@ -498,7 +499,8 @@ export function OrchestratorBoard({
         const requiresEvmWallet = !requiresSolanaWallet && ["Ethereum", "Arbitrum", "Base"].includes(row.chain);
         const hasRequiredWallet = requiresSolanaWallet ? Boolean(solanaAccount?.address) : requiresEvmWallet ? Boolean(evmAccount?.address) : true;
         const orcaLiveSupported = !isLiveExecution || row.protocol !== "Orca" || Boolean(solanaAccount?.address);
-        const ready = implemented && hasRequiredWallet && orcaLiveSupported;
+        const orcaMinReady = !isLiveExecution || row.protocol !== "Orca" || row.allocationUsd >= ORCA_MIN_LIVE_ALLOCATION_USD;
+        const ready = implemented && hasRequiredWallet && orcaLiveSupported && orcaMinReady;
         return {
           protocol: row.protocol,
           chain: row.chain,
@@ -514,6 +516,8 @@ export function OrchestratorBoard({
               : "EVM 키 필요"
               : isLiveExecution && row.protocol === "Orca" && !solanaAccount?.address
                 ? "Phantom Solana 지갑 필요"
+              : isLiveExecution && row.protocol === "Orca" && row.allocationUsd < ORCA_MIN_LIVE_ALLOCATION_USD
+                ? `Orca 최소 $${ORCA_MIN_LIVE_ALLOCATION_USD.toFixed(2)} 필요`
               : "실행 가능"
         };
       }),
@@ -522,13 +526,18 @@ export function OrchestratorBoard({
   const protocolReadyCount = protocolReadiness.filter((row) => row.ready).length;
   const protocolFlagOnlyCount = protocolReadiness.filter((row) => row.flagOn && !row.ready).length;
   const protocolUnsupportedCount = protocolReadiness.filter((row) => !row.implemented).length;
+  const protocolSkippedCount = quoteRows.length - protocolReadyCount;
+  const liveExecutableQuoteRows = useMemo(
+    () => quoteRows.filter((_row, idx) => protocolReadiness[idx]?.ready ?? true),
+    [protocolReadiness, quoteRows]
+  );
   const assetReadiness = useMemo(
     () => buildDepositAssetReadiness(accountAssets, selectedSourceAsset, depositUsd, quoteRows, connectedWalletNetwork),
     [accountAssets, connectedWalletNetwork, depositUsd, quoteRows, selectedSourceAsset]
   );
   const executionPlan = useMemo(
-    () => buildDepositExecutionPlan(assetReadiness.swapRows, quoteRows),
-    [assetReadiness.swapRows, quoteRows]
+    () => buildDepositExecutionPlan(assetReadiness.swapRows, isLiveExecution ? liveExecutableQuoteRows : quoteRows),
+    [assetReadiness.swapRows, isLiveExecution, liveExecutableQuoteRows, quoteRows]
   );
   const canCreateJob = assetReadiness.isSufficient && (canUseServerJobs || hasWallet);
   useEffect(() => {
@@ -654,7 +663,7 @@ export function OrchestratorBoard({
 
       setApiMessage(
         hasWallet
-          ? `내 입금 작업 생성 완료: ${created.id}`
+          ? `내 입금 작업 생성 완료: ${created.id}${isLiveExecution && protocolSkippedCount > 0 ? ` · 실행 제외 ${protocolSkippedCount}건` : ""}`
           : `내 입금 작업 생성 완료: ${created.id} · REAL-RUN에서는 준비되지 않은 프로토콜을 건너뜁니다.`
       );
     } catch (error) {
@@ -698,7 +707,7 @@ export function OrchestratorBoard({
       return;
     }
     if (isLiveExecution && protocolReadyCount === 0) {
-      setApiMessage("REAL-RUN으로 실행할 준비된 프로토콜이 없습니다. Phantom Solana 지갑 연결 또는 미구현 어댑터 상태를 확인하세요.");
+      setApiMessage("REAL-RUN으로 실행할 준비된 프로토콜이 없습니다. Phantom Solana 지갑 연결, Orca 최소 금액, 또는 미구현 어댑터 상태를 확인하세요.");
       return;
     }
     try {
@@ -808,7 +817,7 @@ export function OrchestratorBoard({
     try {
       const encoded = new TextEncoder();
       let clientExecutionResults: OrcaClientExecutionResult[] | undefined;
-      const orcaRows = isLiveExecution ? quoteRows.filter((row) => row.protocol === "Orca") : [];
+      const orcaRows = isLiveExecution ? liveExecutableQuoteRows.filter((row) => row.protocol === "Orca") : [];
       const nextLogs: ExecutionStepLogEntry[] = [];
       setExecutionStepLog([]);
       if (isLiveExecution && orcaRows.length > 0) {
@@ -884,9 +893,12 @@ export function OrchestratorBoard({
           const executed = results[0];
           nextLogs[nextLogs.length - 1] = {
             ...nextLogs[nextLogs.length - 1],
-            state: "done",
-            txId: executed.txId,
-            message: "실제 처리 확인됨"
+            state: executed.status === "submitted" ? "done" : "skipped",
+            txId: executed.txId || undefined,
+            message:
+              executed.status === "submitted"
+                ? "실제 처리 확인됨"
+                : executed.errorMessage ?? "최소 금액 미달로 건너뜀"
           };
           setExecutionStepLog([...nextLogs]);
         }
@@ -1179,6 +1191,9 @@ export function OrchestratorBoard({
           <span className="quote-readiness-pill quote-readiness-pill--ready">실행 가능 {protocolReadyCount}</span>
           <span className="quote-readiness-pill quote-readiness-pill--flag">플래그만 ON {protocolFlagOnlyCount}</span>
           <span className="quote-readiness-pill quote-readiness-pill--blocked">미구현 {protocolUnsupportedCount}</span>
+          {isLiveExecution && protocolSkippedCount > 0 ? (
+            <span className="quote-readiness-pill quote-readiness-pill--blocked">실행 제외 {protocolSkippedCount}</span>
+          ) : null}
         </div>
         {quoteRows.length > 0 ? (
           <div className="quote-card-grid">
@@ -1230,6 +1245,7 @@ export function OrchestratorBoard({
           입금 전·후 동일한 표 형식으로 예상 배분과 서버 응답을 비교합니다.
           {!isResultQuote ? ` 조율 합계 $${adjustedAllocationTotal.toFixed(2)}` : ""}
           {isLiveExecution ? ` · 실행 가능 ${protocolReadyCount}/${protocolReadiness.length}` : ""}
+          {isLiveExecution && protocolSkippedCount > 0 ? ` · 제외 ${protocolSkippedCount}건` : ""}
         </p>
       </div>
 
@@ -1246,6 +1262,11 @@ export function OrchestratorBoard({
             {showExecutionPlanDetails ? "실행 순서 상세 닫기" : "실행 순서 상세 보기"}
           </button>
         </div>
+        {isLiveExecution && protocolSkippedCount > 0 ? (
+          <p className="kpi-label">
+            live 실행에서는 Orca 최소 금액 미만 또는 미지원 항목 {protocolSkippedCount}건이 자동 제외됩니다.
+          </p>
+        ) : null}
         {showExecutionPlanDetails ? (
           <>
             <p className="kpi-label">
@@ -1275,7 +1296,17 @@ export function OrchestratorBoard({
             {executionStepLog.map((step) => (
               <div key={step.key} className={`execution-summary-subline execution-summary-subline--${step.state}`}>
                 <p className="execution-summary-line">
-                  <span className="execution-summary-k">{step.state === "approved" ? "승인" : step.state === "executing" ? "실행" : step.state === "done" ? "완료" : "실패"}</span>{" "}
+                  <span className="execution-summary-k">
+                    {step.state === "approved"
+                      ? "승인"
+                      : step.state === "executing"
+                        ? "실행"
+                        : step.state === "done"
+                          ? "완료"
+                          : step.state === "skipped"
+                            ? "건너뜀"
+                            : "실패"}
+                  </span>{" "}
                   {step.title}
                 </p>
                 <p className="execution-summary-line">{step.detail}</p>
@@ -1341,7 +1372,8 @@ export function OrchestratorBoard({
                     {row.action}
                   </p>
                   <p className="execution-summary-line">
-                    <span className="execution-summary-k">전송</span> {row.status === "submitted" ? "실제 전송" : "시뮬레이션"}
+                    <span className="execution-summary-k">전송</span>{" "}
+                    {row.status === "submitted" ? "실제 전송" : row.status === "unsupported" ? "건너뜀" : "시뮬레이션"}
                   </p>
                   <p className="execution-summary-line">
                     <span className="execution-summary-k">tx</span> <code className="execution-summary-code">{row.txId}</code>

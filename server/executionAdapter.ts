@@ -49,6 +49,9 @@ function ensureSafeLiveMode(mode: ExecutionMode): void {
 
 function buildSummary(results: AdapterExecutionResult[], mode: ExecutionMode): string {
   const total = results.reduce((acc, item) => acc + item.allocationUsd, 0);
+  if (results.length === 0) {
+    return `${mode.toUpperCase()} execution total=$${total.toFixed(2)}`;
+  }
   const lines = results.map((item) => `${item.protocol}/${item.chain}:${item.allocationUsd.toFixed(2)}`);
   return `${mode.toUpperCase()} execution total=$${total.toFixed(2)} | ${lines.join(", ")}`;
 }

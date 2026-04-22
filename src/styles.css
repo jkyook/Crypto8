@@ -1837,6 +1837,17 @@ button {
   border-color: rgba(126, 142, 201, 0.52);
 }
 
+.danger-btn {
+  border-color: rgba(255, 118, 118, 0.45);
+  color: #ffc9c9;
+  background: linear-gradient(180deg, rgba(70, 28, 36, 0.82), rgba(42, 17, 22, 0.9));
+}
+
+body[data-theme="light"] .danger-btn {
+  color: #8b1d1d;
+  background: linear-gradient(180deg, rgba(255, 231, 231, 0.96), rgba(255, 244, 244, 0.98));
+}
+
 button:disabled {
   opacity: 0.48;
   cursor: not-allowed;
@@ -3550,7 +3561,9 @@ body[data-theme="light"] .market-apr-ts-chart--empty {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  justify-content: flex-end;
 }
 
 .protocol-inline-transfer input {
@@ -3756,7 +3769,7 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
 }
 
 .protocol-detail-table .protocol-inline-transfer {
-  justify-content: center;
+  justify-content: flex-end;
   width: 100%;
 }
 
@@ -3764,12 +3777,23 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
   display: inline-flex;
   gap: 4px;
   flex: 0 0 auto;
+  flex-wrap: nowrap;
 }
 
 .protocol-detail-table .inline-trade-btn {
   width: 28px;
   height: 28px;
   min-width: 28px;
+}
+
+.protocol-detail-table:not(.portfolio-onchain-table) th:nth-child(3),
+.protocol-detail-table:not(.portfolio-onchain-table) td:nth-child(3) {
+  width: 19%;
+}
+
+.protocol-detail-table:not(.portfolio-onchain-table) th:nth-child(6),
+.protocol-detail-table:not(.portfolio-onchain-table) td:nth-child(6) {
+  width: 24%;
 }
 
 .protocol-total-row td {

@@ -17,6 +17,7 @@ import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import BN from "bn.js";
 import Decimal from "decimal.js";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "./types";
+import { buildUnsupportedResult } from "./types";
 import { getMarketPriceSnapshot } from "../marketPricing";
 import { loadSolanaExecutorKeypair } from "../secrets";
 import { resolveOrcaPoolForAction } from "../orcaPools";
@@ -43,6 +44,7 @@ const SOL_MINT = "So11111111111111111111111111111111111111112";
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 const MSOL_MINT = "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So";
+const ORCA_MIN_LIVE_ALLOCATION_USD = Number(process.env.ORCA_MIN_LIVE_ALLOCATION_USD ?? 25);
 
 class KeypairWallet {
   public readonly publicKey: PublicKey;
@@ -255,6 +257,15 @@ export async function executeOrcaPlan(context: AdapterExecutionContext): Promise
   const results: AdapterExecutionResult[] = [];
   for (const alloc of allocs) {
     const allocationUsd = Number((context.depositUsd * alloc.weight).toFixed(2));
+    if (allocationUsd < ORCA_MIN_LIVE_ALLOCATION_USD) {
+      results.push(
+        buildUnsupportedResult(
+          { protocol: "Orca", chain: "Solana", action: alloc.action, allocationUsd },
+          `Orca live execution requires at least $${ORCA_MIN_LIVE_ALLOCATION_USD.toFixed(2)} per allocation`
+        )
+      );
+      continue;
+    }
     try {
       const result = await executeOrcaLiveAlloc(context, allocationUsd, alloc.action, live, priceSnapshot);
       if (result) {
