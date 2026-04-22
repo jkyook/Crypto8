@@ -1,4 +1,4 @@
-export type PriceSymbol = "USDC" | "USDT" | "ETH" | "SOL";
+export type PriceSymbol = "USDC" | "USDT" | "ETH" | "SOL" | "MSOL";
 
 export type MarketPriceSnapshot = {
   prices: Record<PriceSymbol, number>;
@@ -10,14 +10,16 @@ const FALLBACK_PRICES: Record<PriceSymbol, number> = {
   USDC: 1,
   USDT: 1,
   ETH: 3000,
-  SOL: 150
+  SOL: 150,
+  MSOL: 150
 };
 
 const DEFILLAMA_COINS: Record<PriceSymbol, string> = {
   USDC: "coingecko:usd-coin",
   USDT: "coingecko:tether",
   ETH: "coingecko:ethereum",
-  SOL: "coingecko:solana"
+  SOL: "coingecko:solana",
+  MSOL: "coingecko:marinade-staked-sol"
 };
 
 let cached: { snapshot: MarketPriceSnapshot; expiresAt: number } | null = null;

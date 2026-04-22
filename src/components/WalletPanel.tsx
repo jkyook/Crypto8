@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AddressType } from "@phantom/browser-sdk";
 import { useAccounts, useConnect, useDisconnect, usePhantom } from "@phantom/react-sdk";
+import type { ISolanaChain } from "@phantom/chain-interfaces";
 import {
   AUTH_CLEARED_EVENT,
   AUTH_UPDATED_EVENT,
@@ -18,8 +19,16 @@ import {
   type DepositPositionPayload,
   type UserWallet
 } from "../lib/api";
+import { loadCachedAccountAssets, saveCachedAccountAssets } from "../lib/accountAssetCache";
+import { getSolanaNetworkPreference, setSolanaNetworkPreference } from "../lib/solanaNetworkPreference";
 import { fetchEvmPortfolioWithFallback, getEvmRpcCandidates, type EvmChainName } from "../lib/evmChainAssets";
 import { fetchOnChainPortfolioWithFallback, getSolanaRpcCandidates, solscanTokenUrl, type OnChainTokenRow } from "../lib/solanaChainAssets";
+import {
+  buildWalletAssetChoices,
+  createWalletActionConnection,
+  sendSolanaAsset,
+  swapSolanaAsset,
+} from "../lib/solanaWalletActions";
 
 export type WalletWithdrawLedgerLine = {
   id: string;
@@ -65,6 +74,7 @@ function formatTokenAmount(n: number): string {
 
 function normalizeAssetSymbol(symbol: string): AccountAssetSymbol | null {
   const upper = symbol.toUpperCase();
+  if (upper.includes("MSOL")) return "MSOL";
   if (upper.includes("USDC")) return "USDC";
   if (upper.includes("USDT")) return "USDT";
   if (upper.includes("SOL")) return "SOL";
@@ -75,6 +85,12 @@ function normalizeAssetSymbol(symbol: string): AccountAssetSymbol | null {
 function shortAddress(address?: string | null): string {
   if (!address) return "온체인 지갑 미연결";
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
+function shortTxid(txid?: string | null): string {
+  if (!txid) return "—";
+  if (txid.length <= 16) return txid;
+  return `${txid.slice(0, 8)}…${txid.slice(-8)}`;
 }
 
 function readConnectedSolanaAddress(): string | undefined {
@@ -90,6 +106,11 @@ function readConnectedSolanaAddress(): string | undefined {
     };
   }).phantom?.solana;
   return phantomSolana?.publicKey?.toBase58?.() ?? phantomSolana?.publicKey?.toString?.();
+}
+
+function readBrowserPhantomSolana(): ISolanaChain | undefined {
+  if (typeof window === "undefined") return undefined;
+  return (window as { phantom?: { solana?: ISolanaChain } }).phantom?.solana;
 }
 
 async function waitForConnectedSolanaAddress(fallback?: string): Promise<string | undefined> {
@@ -276,7 +297,7 @@ export function WalletPanel({
   const accounts = useAccounts();
   const solanaAccount = accounts?.find((account) => account.addressType === AddressType.solana);
   const evmAccount = accounts?.find((account) => account.addressType === AddressType.ethereum);
-  const [network, setNetwork] = useState<"mainnet" | "devnet">("mainnet");
+  const [network, setNetwork] = useState<"mainnet" | "devnet">(() => getSolanaNetworkPreference());
   const [chainLoading, setChainLoading] = useState(false);
   const [chainError, setChainError] = useState("");
   const [solOnChain, setSolOnChain] = useState<number | null>(null);
@@ -294,9 +315,21 @@ export function WalletPanel({
   const [loginChoiceOpen, setLoginChoiceOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [walletCreateOpen, setWalletCreateOpen] = useState(false);
+  const [walletActionMode, setWalletActionMode] = useState<"send" | "swap" | null>(null);
+  const [walletActionLoading, setWalletActionLoading] = useState(false);
+  const [walletActionError, setWalletActionError] = useState("");
+  const [walletActionNote, setWalletActionNote] = useState("");
+  const [sendRecipient, setSendRecipient] = useState("");
+  const [sendAmount, setSendAmount] = useState("");
+  const [sendChoiceMint, setSendChoiceMint] = useState("");
+  const [swapFromMint, setSwapFromMint] = useState("");
+  const [swapToMint, setSwapToMint] = useState("");
+  const [swapAmount, setSwapAmount] = useState("");
   const [linkedWallets, setLinkedWallets] = useState<UserWallet[]>([]);
   const [accountAssets, setAccountAssets] = useState<AccountAssetBalance[]>([]);
+  const [accountAssetsSnapshotLabel, setAccountAssetsSnapshotLabel] = useState("업데이트 전");
   const [accountMenuError, setAccountMenuError] = useState("");
+  const [walletRefreshTick, setWalletRefreshTick] = useState(0);
   const accountMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -317,25 +350,49 @@ export function WalletPanel({
   }, []);
 
   useEffect(() => {
+    setSolanaNetworkPreference(network);
+  }, [network]);
+
+  useEffect(() => {
     if (!appUsername) {
       setLinkedWallets([]);
       setAccountAssets([]);
+      setAccountAssetsSnapshotLabel("업데이트 전");
       setAccountMenuError("");
       return;
     }
     const controller = new AbortController();
+    const cacheScope = {
+      kind: "wallet" as const,
+      mode: "dry-run" as const,
+      username: appUsername,
+      solanaAddress: solanaAccount?.address,
+      evmAddress: evmAccount?.address
+    };
+    const cachedAssets = loadCachedAccountAssets(cacheScope);
+    if (cachedAssets && cachedAssets.length > 0) {
+      setAccountAssets(cachedAssets);
+      setAccountAssetsSnapshotLabel("업데이트 전");
+    }
     setAccountMenuError("");
     void Promise.allSettled([listAccountWallets({ signal: controller.signal }), listAccountAssets({ signal: controller.signal })])
       .then(([walletsResult, assetsResult]) => {
         if (controller.signal.aborted) return;
         setLinkedWallets(walletsResult.status === "fulfilled" ? walletsResult.value : []);
-        setAccountAssets(assetsResult.status === "fulfilled" ? assetsResult.value : []);
+        if (assetsResult.status === "fulfilled") {
+          setAccountAssets(assetsResult.value);
+          setAccountAssetsSnapshotLabel("업데이트 후");
+          saveCachedAccountAssets(cacheScope, assetsResult.value);
+        } else if (!cachedAssets || cachedAssets.length === 0) {
+          setAccountAssets([]);
+          setAccountAssetsSnapshotLabel("업데이트 전");
+        }
         if (walletsResult.status === "rejected") {
           setAccountMenuError("연결 지갑 정보를 불러오지 못했습니다. API 서버를 새 코드로 재시작하면 복구됩니다.");
         }
       });
     return () => controller.abort();
-  }, [appUsername]);
+  }, [appUsername, evmAccount?.address, solanaAccount?.address]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -417,7 +474,7 @@ export function WalletPanel({
     return rows.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [positions, withdrawLedger]);
 
-  const rpcCandidates = useMemo(() => getSolanaRpcCandidates(network), [network]);
+  const rpcCandidates = useMemo(() => getSolanaRpcCandidates(network, network !== "devnet"), [network]);
   const copyAddress = useCallback(async () => {
     const addr = primaryWalletAddress;
     if (!addr) return;
@@ -459,7 +516,7 @@ export function WalletPanel({
     };
 
     void load();
-  }, [isConnected, network, rpcCandidates, solanaAccount?.address]);
+  }, [isConnected, network, rpcCandidates, solanaAccount?.address, walletRefreshTick]);
 
   useEffect(() => {
     const addr = evmAccount?.address as `0x${string}` | undefined;
@@ -512,7 +569,7 @@ export function WalletPanel({
 
     void load();
     return () => controller.abort();
-  }, [evmAccount?.address, isConnected]);
+  }, [evmAccount?.address, isConnected, walletRefreshTick]);
 
   const onConnect = async () => {
     setIsConnecting(true);
@@ -606,6 +663,133 @@ export function WalletPanel({
   };
 
   const accountAssetsTotal = accountAssets.reduce((acc, asset) => acc + asset.usdValue, 0);
+  const walletAssetChoices = useMemo(
+    () => buildWalletAssetChoices({ solBalance: solOnChain, tokenRows: tokensOnChain }),
+    [solOnChain, tokensOnChain]
+  );
+  const walletAssetChoiceByMint = useMemo(() => new Map(walletAssetChoices.map((choice) => [choice.mint, choice])), [walletAssetChoices]);
+  const sendAssetChoices = walletAssetChoices;
+  const swapAssetChoices = walletAssetChoices;
+  const defaultSendChoiceMint = sendChoiceMint || sendAssetChoices[0]?.mint || "";
+  const defaultSwapFromMint = swapFromMint || swapAssetChoices[0]?.mint || "";
+  const defaultSwapToMint = swapToMint || swapAssetChoices.find((choice) => choice.mint !== defaultSwapFromMint)?.mint || "";
+
+  const refreshWalletViews = useCallback(() => {
+    setWalletRefreshTick((tick) => tick + 1);
+  }, []);
+
+  const openWalletAction = useCallback(
+    (mode: "send" | "swap") => {
+      setWalletActionError("");
+      setWalletActionNote("");
+      if (mode === "send") {
+        setSendChoiceMint(defaultSendChoiceMint);
+        setSendAmount("");
+      } else {
+        setSwapFromMint(defaultSwapFromMint);
+        setSwapToMint(defaultSwapToMint);
+        setSwapAmount("");
+      }
+      setWalletActionMode(mode);
+    },
+    [defaultSendChoiceMint, defaultSwapFromMint, defaultSwapToMint]
+  );
+
+  const closeWalletAction = useCallback(() => {
+    setWalletActionMode(null);
+    setWalletActionError("");
+    setWalletActionNote("");
+  }, []);
+
+  const submitSendAction = useCallback(async () => {
+    const choice = walletAssetChoiceByMint.get(sendChoiceMint);
+    if (!choice) {
+      setWalletActionError("보낼 자산을 선택하세요.");
+      return;
+    }
+    if (!sendRecipient.trim()) {
+      setWalletActionError("받는 주소를 입력하세요.");
+      return;
+    }
+    if (!sendAmount.trim()) {
+      setWalletActionError("보낼 수량을 입력하세요.");
+      return;
+    }
+    if (!solanaAccount?.address) {
+      setWalletActionError("Solana 지갑이 연결되어 있지 않습니다.");
+      return;
+    }
+    setWalletActionLoading(true);
+    setWalletActionError("");
+    setWalletActionNote("");
+    try {
+      const { connection } = await createWalletActionConnection(network);
+      const phantomSolana = readBrowserPhantomSolana();
+      if (!phantomSolana) {
+        throw new Error("Phantom Solana 지갑을 찾지 못했습니다.");
+      }
+      const result = await sendSolanaAsset({
+        wallet: phantomSolana,
+        connection,
+        recipient: sendRecipient.trim(),
+        choice,
+        amount: sendAmount.trim()
+      });
+      setWalletActionNote(`전송 완료 · tx ${shortTxid(result.signature)}`);
+      refreshWalletViews();
+    } catch (error) {
+      setWalletActionError(error instanceof Error ? error.message : "전송 실패");
+    } finally {
+      setWalletActionLoading(false);
+    }
+  }, [network, refreshWalletViews, sendAmount, sendChoiceMint, sendRecipient, solanaAccount?.address, walletAssetChoiceByMint]);
+
+  const submitSwapAction = useCallback(async () => {
+    const fromChoice = walletAssetChoiceByMint.get(swapFromMint);
+    if (!fromChoice) {
+      setWalletActionError("바꿀 자산을 선택하세요.");
+      return;
+    }
+    if (!swapToMint.trim()) {
+      setWalletActionError("받을 자산을 선택하세요.");
+      return;
+    }
+    if (!swapAmount.trim()) {
+      setWalletActionError("스왑 수량을 입력하세요.");
+      return;
+    }
+    if (!solanaAccount?.address) {
+      setWalletActionError("Solana 지갑이 연결되어 있지 않습니다.");
+      return;
+    }
+    if (swapToMint === swapFromMint) {
+      setWalletActionError("같은 자산끼리는 스왑할 수 없습니다.");
+      return;
+    }
+    setWalletActionLoading(true);
+    setWalletActionError("");
+    setWalletActionNote("");
+    try {
+      const { connection } = await createWalletActionConnection(network);
+      const wallet = readBrowserPhantomSolana();
+      if (!wallet) {
+        throw new Error("Phantom Solana 지갑을 찾지 못했습니다.");
+      }
+      const result = await swapSolanaAsset({
+        wallet,
+        connection,
+        from: fromChoice,
+        toMint: swapToMint,
+        amount: swapAmount.trim()
+      });
+      setWalletActionNote(`스왑 완료 · tx ${shortTxid(result.signature)}`);
+      refreshWalletViews();
+    } catch (error) {
+      setWalletActionError(error instanceof Error ? error.message : "스왑 실패");
+    } finally {
+      setWalletActionLoading(false);
+    }
+  }, [network, refreshWalletViews, solanaAccount?.address, swapAmount, swapFromMint, swapToMint, walletAssetChoiceByMint]);
 
   const loginChoice = (
     <div className="wallet-login-choice" role="menu" aria-label="로그인 방식 선택">
@@ -655,7 +839,9 @@ export function WalletPanel({
       </div>
       <div className="wallet-account-menu-section">
         <span>자산 요약</span>
-        <strong>${accountAssetsTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+        <strong>
+          {accountAssetsSnapshotLabel} · ${accountAssetsTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+        </strong>
         <em>{accountAssets.slice(0, 4).map((asset) => `${asset.symbol} $${asset.usdValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`).join(" · ") || "조회 전"}</em>
       </div>
       {accountMenuError ? <p className="wallet-error">{accountMenuError}</p> : null}
@@ -702,6 +888,129 @@ export function WalletPanel({
         document.body
       )
     : null;
+
+  const walletActionChoices = walletAssetChoices;
+  const selectedSendChoice = walletActionChoices.find((choice) => choice.mint === defaultSendChoiceMint) ?? walletActionChoices[0];
+  const selectedSwapFromChoice = walletActionChoices.find((choice) => choice.mint === defaultSwapFromMint) ?? walletActionChoices[0];
+  const selectedSwapToChoices = walletActionChoices.filter((choice) => choice.mint !== selectedSwapFromChoice?.mint);
+  const selectedSwapToChoice = selectedSwapToChoices.find((choice) => choice.mint === defaultSwapToMint) ?? selectedSwapToChoices[0];
+
+  const walletActionModal =
+    walletActionMode && selectedSendChoice && selectedSwapFromChoice
+      ? createPortal(
+          <div
+            className="modal-backdrop"
+            role="dialog"
+            aria-modal="true"
+            aria-label={walletActionMode === "send" ? "보내기" : "스왑"}
+            onClick={(e) => {
+              if (e.target === e.currentTarget) {
+                closeWalletAction();
+              }
+            }}
+          >
+            <div className="modal-card wallet-action-modal">
+              <button type="button" className="modal-close-icon" aria-label="닫기" onClick={closeWalletAction}>
+                ✕
+              </button>
+              <p className="section-eyebrow">Wallet Action</p>
+              <h3>{walletActionMode === "send" ? "보내기" : "스왑"}</h3>
+              <p>
+                {walletActionMode === "send"
+                  ? "받는 주소와 토큰 수량을 입력한 뒤 전송합니다."
+                  : "바꿀 자산과 받을 자산, 수량을 입력한 뒤 스왑합니다."}
+              </p>
+              <div className="wallet-action-summary">
+                <div className="wallet-action-summary-main">
+                  <span className="wallet-action-summary-label">토큰</span>
+                  <strong>{walletActionMode === "send" ? selectedSendChoice.symbol : selectedSwapFromChoice.symbol}</strong>
+                  <em>
+                    {walletActionMode === "send"
+                      ? `${selectedSendChoice.label} · 보유 ${formatTokenAmount(selectedSendChoice.amount)}`
+                      : `${selectedSwapFromChoice.label} · 보유 ${formatTokenAmount(selectedSwapFromChoice.amount)}`}
+                  </em>
+                </div>
+                <div className="wallet-action-summary-main wallet-action-summary-main-amount">
+                  <span className="wallet-action-summary-label">수량</span>
+                  <strong>{walletActionMode === "send" ? sendAmount.trim() || "0" : swapAmount.trim() || "0"}</strong>
+                  <em>{walletActionMode === "send" ? "전송 예정 수량" : "스왑 예정 수량"}</em>
+                </div>
+              </div>
+              <div className="wallet-action-contract-row">
+                <span>계약주소</span>
+                <code title={walletActionMode === "send" ? selectedSendChoice.mint : selectedSwapFromChoice.mint}>
+                  {walletActionMode === "send" ? selectedSendChoice.mint : selectedSwapFromChoice.mint}
+                </code>
+              </div>
+              {walletActionError ? <p className="wallet-error">{walletActionError}</p> : null}
+              {walletActionNote ? <p className="wallet-action-note">{walletActionNote}</p> : null}
+              {walletActionMode === "send" ? (
+                <div className="wallet-action-form">
+                  <label>
+                    토큰
+                    <select value={sendChoiceMint || selectedSendChoice.mint} onChange={(e) => setSendChoiceMint(e.target.value)}>
+                      {walletActionChoices.map((choice) => (
+                        <option key={choice.mint} value={choice.mint}>
+                          {choice.label} · 보유 {formatTokenAmount(choice.amount)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    받는 주소
+                    <input value={sendRecipient} onChange={(e) => setSendRecipient(e.target.value)} placeholder="Solana 주소" />
+                  </label>
+                  <label>
+                    수량
+                    <input value={sendAmount} onChange={(e) => setSendAmount(e.target.value)} inputMode="decimal" placeholder="0.00" />
+                  </label>
+                </div>
+              ) : (
+                <div className="wallet-action-form">
+                  <label>
+                    보내는 토큰
+                    <select value={swapFromMint || selectedSwapFromChoice.mint} onChange={(e) => setSwapFromMint(e.target.value)}>
+                      {walletActionChoices.map((choice) => (
+                        <option key={choice.mint} value={choice.mint}>
+                          {choice.label} · 보유 {formatTokenAmount(choice.amount)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    받을 토큰
+                    <select value={swapToMint || selectedSwapToChoice?.mint || ""} onChange={(e) => setSwapToMint(e.target.value)}>
+                      {selectedSwapToChoices.map((choice) => (
+                        <option key={choice.mint} value={choice.mint}>
+                          {choice.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    수량
+                    <input value={swapAmount} onChange={(e) => setSwapAmount(e.target.value)} inputMode="decimal" placeholder="0.00" />
+                  </label>
+                </div>
+              )}
+              <div className="exec-verify-actions">
+                <button
+                  type="button"
+                  className="auth-primary-btn"
+                  onClick={() => void (walletActionMode === "send" ? submitSendAction() : submitSwapAction())}
+                  disabled={walletActionLoading}
+                >
+                  {walletActionLoading ? "처리 중…" : walletActionMode === "send" ? "보내기" : "스왑"}
+                </button>
+                <button type="button" className="ghost-btn" onClick={closeWalletAction} disabled={walletActionLoading}>
+                  취소
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )
+      : null;
 
   const onDisconnect = async () => {
     try {
@@ -782,6 +1091,12 @@ export function WalletPanel({
             주소 복사
           </button>
         ) : null}
+        <button type="button" className="wallet-action-btn primary" onClick={() => openWalletAction("send")} disabled={!isConnected || walletAssetChoices.length === 0}>
+          보내기
+        </button>
+        <button type="button" className="wallet-action-btn primary" onClick={() => openWalletAction("swap")} disabled={!isConnected || walletAssetChoices.length < 2}>
+          스왑
+        </button>
         {onOpenMyOverview ? (
           <button type="button" className="wallet-action-btn primary" onClick={() => afterNav(onOpenMyOverview)}>
             내 현황
@@ -885,6 +1200,7 @@ export function WalletPanel({
         {connectError ? <p className="wallet-error">{connectError}</p> : null}
       </section>
       {walletCreateModal}
+      {walletActionModal}
     </>
     );
   }
@@ -936,6 +1252,9 @@ export function WalletPanel({
       {connectError ? <p className="wallet-error">{connectError}</p> : null}
     </section>
     {walletCreateModal}
+    {walletActionModal}
     </>
   );
+
+  // JSX return below uses walletActionModal too
 }

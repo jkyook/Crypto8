@@ -27,11 +27,13 @@ import { estimateProtocolFees, type FeeEstimateInputRow } from "./feeEstimator";
 import { getMarketPriceSnapshot } from "./marketPricing";
 import { linkUserWallet, listUserWallets } from "./userWallets";
 import type { ProtocolExecutionReadiness } from "./adapters/types";
+import { listLiveAccountAssets } from "./liveAccountAssets";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
 /** Render 등 리버스 프록시 뒤에서 올바른 클라이언트 IP·프로토콜 인식 */
 app.set("trust proxy", 1);
+app.set("etag", false);
 
 const __serverDir = dirname(fileURLToPath(import.meta.url));
 function readPackageVersion(): string {
@@ -462,6 +464,30 @@ app.get("/api/account/assets", requireAuth(["orchestrator", "security", "viewer"
   res.json({ ok: true, assets: await listAccountAssets(username, role) });
 });
 
+app.get("/api/account/onchain-assets", async (req, res) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  const network = req.query.network === "devnet" ? "devnet" : "mainnet";
+  const solanaAddress = typeof req.query.solanaAddress === "string" ? req.query.solanaAddress.trim() : "";
+  const evmAddress = typeof req.query.evmAddress === "string" ? req.query.evmAddress.trim() : "";
+  if (!solanaAddress && !evmAddress) {
+    res.status(400).json({ ok: false, message: "address required" });
+    return;
+  }
+  try {
+    const assets = await listLiveAccountAssets({
+      network,
+      solanaAddress: solanaAddress || null,
+      evmAddress: evmAddress || null
+    });
+    res.json({ ok: true, assets });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "on-chain asset fetch failed";
+    res.status(502).json({ ok: false, message });
+  }
+});
+
 app.get("/api/account/wallets", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {
   const username = res.locals.user.username as string;
   res.json({ ok: true, wallets: await listUserWallets(username) });
@@ -606,14 +632,20 @@ app.get("/api/runtime/info", (_req, res) => {
   const requested = process.env.EXECUTION_MODE === "live" ? "live" : "dry-run";
   const liveConfirmed = process.env.LIVE_EXECUTION_CONFIRM === "YES";
   const executionMode = requested === "live" && liveConfirmed ? "live" : "dry-run";
+  const solanaOrcaLiveReady = Boolean(
+    process.env.SOLANA_EXECUTOR_PRIVATE_KEY_FILE?.trim() ||
+      (process.env.SOLANA_EXECUTOR_PRIVATE_KEY?.trim() &&
+        (process.env.ALLOW_INSECURE_ENV_PRIVATE_KEY === "true" || process.env.NODE_ENV !== "production"))
+  );
   res.json({
     ok: true,
     executionMode,
     executionModeRequested: requested,
     liveExecutionConfirmed: liveConfirmed,
+    solanaOrcaLiveReady,
     walletUiPolicy: "phantom-solana",
     serverExecutionNote:
-      "현재 MVP는 로그인한 사용자가 본인 Job을 직접 실행 요청하는 구조입니다. Phantom signMessage는 실행 의사 확인용이며, 프로토콜 전송은 EXECUTION_MODE에 따라 서버 어댑터가 처리합니다."
+      "현재 MVP는 로그인한 사용자가 본인 Job을 직접 실행 요청하는 구조입니다. Phantom signMessage는 실행 의사 확인용이며, Solana Orca live는 연결된 Phantom Solana 지갑이 직접 서명·전송합니다."
   });
 });
 
@@ -794,7 +826,11 @@ app.post("/api/orchestrator/jobs", requireAuth(["orchestrator", "security", "vie
     return;
   }
   const sourceAsset =
-    body.sourceAsset === "USDC" || body.sourceAsset === "USDT" || body.sourceAsset === "ETH" || body.sourceAsset === "SOL"
+    body.sourceAsset === "USDC" ||
+    body.sourceAsset === "USDT" ||
+    body.sourceAsset === "ETH" ||
+    body.sourceAsset === "SOL" ||
+    body.sourceAsset === "MSOL"
       ? body.sourceAsset
       : "USDC";
 
@@ -936,6 +972,7 @@ app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orche
     positionId?: unknown;
     requestedMode?: unknown;
     protocolReadiness?: unknown;
+    clientExecutionResults?: unknown;
   };
   const headerCorr = req.headers["x-correlation-id"];
   const correlationId =
@@ -961,9 +998,32 @@ app.post("/api/orchestrator/execute/:jobId", executeLimiter, requireAuth(["orche
         );
       })
     : undefined;
+  const clientExecutionResults = Array.isArray(body.clientExecutionResults)
+    ? body.clientExecutionResults.filter(
+        (item): item is {
+          protocol: string;
+          chain: string;
+          action: string;
+          allocationUsd: number;
+          txId: string;
+          status: "simulated" | "submitted";
+        } => {
+          if (!item || typeof item !== "object") return false;
+          const row = item as Record<string, unknown>;
+          return (
+            typeof row.protocol === "string" &&
+            typeof row.chain === "string" &&
+            typeof row.action === "string" &&
+            typeof row.allocationUsd === "number" &&
+            typeof row.txId === "string" &&
+            (row.status === "simulated" || row.status === "submitted")
+          );
+        }
+      )
+    : undefined;
   const username = res.locals.user.username as string;
   const role = res.locals.user.role as string;
-  const result = await executeJob(jobId, idempotencyKey, { correlationId, positionId, requestedMode, protocolReadiness }, { username, role });
+  const result = await executeJob(jobId, idempotencyKey, { correlationId, positionId, requestedMode, protocolReadiness, clientExecutionResults }, { username, role });
   const requestId = typeof (res.locals as Record<string, unknown>).requestId === "string" ? (res.locals as Record<string, string>).requestId : undefined;
   if (!result.ok) {
     const forbidden = typeof result.message === "string" && result.message.startsWith("forbidden:");

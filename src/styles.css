@@ -3444,6 +3444,63 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
   color: #c9dcf2;
 }
 
+.approval-plan-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.approval-plan-step {
+  border: 1px solid rgba(91, 140, 255, 0.24);
+  border-radius: var(--c8-radius-sm);
+  background: rgba(8, 18, 32, 0.42);
+  padding: 10px 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.approval-plan-step strong {
+  display: block;
+  font-size: 0.88rem;
+  color: #eff4ff;
+}
+
+.approval-plan-step p {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+  color: var(--c8-text-muted);
+}
+
+.approval-plan-step span {
+  align-self: flex-start;
+  font-size: 0.74rem;
+  color: var(--c8-text-muted);
+  white-space: nowrap;
+}
+
+.approval-plan-step--review {
+  border-color: rgba(110, 180, 255, 0.34);
+}
+
+.approval-plan-step--bridge {
+  border-color: rgba(77, 199, 178, 0.32);
+}
+
+.approval-plan-step--swap {
+  border-color: rgba(255, 184, 107, 0.32);
+}
+
+.approval-plan-step--approve {
+  border-color: rgba(171, 132, 255, 0.32);
+}
+
+.approval-plan-step--deposit {
+  border-color: rgba(74, 183, 129, 0.32);
+}
+
 .orchestrator-auto-checks {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -3646,6 +3703,132 @@ body[data-theme="light"] .protocol-news-digest {
   border: 1px solid rgba(108, 136, 193, 0.5);
   border-radius: 14px;
   padding: 16px;
+}
+
+.wallet-action-modal {
+  max-width: 560px;
+}
+
+.wallet-action-modal p {
+  color: var(--c8-text-muted);
+}
+
+.wallet-action-summary {
+  display: grid;
+  grid-template-columns: 1.3fr 0.8fr;
+  gap: 10px;
+  margin: 14px 0 10px;
+}
+
+.wallet-action-summary-main {
+  display: grid;
+  gap: 4px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(16, 31, 51, 0.78);
+  border: 1px solid rgba(96, 126, 184, 0.26);
+}
+
+.wallet-action-summary-main strong {
+  font-size: 1.45rem;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: #f4f8ff;
+}
+
+.wallet-action-summary-main em {
+  font-style: normal;
+  font-size: 0.77rem;
+  color: var(--c8-text-muted);
+}
+
+.wallet-action-summary-main-amount strong {
+  font-size: 1.2rem;
+}
+
+.wallet-action-summary-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #7be8c3;
+  font-weight: 800;
+}
+
+.wallet-action-contract-row {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(8, 17, 29, 0.48);
+  border: 1px solid rgba(96, 126, 184, 0.18);
+}
+
+.wallet-action-contract-row span {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--c8-text-muted);
+}
+
+.wallet-action-contract-row code {
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: rgba(213, 226, 242, 0.75);
+  word-break: break-all;
+}
+
+.wallet-action-note {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(8, 17, 29, 0.5);
+  border: 1px solid rgba(96, 126, 184, 0.18);
+  color: #dce8f7;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.wallet-action-form {
+  display: grid;
+  gap: 10px;
+}
+
+.wallet-action-form label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: #c8d9ee;
+}
+
+.wallet-action-form input,
+.wallet-action-form select {
+  width: 100%;
+}
+
+body[data-theme="light"] .wallet-action-modal p,
+body[data-theme="light"] .wallet-action-summary-main em,
+body[data-theme="light"] .wallet-action-contract-row span {
+  color: #53697f;
+}
+
+body[data-theme="light"] .wallet-action-summary-main {
+  background: rgba(242, 247, 252, 0.96);
+  border-color: rgba(173, 196, 219, 0.75);
+}
+
+body[data-theme="light"] .wallet-action-summary-main strong {
+  color: #122131;
+}
+
+body[data-theme="light"] .wallet-action-contract-row {
+  background: rgba(247, 250, 255, 0.92);
+  border-color: rgba(173, 196, 219, 0.75);
+}
+
+body[data-theme="light"] .wallet-action-contract-row code {
+  color: rgba(18, 33, 49, 0.66);
 }
 
 .modal-card--operations-search {
@@ -5657,6 +5840,38 @@ body[data-theme="light"] .section-eyebrow {
   box-shadow: 0 0 24px rgba(91, 140, 255, 0.18);
 }
 
+.exec-verify-box--wide {
+  max-width: min(760px, 92vw);
+}
+
+.approval-plan-modal-list {
+  display: grid;
+  gap: 8px;
+  max-height: 40vh;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.approval-plan-modal-row {
+  border: 1px solid rgba(91, 140, 255, 0.2);
+  border-radius: var(--c8-radius-sm);
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.approval-plan-modal-row strong {
+  display: block;
+  font-size: 0.86rem;
+  color: #ecf2ff;
+}
+
+.approval-plan-modal-row p {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+  color: var(--c8-text-muted);
+  line-height: 1.45;
+}
+
 .exec-verify-title {
   margin: 0;
   font-size: 1rem;
@@ -5720,6 +5935,19 @@ body[data-theme="light"] .exec-verify-box {
   background: rgba(240, 246, 255, 0.97);
   border-color: #3b6ee8;
   box-shadow: 0 0 18px rgba(59, 110, 232, 0.12);
+}
+
+body[data-theme="light"] .approval-plan-step {
+  background: rgba(255, 255, 255, 0.88);
+}
+
+body[data-theme="light"] .approval-plan-step strong,
+body[data-theme="light"] .approval-plan-modal-row strong {
+  color: #122131;
+}
+
+body[data-theme="light"] .approval-plan-modal-row {
+  background: rgba(255, 255, 255, 0.9);
 }
 
 body[data-theme="light"] .exec-verify-title {

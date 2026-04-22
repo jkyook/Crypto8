@@ -40,10 +40,15 @@ function parseTokenAccounts(json: RpcJson, network: "mainnet" | "devnet"): OnCha
     const info = row.account?.data?.parsed?.info;
     const mint = info?.mint;
     const ta = info?.tokenAmount;
-    if (!mint || ta?.uiAmount === undefined || ta.uiAmount === null) continue;
-    const amount = typeof ta.uiAmount === "number" ? ta.uiAmount : Number(ta.uiAmount);
-    if (!Number.isFinite(amount) || amount <= 0) continue;
+    if (!mint || !ta) continue;
     const decimals = typeof ta.decimals === "number" ? ta.decimals : Number(ta.decimals ?? 0);
+    const amount =
+      typeof ta.amount === "string" && ta.amount.length > 0
+        ? Number(ta.amount) / Math.pow(10, Number.isFinite(decimals) ? decimals : 0)
+        : typeof ta.uiAmount === "number"
+          ? ta.uiAmount
+          : Number(ta.uiAmount ?? 0);
+    if (!Number.isFinite(amount) || amount <= 0) continue;
     out.push({
       mint,
       symbol: symbolForMint(mint, network),
@@ -107,21 +112,31 @@ export async function fetchOnChainPortfolio(rpcUrl: string, owner: string, netwo
 }
 
 /** Vite 환경변수 + 공개 RPC 후보(403·레이트리밋 시 순차 시도). */
-export function getSolanaRpcCandidates(network: "mainnet" | "devnet"): string[] {
+export function getSolanaRpcCandidates(network: "mainnet" | "devnet", preferCustomFirst = true): string[] {
   const raw =
-    typeof import.meta !== "undefined" && import.meta.env && typeof import.meta.env.VITE_SOLANA_RPC_URL === "string"
-      ? import.meta.env.VITE_SOLANA_RPC_URL.trim()
+    typeof import.meta !== "undefined" && import.meta.env
+      ? network === "mainnet"
+        ? typeof import.meta.env.VITE_SOLANA_MAINNET_RPC_URL === "string"
+          ? import.meta.env.VITE_SOLANA_MAINNET_RPC_URL.trim()
+          : ""
+        : typeof import.meta.env.VITE_SOLANA_RPC_URL === "string"
+          ? import.meta.env.VITE_SOLANA_RPC_URL.trim()
+          : ""
       : "";
   const custom = raw.length > 0 ? [raw] : [];
   const defaults =
     network === "mainnet"
       ? [
-          "https://api.mainnet-beta.solana.com",
+          "https://solana-mainnet.g.alchemy.com/v2/docs-demo",
+          "https://docs-demo.solana-mainnet.quiknode.pro/",
+          "https://api.mainnet.solana.com",
           "https://solana-rpc.publicnode.com",
           "https://rpc.ankr.com/solana"
         ]
       : ["https://api.devnet.solana.com", "https://solana-devnet.publicnode.com"];
-  return [...custom, ...defaults.filter((u) => !custom.includes(u))];
+  return preferCustomFirst
+    ? [...custom, ...defaults.filter((u) => !custom.includes(u))]
+    : [...defaults, ...custom.filter((u) => !defaults.includes(u))];
 }
 
 export async function fetchOnChainPortfolioWithFallback(

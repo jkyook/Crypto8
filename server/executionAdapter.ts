@@ -71,6 +71,13 @@ function buildDefaultReadiness(result: AdapterExecutionResult, mode: ExecutionMo
   };
 }
 
+function getClientResultsForProtocol(
+  context: AdapterExecutionContext,
+  protocol: AdapterExecutionResult["protocol"]
+): AdapterExecutionResult[] {
+  return (context.clientExecutionResults ?? []).filter((row) => row.protocol === protocol);
+}
+
 function readinessKey(row: Pick<ProtocolExecutionReadiness, "protocol" | "chain" | "action">): string {
   return `${row.protocol}::${row.chain}::${row.action}`.toLowerCase();
 }
@@ -150,7 +157,7 @@ async function runAdaptersByNetwork(
 
     case "Solana": {
       const [orca, raydium] = await Promise.all([
-        executeOrcaPlan(context),
+        getClientResultsForProtocol(context, "Orca").length > 0 ? Promise.resolve(getClientResultsForProtocol(context, "Orca")) : executeOrcaPlan(context),
         executeRaydiumPlan(context)
       ]);
       return [...orca, ...raydium];
@@ -172,7 +179,7 @@ async function runAdaptersByNetwork(
       const [aave, uniswap, orca] = await Promise.all([
         executeAavePlan(context),
         executeUniswapPlan(context),
-        executeOrcaPlan(context)
+        getClientResultsForProtocol(context, "Orca").length > 0 ? Promise.resolve(getClientResultsForProtocol(context, "Orca")) : executeOrcaPlan(context)
       ]);
       return [...aave, ...uniswap, ...orca];
     }
@@ -182,7 +189,10 @@ async function runAdaptersByNetwork(
 export async function runExecutionAdapter(
   job: ExecutionJob,
   requestedMode?: ExecutionMode,
-  protocolReadiness?: ProtocolExecutionReadiness[]
+  protocolReadiness?: ProtocolExecutionReadiness[],
+  meta?: {
+    clientExecutionResults?: AdapterExecutionResult[];
+  }
 ): Promise<ExecutionAdapterBundle> {
   const mode = getExecutionMode(requestedMode);
   ensureSafeLiveMode(mode);
@@ -194,7 +204,8 @@ export async function runExecutionAdapter(
     timestamp: new Date().toISOString(),
     productNetwork: job.input.productNetwork,
     productSubtype: job.input.productSubtype,
-    protocolReadiness
+    protocolReadiness,
+    clientExecutionResults: meta?.clientExecutionResults
   };
 
   const adapterResults = await runAdaptersByNetwork(context);

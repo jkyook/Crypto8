@@ -29,6 +29,7 @@ function inferRequiredAssets(row: ExecutionPreviewRow): AccountAssetSymbol[] {
   if (key.includes("eth-usdc")) return ["ETH", "USDC"];
   if (key.includes("usdc-usdt")) return ["USDC", "USDT"];
   if (key.includes("sol-usdc")) return ["SOL", "USDC"];
+  if (key.includes("msol-sol")) return ["MSOL", "SOL"];
   if (key.includes("usdc")) return ["USDC"];
   return ["USDC"];
 }

@@ -254,12 +254,15 @@ async function runExecutionWithRetry(
   job: ExecutionJob,
   retryCount: number,
   requestedMode?: ExecutionMode,
-  protocolReadiness?: ProtocolExecutionReadiness[]
+  protocolReadiness?: ProtocolExecutionReadiness[],
+  meta?: ExecuteJobMeta
 ): Promise<{ bundle: ExecutionAdapterBundle; attempts: number }> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= retryCount; attempt += 1) {
     try {
-      const bundle = await runExecutionAdapter(job, requestedMode, protocolReadiness);
+      const bundle = await runExecutionAdapter(job, requestedMode, protocolReadiness, {
+        clientExecutionResults: meta?.clientExecutionResults
+      });
       return { bundle, attempts: attempt };
     } catch (error) {
       lastError = error;
@@ -331,6 +334,7 @@ export type ExecuteJobMeta = {
   positionId?: string;
   requestedMode?: ExecutionMode;
   protocolReadiness?: ProtocolExecutionReadiness[];
+  clientExecutionResults?: ExecutionEventPayloadV1["adapterResults"];
 };
 
 export async function executeJob(
@@ -424,7 +428,7 @@ export async function executeJob(
   let execution: ExecutionAdapterBundle;
   let attemptsUsed = maxAttempts;
   try {
-    const ran = await runExecutionWithRetry(job, maxAttempts, meta?.requestedMode, meta?.protocolReadiness);
+    const ran = await runExecutionWithRetry(job, maxAttempts, meta?.requestedMode, meta?.protocolReadiness, meta);
     execution = ran.bundle;
     attemptsUsed = ran.attempts;
   } catch (error) {

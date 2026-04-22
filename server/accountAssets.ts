@@ -18,19 +18,22 @@ const DEMO_BALANCES: Record<string, Array<Pick<AccountAssetBalance, "symbol" | "
     { symbol: "USDC", chain: "Arbitrum", amount: 250000 },
     { symbol: "USDT", chain: "Arbitrum", amount: 80000 },
     { symbol: "ETH", chain: "Arbitrum", amount: 18 },
-    { symbol: "SOL", chain: "Solana", amount: 420 }
+    { symbol: "SOL", chain: "Solana", amount: 420 },
+    { symbol: "MSOL", chain: "Solana", amount: 120 }
   ],
   security_admin: [
     { symbol: "USDC", chain: "Arbitrum", amount: 35000 },
     { symbol: "USDT", chain: "Arbitrum", amount: 12000 },
     { symbol: "ETH", chain: "Arbitrum", amount: 3 },
-    { symbol: "SOL", chain: "Solana", amount: 80 }
+    { symbol: "SOL", chain: "Solana", amount: 80 },
+    { symbol: "MSOL", chain: "Solana", amount: 24 }
   ],
   viewer_admin: [
     { symbol: "USDC", chain: "Arbitrum", amount: 12000 },
     { symbol: "USDT", chain: "Arbitrum", amount: 4000 },
     { symbol: "ETH", chain: "Arbitrum", amount: 1.5 },
-    { symbol: "SOL", chain: "Solana", amount: 35 }
+    { symbol: "SOL", chain: "Solana", amount: 35 },
+    { symbol: "MSOL", chain: "Solana", amount: 10 }
   ]
 };
 
@@ -40,7 +43,8 @@ function defaultBalancesForRole(role: UserRole): Array<Pick<AccountAssetBalance,
     { symbol: "USDC", chain: "Arbitrum", amount: usdc },
     { symbol: "USDT", chain: "Arbitrum", amount: Math.round(usdc * 0.25) },
     { symbol: "ETH", chain: "Arbitrum", amount: Number((usdc / 20000).toFixed(4)) },
-    { symbol: "SOL", chain: "Solana", amount: Number((usdc / 500).toFixed(4)) }
+    { symbol: "SOL", chain: "Solana", amount: Number((usdc / 500).toFixed(4)) },
+    { symbol: "MSOL", chain: "Solana", amount: Number((usdc / 650).toFixed(4)) }
   ];
 }
 

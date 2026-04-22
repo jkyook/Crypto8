@@ -43,6 +43,9 @@ npm run prisma:seed
 - `LIVE_EXECUTION_CONFIRM`: live 모드 활성화 시 `YES` 필요
 - `ARBITRUM_RPC_URL`: Uniswap live 경로용 Arbitrum RPC URL
 - `ARBITRUM_EXECUTOR_PRIVATE_KEY`: Uniswap live 경로용 실행 지갑 키
+- `SOLANA_LIVE_RPC_URL` / `SOLANA_MAINNET_RPC_URL`: Orca live 경로용 Solana mainnet RPC URL
+- `SOLANA_EXECUTOR_PRIVATE_KEY_FILE`: Orca live 경로용 Solana executor keypair 파일 경로
+- `SOLANA_EXECUTOR_PRIVATE_KEY`: Orca live 경로용 실행 지갑 키(개발/테스트 전용, `ALLOW_INSECURE_ENV_PRIVATE_KEY=true` 필요)
 - `UNISWAP_SLIPPAGE_BPS`: Uniswap mint 최소수량 계산용 슬리피지 bps (기본 50 = 0.5%)
 - `UNISWAP_USDC_USDT_FEE_TIER`: USDC-USDT 풀 fee tier (기본 100 = 0.01%)
 - `UNISWAP_USDC_USDT_POOL_ADDRESS`: USDC-USDT 풀 주소 (Arbitrum)
@@ -64,7 +67,7 @@ npm run prisma:seed
 
 - `EXECUTION_MODE=dry-run`(기본): 어댑터가 시뮬레이션 중심으로 동작합니다.
 - `EXECUTION_MODE=live`이고 `LIVE_EXECUTION_CONFIRM=YES`일 때만 라이브 의미의 온체인 호출이 켜집니다(어댑터·실행 지갑·RPC 등 환경 필요).
-- 프로토콜별 호출은 `server/executionAdapter.ts`가 Aave·Uniswap·Orca 어댑터를 묶는 구조입니다. 실행 요청은 현재 로그인 유저의 Job에 연결됩니다.
+- 프로토콜별 호출은 `server/executionAdapter.ts`가 Aave·Uniswap·Orca 어댑터를 묶는 구조입니다. Orca live는 Solana executor keypair가 있어야 실제 Whirlpool position open + liquidity 추가를 시도합니다. 실행 요청은 현재 로그인 유저의 Job에 연결됩니다.
 - 공개 엔드포인트 `GET /api/runtime/info`로 현재 표시용 실행 모드(dry-run/live)를 조회할 수 있습니다.
 - 공개 `GET /api/health`로 DB 연결·실효 실행 모드·버전·가동 시간을 점검할 수 있습니다. 엔드포인트·멱등 키 요약은 `agents/API-OVERVIEW.md`를 참고하세요.
 

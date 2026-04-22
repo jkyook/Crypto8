@@ -32,6 +32,8 @@ export type AdapterExecutionContext = {
   /** 상품 서브타입. 동일 네트워크 내 배분 비율 분기에 사용. */
   productSubtype?: ProductSubtype;
   protocolReadiness?: ProtocolExecutionReadiness[];
+  /** 브라우저 지갑이 직접 실행한 결과(예: Solana Orca live). */
+  clientExecutionResults?: AdapterExecutionResult[];
 };
 
 export type AdapterExecutionResult = {

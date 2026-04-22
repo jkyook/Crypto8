@@ -255,7 +255,7 @@ export type DepositPositionPayload = {
   createdAt: string;
 };
 
-export type AccountAssetSymbol = "USDC" | "USDT" | "ETH" | "SOL";
+export type AccountAssetSymbol = "USDC" | "USDT" | "ETH" | "SOL" | "MSOL";
 
 export type AccountAssetBalance = {
   symbol: AccountAssetSymbol;
@@ -309,6 +309,7 @@ export type RuntimeInfo = {
   executionMode: "dry-run" | "live";
   executionModeRequested: string;
   liveExecutionConfirmed: boolean;
+  solanaOrcaLiveReady: boolean;
   walletUiPolicy: string;
   serverExecutionNote: string;
 };
@@ -735,6 +736,35 @@ export async function listAccountAssets(init: Pick<RequestInit, "signal"> = {}):
   return Array.isArray(raw.assets) ? raw.assets : [];
 }
 
+export async function listLiveAccountAssets(
+  params: { network?: "mainnet" | "devnet"; solanaAddress?: string | null; evmAddress?: string | null },
+  init: Pick<RequestInit, "signal"> = {}
+): Promise<AccountAssetBalance[]> {
+  const url = new URL(buildApiUrl(API_BASE, "/api/account/onchain-assets"), typeof window !== "undefined" ? window.location.origin : "http://localhost");
+  if (params.network) {
+    url.searchParams.set("network", params.network);
+  }
+  if (params.solanaAddress) {
+    url.searchParams.set("solanaAddress", params.solanaAddress);
+  }
+  if (params.evmAddress) {
+    url.searchParams.set("evmAddress", params.evmAddress);
+  }
+  const response = await fetch(url.toString(), {
+    signal: init.signal,
+    credentials: "include",
+    cache: "no-store"
+  });
+  const raw = (await readJsonFromApiResponse(response, "실잔고 조회")) as {
+    message?: string;
+    assets?: AccountAssetBalance[];
+  };
+  if (!response.ok) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "실잔고 조회 실패");
+  }
+  return Array.isArray(raw.assets) ? raw.assets : [];
+}
+
 export async function listAccountWallets(init: Pick<RequestInit, "signal"> = {}): Promise<UserWallet[]> {
   const response = await authedFetch("/api/account/wallets", init);
   const raw = (await readJsonFromApiResponse(response, "계정 지갑 조회")) as { message?: string; wallets?: UserWallet[] };
@@ -983,6 +1013,7 @@ export async function executeJob(
     positionId?: string;
     requestedMode?: "dry-run" | "live";
     protocolReadiness?: ProtocolExecutionReadiness[];
+    clientExecutionResults?: ExecutionEventPayload["adapterResults"];
   }
 ): Promise<ExecuteJobResponse> {
   const headers = new Headers({ "Content-Type": "application/json" });
@@ -994,6 +1025,7 @@ export async function executeJob(
     positionId?: string;
     requestedMode?: "dry-run" | "live";
     protocolReadiness?: ProtocolExecutionReadiness[];
+    clientExecutionResults?: ExecutionEventPayload["adapterResults"];
   } = {};
   if (options?.correlationId) {
     body.correlationId = options.correlationId;
@@ -1006,6 +1038,9 @@ export async function executeJob(
   }
   if (options?.protocolReadiness) {
     body.protocolReadiness = options.protocolReadiness;
+  }
+  if (options?.clientExecutionResults) {
+    body.clientExecutionResults = options.clientExecutionResults;
   }
   const response = await authedFetch(`/api/orchestrator/execute/${jobId}`, {
     method: "POST",
@@ -1253,6 +1288,7 @@ export async function fetchRuntimeInfo(): Promise<RuntimeInfo> {
     executionMode: "dry-run",
     executionModeRequested: "dry-run",
     liveExecutionConfirmed: false,
+    solanaOrcaLiveReady: false,
     walletUiPolicy: "phantom-solana",
     serverExecutionNote: "서버에 연결할 수 없어 실행 모드를 확인하지 못했습니다. 기본값은 dry-run으로 간주합니다."
   };

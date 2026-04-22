@@ -5,7 +5,7 @@ export type JobInput = {
   isRangeOut: boolean;
   isDepegAlert: boolean;
   hasPendingRelease: boolean;
-  sourceAsset?: "USDC" | "USDT" | "ETH" | "SOL";
+  sourceAsset?: "USDC" | "USDT" | "ETH" | "SOL" | "MSOL";
   /** 예치상품이 대상으로 하는 네트워크. 미지정 시 Multi(전체 체인) 전략으로 실행. */
   productNetwork?: "Ethereum" | "Arbitrum" | "Base" | "Solana" | "Multi";
   /** 상품 서브타입. 동일 네트워크 내에서 배분 비율을 결정. */
