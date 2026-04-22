@@ -40,6 +40,7 @@ import { aggregateChainUsdFromPositions, estimateAnnualYieldUsd } from "./lib/po
 import { getNextQuarterStart } from "./lib/quarterSchedule";
 import type { ExecutionPreviewRow } from "./lib/executionPreview";
 import { OPTION_L2_STAR } from "./lib/strategyEngine";
+import { resolveOrcaPoolCandidatesForAction } from "./lib/orcaPools";
 import { getMainnetLivePreference, setMainnetLivePreference } from "./lib/mainnetLivePreference";
 import { setSolanaNetworkPreference } from "./lib/solanaNetworkPreference";
 
@@ -86,6 +87,7 @@ type ProtocolDetailRow = {
   pool: string;
   amount: number;
 };
+type PoolLiveState = "checking" | "live" | "down";
 
 const PROTOCOL_SORT_ORDER = ["Aave", "Uniswap", "Orca"] as const;
 
@@ -761,6 +763,8 @@ function ProductsPanel({
   const [simulationDays, setSimulationDays] = useState(30);
   const [marketApr, setMarketApr] = useState<MarketAprSnapshot | null>(null);
   const [aprError, setAprError] = useState("");
+  const [poolLiveMap, setPoolLiveMap] = useState<Record<string, PoolLiveState>>({});
+  const [productLiveMap, setProductLiveMap] = useState<Record<string, boolean>>({});
   const [showStandardL2Allocation, setShowStandardL2Allocation] = useState(false);
   const [marketHistoryPoints, setMarketHistoryPoints] = useState<MarketPoolAprHistoryPoint[]>([]);
   const [marketHistorySeries, setMarketHistorySeries] = useState<MarketPoolAprHistorySeries[]>([]);
@@ -773,6 +777,13 @@ function ProductsPanel({
     if (key.includes("uniswap")) return "Uniswap v3 Arbitrum USDC-USDT 0.05%";
     if (key.includes("orca")) return "Orca Whirlpools SOL-USDC";
     return "기본 풀";
+  };
+  const orcaActionFromPoolLabel = (poolLabel: string): string | null => {
+    const normalized = poolLabel.replace(/^Orca Whirlpools\s*/i, "").trim().toLowerCase();
+    if (normalized.includes("usdc-usdt")) return "USDC-USDT Whirlpool (0.01%)";
+    if (normalized.includes("sol-usdc")) return "SOL-USDC Whirlpool";
+    if (normalized.includes("msol-sol")) return "mSOL-SOL Whirlpool";
+    return null;
   };
   const tvlUsd = 241_979_511 + userDepositedUsd;
   const volume24hUsd = 298_259_130;
@@ -871,6 +882,73 @@ function ProductsPanel({
       window.clearInterval(timer);
     };
   }, [historyCsvDays, selectedPoolLabels]);
+
+  useEffect(() => {
+    if (visibleProducts.length === 0) {
+      setPoolLiveMap({});
+      setProductLiveMap({});
+      return;
+    }
+    const productPools = visibleProducts.map((product) => ({
+      productId: product.id,
+      pools: product.protocolMix.map((item) => resolvePoolLabel(item.name, item.pool))
+    }));
+    const uniqueLabels = [...new Set(productPools.flatMap((item) => item.pools))];
+    const checkingMap = uniqueLabels.reduce<Record<string, PoolLiveState>>(
+      (acc, label) => ({ ...acc, [label]: "checking" }),
+      {}
+    );
+    setPoolLiveMap(checkingMap);
+
+    let cancelled = false;
+    const checkPoolLiveness = async () => {
+      const liveByLabel: Record<string, boolean> = {};
+      try {
+        const poolSnapshot = await fetchPoolApyHistoryFromCsv({ days: 14, pools: uniqueLabels });
+        const matchedByLabel = new Map(poolSnapshot.series.map((series) => [series.poolLabel, Boolean(series.matchedLabel)]));
+        uniqueLabels.forEach((label) => {
+          liveByLabel[label] = matchedByLabel.get(label) ?? false;
+        });
+      } catch {
+        uniqueLabels.forEach((label) => {
+          liveByLabel[label] = false;
+        });
+      }
+
+      const orcaLabels = uniqueLabels.filter((label) => /^Orca Whirlpools/i.test(label));
+      await Promise.all(
+        orcaLabels.map(async (label) => {
+          const action = orcaActionFromPoolLabel(label);
+          if (!action) return;
+          try {
+            const candidates = await resolveOrcaPoolCandidatesForAction(action, "mainnet");
+            liveByLabel[label] = liveByLabel[label] || candidates.length > 0;
+          } catch {
+            liveByLabel[label] = false;
+          }
+        })
+      );
+
+      if (cancelled) return;
+      setPoolLiveMap(
+        uniqueLabels.reduce<Record<string, PoolLiveState>>(
+          (acc, label) => ({ ...acc, [label]: liveByLabel[label] ? "live" : "down" }),
+          {}
+        )
+      );
+      setProductLiveMap(
+        productPools.reduce<Record<string, boolean>>(
+          (acc, item) => ({ ...acc, [item.productId]: item.pools.every((pool) => liveByLabel[pool]) }),
+          {}
+        )
+      );
+    };
+    void checkPoolLiveness();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [visibleProducts]);
 
   const openProductDepositFlow = (product: YieldProduct, amountUsd = depositAmount) => {
     setSelectedId(product.id);
@@ -1084,9 +1162,12 @@ function ProductsPanel({
               }}
               title="상품을 선택하면 아래 입금 패널과 예치풀 상세가 이 상품 기준으로 바뀝니다."
             >
-              <span className={`product-network-badge product-network-badge--${product.networkGroup}`}>
-                {PRODUCT_NETWORK_LABELS[product.networkGroup]}
-              </span>
+              <div className="product-badge-row">
+                <span className={`product-network-badge product-network-badge--${product.networkGroup}`}>
+                  {PRODUCT_NETWORK_LABELS[product.networkGroup]}
+                </span>
+                {productLiveMap[product.id] ? <span className="product-live-badge">LIVE</span> : null}
+              </div>
               <p className="kpi-label">{product.name}</p>
               <p className="kpi-value">목표 연수익 {(product.targetApr * 100).toFixed(1)}%</p>
               <p className="product-inline-metrics">
@@ -1146,18 +1227,33 @@ function ProductsPanel({
               <span>비중</span>
               <span>배분(USD)</span>
               <span>1주 이율</span>
+              <span>상태</span>
             </div>
             {selected.protocolMix.map((item, mixIdx) => {
               const poolAmount = depositAmount * item.weight;
               const rowAprDec = marketApr ? mixItemAnnualAprDecimal(item.name, marketApr) : null;
               const weekPct = rowAprDec != null ? aprDecimalToSimpleWeekYieldPercentPoints(rowAprDec) : null;
+              const poolLabel = resolvePoolLabel(item.name, item.pool);
+              const liveState = poolLiveMap[poolLabel] ?? "checking";
               return (
                 <div key={`${item.name}-${mixIdx}`} className="product-pool-item">
                   <span>{item.name}</span>
-                  <span className="product-pool-pool-label">{resolvePoolLabel(item.name, item.pool)}</span>
+                  <span className="product-pool-pool-label">{poolLabel}</span>
                   <span>{(item.weight * 100).toFixed(0)}%</span>
                   <span>${poolAmount.toFixed(2)}</span>
                   <span className="product-pool-week-cell">{weekPct != null ? `${weekPct.toFixed(3)}%` : "—"}</span>
+                  <span
+                    className={
+                      liveState === "live"
+                        ? "product-pool-live product-pool-live--ok"
+                        : liveState === "down"
+                          ? "product-pool-live product-pool-live--down"
+                          : "product-pool-live product-pool-live--checking"
+                    }
+                    title={liveState === "live" ? "활성 풀" : liveState === "down" ? "활성 상태 확인 필요" : "상태 점검 중"}
+                  >
+                    {liveState === "live" ? "✓" : liveState === "down" ? "!" : "…"}
+                  </span>
                 </div>
               );
             })}

@@ -370,7 +370,7 @@ export async function executeOrcaPlanWithWallet(input: {
   for (const alloc of allocs) {
     const allocationUsd = Number((input.depositUsd * alloc.weight).toFixed(2));
     try {
-      const candidates = await resolveOrcaPoolCandidatesForAction(alloc.action);
+      const candidates = await resolveOrcaPoolCandidatesForAction(alloc.action, input.network);
       let pool: Awaited<ReturnType<typeof live.client.getPool>> | null = null;
       let poolAddress: PublicKey | null = null;
       let lastPoolError = "";

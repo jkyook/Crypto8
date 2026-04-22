@@ -12,6 +12,8 @@ type OrcaPoolSearchResult = {
   hasWarning?: boolean;
 };
 
+type SolanaNetwork = "mainnet" | "devnet";
+
 const ORCA_POOL_SEARCH_URL = "https://api.orca.so/v2/solana/pools/search";
 const ORCA_POOL_CACHE = new Map<string, OrcaPoolSearchResult>();
 
@@ -82,12 +84,16 @@ export async function resolveOrcaPoolForAction(action: string): Promise<OrcaPool
   if (!selected) {
     throw new Error(`No exact Orca pool match found for action: ${action}`);
   }
-  ORCA_POOL_CACHE.set(action, selected);
+  ORCA_POOL_CACHE.set(`mainnet:${action}`, selected);
   return selected;
 }
 
-export async function resolveOrcaPoolCandidatesForAction(action: string): Promise<OrcaPoolSearchResult[]> {
-  const cached = ORCA_POOL_CACHE.get(action);
+export async function resolveOrcaPoolCandidatesForAction(
+  action: string,
+  network: SolanaNetwork = "mainnet"
+): Promise<OrcaPoolSearchResult[]> {
+  const cacheKey = `${network}:${action}`;
+  const cached = ORCA_POOL_CACHE.get(cacheKey);
   if (cached) {
     return [cached];
   }
@@ -144,6 +150,7 @@ export async function resolveOrcaPoolCandidatesForAction(action: string): Promis
   if (!selected) {
     throw new Error(`No exact Orca pool match found for action: ${action}`);
   }
+  ORCA_POOL_CACHE.set(cacheKey, selected);
   const ordered = [
     selected,
     ...rows.filter((row) => row.address !== selected.address)
