@@ -23,8 +23,7 @@ import {
   listDepositPositions,
   listExecutionEvents,
   listJobs,
-  listOnchainPositions,
-  listOrcaWalletPositions,
+  listPublicOnchainPositions,
   listWithdrawalLedger,
   login,
   resetPortfolioLedgerRemote,
@@ -1793,31 +1792,12 @@ function PortfolioPanel({
     setOnchainMatchError("");
     setOnchainMatchSummary("");
     try {
-      if (!canPersistToServer) {
-        setOnchainMatchError("로그인 후 실제 프로토콜 풀 매치를 확인할 수 있습니다. 조회가능풀은 로그인 없이 사용할 수 있습니다.");
-        return;
-      }
       const evmWalletAddress = evmAccount?.address;
       const solanaWalletAddress = solanaAccount?.address;
       if (!evmWalletAddress && !solanaWalletAddress) {
         throw new Error("연결된 지갑 주소가 없습니다. Solana 또는 EVM 지갑을 연결한 뒤 다시 시도해 주세요.");
       }
-      const [onchainRows, orcaWalletRows] = await Promise.all([
-        listOnchainPositions({}, { forceRefresh: true, evmWalletAddress, solanaWalletAddress }),
-        solanaWalletAddress ? listOrcaWalletPositions(solanaWalletAddress) : Promise.resolve([])
-      ]);
-      const combinedRows = [...onchainRows];
-      const seenKeys = new Set(
-        combinedRows.map((row) =>
-          `${row.protocol.toLowerCase()}__${row.chain.toLowerCase()}__${(row.poolAddress ?? row.protocolPositionId ?? row.positionToken ?? row.id).toLowerCase()}`
-        )
-      );
-      for (const row of orcaWalletRows) {
-        const key = `${row.protocol.toLowerCase()}__${row.chain.toLowerCase()}__${(row.poolAddress ?? row.protocolPositionId ?? row.positionToken ?? row.id).toLowerCase()}`;
-        if (seenKeys.has(key)) continue;
-        seenKeys.add(key);
-        combinedRows.push(row);
-      }
+      const combinedRows = await listPublicOnchainPositions({}, { evmWalletAddress, solanaWalletAddress });
       const nextMap: Record<string, { state: ProtocolPoolMatchState; detail: string }> = {};
       const orcaCandidateCache = new Map<string, { address: string; label: string } | null>();
       const byProtocolChain = combinedRows.reduce<Record<string, OnchainPositionPayload[]>>((acc, row) => {

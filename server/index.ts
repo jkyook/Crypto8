@@ -24,6 +24,7 @@ import rateLimit from "express-rate-limit";
 import { gatherProtocolInsightsNews } from "./protocolNews";
 import { getDailyApySeriesFromCsv, getPoolApySeriesFromCsv, listMarketRatesHistory, maybeAppendMarketRatesSnapshot } from "./marketAprHistory";
 import { listAccountAssets } from "./accountAssets";
+import { getAaveUsdcPosition, type AaveUserReserveData } from "./aaveUsdc";
 import { estimateProtocolFees, type FeeEstimateInputRow } from "./feeEstimator";
 import { getMarketPriceSnapshot } from "./marketPricing";
 import { linkUserWallet, listUserWallets } from "./userWallets";
@@ -659,6 +660,64 @@ function stripUsername<T extends { username: string }>(row: T): Omit<T, "usernam
   return rest;
 }
 
+function buildPublicAaveRow(snapshot: AaveUserReserveData) {
+  const now = new Date().toISOString();
+  const hasSupply = snapshot.queryStatus === "ok" && snapshot.suppliedUsdc > 0;
+  return {
+    id: `public_aave_${snapshot.chain}_${snapshot.walletAddress}`,
+    executionId: `public_aave_${snapshot.chain}_${snapshot.walletAddress}`,
+    username: "guest",
+    protocol: "Aave",
+    chain: snapshot.chain,
+    asset: "USDC",
+    poolAddress: snapshot.poolAddress,
+    positionToken: snapshot.aTokenAddress,
+    positionRaw: snapshot.suppliedUsdcRaw,
+    amountUsd: snapshot.suppliedUsdc,
+    depositTxHash: `public:${snapshot.walletAddress}:${snapshot.chain}`,
+    lastSyncedAt: now,
+    status: "active" as const,
+    openedAt: now,
+    closedAt: null,
+    onchainDataJson: JSON.stringify({
+      source: "public-aave",
+      walletAddress: snapshot.walletAddress,
+      chain: snapshot.chain,
+      suppliedUsdc: snapshot.suppliedUsdc,
+      suppliedUsdcRaw: snapshot.suppliedUsdcRaw,
+      walletUsdc: snapshot.walletUsdc,
+      walletUsdcRaw: snapshot.walletUsdcRaw,
+      allowanceRaw: snapshot.allowanceRaw,
+      healthFactor: snapshot.healthFactor,
+      totalCollateralBase: snapshot.totalCollateralBase,
+      totalDebtBase: snapshot.totalDebtBase,
+      queryStatus: snapshot.queryStatus
+    }),
+    principalUsd: snapshot.suppliedUsdc,
+    currentValueUsd: snapshot.suppliedUsdc,
+    unrealizedPnlUsd: 0,
+    realizedPnlUsd: null,
+    feesPaidUsd: null,
+    netApy: snapshot.supplyApy,
+    entryPrice: null,
+    expectedApr: snapshot.supplyApy,
+    protocolPositionId: snapshot.aTokenAddress,
+    verify: {
+      status: snapshot.queryStatus === "rpc_error" ? "rpc_error" : hasSupply ? "verified" : "closed_onchain",
+      onchainAmountUsd: snapshot.queryStatus === "rpc_error" ? null : snapshot.suppliedUsdc,
+      onchainRaw: snapshot.queryStatus === "rpc_error" ? null : snapshot.suppliedUsdcRaw,
+      driftPct: snapshot.queryStatus === "rpc_error" ? null : 0,
+      verifiedAt: now,
+      detail:
+        snapshot.queryStatus === "rpc_error"
+          ? snapshot.queryError ?? "Aave 공개 조회 실패"
+          : hasSupply
+            ? `Aave/${snapshot.chain} 공개 조회 완료 · ${snapshot.suppliedUsdc.toFixed(2)} USDC`
+            : `Aave/${snapshot.chain} 공개 조회에서 예치 잔고를 찾지 못했습니다.`
+    }
+  };
+}
+
 function buildProtocolMixFromExecutionPayload(
   payload: Awaited<ReturnType<typeof executeJob>>["payload"],
   depositUsd: number
@@ -733,6 +792,79 @@ app.get("/api/positions", requireAuth(["orchestrator", "security", "viewer"]), a
     res.status(500).json({
       ok: false,
       message: error instanceof Error ? error.message : "onchain positions query failed"
+    });
+  }
+});
+
+app.get("/api/public/positions", async (req, res) => {
+  const evmWalletAddress = typeof req.query.evmWalletAddress === "string" ? req.query.evmWalletAddress.trim() : "";
+  const solanaWalletAddress = typeof req.query.solanaWalletAddress === "string" ? req.query.solanaWalletAddress.trim() : "";
+  if (!evmWalletAddress && !solanaWalletAddress) {
+    res.status(400).json({ ok: false, message: "walletAddress required" });
+    return;
+  }
+  try {
+    const rows = [];
+    if (evmWalletAddress) {
+      for (const chain of ["Arbitrum", "Base", "Ethereum"] as const) {
+        try {
+          const snapshot = await getAaveUsdcPosition(chain, evmWalletAddress);
+          rows.push(buildPublicAaveRow(snapshot));
+        } catch (error) {
+          const now = new Date().toISOString();
+          rows.push({
+            id: `public_aave_${chain}_${evmWalletAddress}`,
+            executionId: `public_aave_${chain}_${evmWalletAddress}`,
+            username: "guest",
+            protocol: "Aave",
+            chain,
+            asset: "USDC",
+            poolAddress: null,
+            positionToken: null,
+            positionRaw: null,
+            amountUsd: 0,
+            depositTxHash: `public:${evmWalletAddress}:${chain}`,
+            lastSyncedAt: now,
+            status: "active" as const,
+            openedAt: now,
+            closedAt: null,
+            onchainDataJson: JSON.stringify({
+              source: "public-aave",
+              walletAddress: evmWalletAddress,
+              chain,
+              queryStatus: "rpc_error",
+              queryError: error instanceof Error ? error.message : String(error)
+            }),
+            principalUsd: 0,
+            currentValueUsd: 0,
+            unrealizedPnlUsd: 0,
+            realizedPnlUsd: null,
+            feesPaidUsd: null,
+            netApy: null,
+            entryPrice: null,
+            expectedApr: null,
+            protocolPositionId: null,
+            verify: {
+              status: "rpc_error",
+              onchainAmountUsd: null,
+              onchainRaw: null,
+              driftPct: null,
+              verifiedAt: now,
+              detail: error instanceof Error ? error.message : "Aave 공개 조회 실패"
+            }
+          });
+        }
+      }
+    }
+    if (solanaWalletAddress) {
+      const orcaRows = await listOrcaWalletPositions("guest", solanaWalletAddress);
+      rows.push(...orcaRows);
+    }
+    res.json({ ok: true, positions: rows });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      message: error instanceof Error ? error.message : "public onchain positions query failed"
     });
   }
 });

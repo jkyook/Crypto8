@@ -1068,6 +1068,10 @@ async function authedFetch(path: string, init: RequestInit = {}): Promise<Respon
   return second;
 }
 
+async function publicFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  return fetchWithLocal8787Fallback(path, init, "공개 조회");
+}
+
 async function readErrorFromApiResponse(response: Response, fallback: string): Promise<string> {
   const text = await response.text().catch(() => "");
   if (response.status === 403 && /access forbidden/i.test(text)) {
@@ -1287,6 +1291,30 @@ export async function listOnchainPositions(
   }
   const suffix = query.toString();
   const response = await authedFetch(`/api/positions${suffix ? `?${suffix}` : ""}`, init);
+  if (!response.ok) {
+    const raw = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(raw?.message ?? "온체인 포지션 조회 실패");
+  }
+  const data = (await response.json()) as { positions?: OnchainPositionPayload[] };
+  return data.positions ?? [];
+}
+
+export async function listPublicOnchainPositions(
+  init: Pick<RequestInit, "signal"> = {},
+  opts?: { walletAddress?: string; solanaWalletAddress?: string; evmWalletAddress?: string }
+): Promise<OnchainPositionPayload[]> {
+  const query = new URLSearchParams();
+  if (opts?.walletAddress) {
+    query.set("walletAddress", opts.walletAddress);
+  }
+  if (opts?.solanaWalletAddress) {
+    query.set("solanaWalletAddress", opts.solanaWalletAddress);
+  }
+  if (opts?.evmWalletAddress) {
+    query.set("evmWalletAddress", opts.evmWalletAddress);
+  }
+  const suffix = query.toString();
+  const response = await publicFetch(`/api/public/positions${suffix ? `?${suffix}` : ""}`, init);
   if (!response.ok) {
     const raw = (await response.json().catch(() => null)) as { message?: string } | null;
     throw new Error(raw?.message ?? "온체인 포지션 조회 실패");
