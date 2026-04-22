@@ -24,7 +24,9 @@ function buildTxId(prefix: string, context: AdapterExecutionContext): string {
   return `${prefix}_${context.jobId}_${Date.now()}`;
 }
 
-type OrcaAlloc = { action: string; weight: number };
+function normalizeLabel(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
 
 const ORCA_ALLOC_TABLE: Record<string, OrcaAlloc[]> = {
   "Multi:multi-stable": [{ action: "USDC-USDT Whirlpool (0.01%)", weight: 0.2 }],

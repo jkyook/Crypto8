@@ -81,6 +81,7 @@ export function ExecutionEventsDashboard({ focusJobId }: Props) {
             <th>Job</th>
             <th>메시지</th>
             <th>Idempotency</th>
+            <th>simulationId</th>
             <th>txId</th>
             <th>페이로드</th>
           </tr>
@@ -98,6 +99,15 @@ export function ExecutionEventsDashboard({ focusJobId }: Props) {
                 </td>
                 <td>{item.message}</td>
                 <td>{item.idempotencyKey ?? "—"}</td>
+                <td>
+                  {item.payload?.simulationId ? (
+                    <code className="table-mono table-mono--sm table-mono--clip" title={item.payload.simulationId}>
+                      {compactTxId(item.payload.simulationId)}
+                    </code>
+                  ) : (
+                    "—"
+                  )}
+                </td>
                 <td>
                   {item.txId ? (
                     <code className="table-mono table-mono--sm table-mono--clip" title={item.txId}>
@@ -119,7 +129,7 @@ export function ExecutionEventsDashboard({ focusJobId }: Props) {
               </tr>
               {openPayloadId === item.id && item.payload ? (
                 <tr key={`${item.id}-payload`} className="execution-event-payload-row">
-                  <td colSpan={7}>
+                  <td colSpan={8}>
                     <pre className="execution-event-payload-pre">{JSON.stringify(item.payload, null, 2)}</pre>
                   </td>
                 </tr>

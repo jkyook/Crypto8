@@ -207,8 +207,6 @@ export function OrchestratorBoard({
           if (!hasWallet) {
             throw new Error("REAL-RUN은 실제 지갑 연결이 필요합니다.");
           }
-          const prices = await fetchMarketPrices({ signal: controller.signal });
-          if (controller.signal.aborted) return;
           const evmAddress = evmAccount?.address as `0x${string}` | undefined;
           const [solanaPortfolio, evmPortfolios] = await Promise.all([
             solanaAccount?.address
@@ -296,8 +294,16 @@ export function OrchestratorBoard({
           if (!nextAssets.some((row) => row.symbol === selectedSourceAsset) && nextAssets[0]) {
             setSelectedSourceAsset(nextAssets[0].symbol);
           }
+        } else if (canUseServerJobs) {
+          const rows = await listAccountAssets({ signal: controller.signal }, "dry-run");
+          if (controller.signal.aborted) return;
+          setAccountAssets(rows);
+          setAssetSourceLabel("가상 잔고");
+          if (!rows.some((row) => row.symbol === selectedSourceAsset) && rows[0]) {
+            setSelectedSourceAsset(rows[0].symbol);
+          }
         } else {
-          const rows = await listAccountAssets({ signal: controller.signal });
+          const rows = buildFallbackDryRunAssets(prices.prices, prices.source, prices.updatedAt);
           if (controller.signal.aborted) return;
           setAccountAssets(rows);
           saveCachedAccountAssets(cacheScope, rows);

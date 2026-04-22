@@ -2824,6 +2824,101 @@ body[data-theme="light"] .market-apr-ts-chart--empty {
   font-size: 1.05rem;
 }
 
+.deposit-aave-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(123, 232, 195, 0.24);
+  background: rgba(3, 18, 20, 0.44);
+}
+
+.deposit-aave-panel h3 {
+  margin: 0;
+  color: #f3f8ff;
+  font-size: 1rem;
+}
+
+.deposit-aave-panel p:not(.section-eyebrow) {
+  margin: 6px 0 0;
+  color: var(--c8-text-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.deposit-aave-panel .deposit-asset-summary {
+  background:
+    linear-gradient(180deg, rgba(123, 232, 195, 0.08), rgba(0, 0, 0, 0.16)),
+    rgba(0, 0, 0, 0.22);
+}
+
+.deposit-aave-panel .deposit-asset-summary.ok {
+  border-color: rgba(123, 232, 195, 0.38);
+}
+
+.deposit-aave-panel .deposit-asset-summary.warn {
+  border-color: rgba(255, 184, 107, 0.46);
+}
+
+.deposit-aave-panel .deposit-asset-summary strong {
+  font-size: 1rem;
+}
+
+.deposit-aave-panel .deposit-asset-summary em {
+  line-height: 1.45;
+}
+
+.deposit-aave-live-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(123, 232, 195, 0.35);
+  background: linear-gradient(180deg, rgba(123, 232, 195, 0.14), rgba(0, 0, 0, 0.18));
+}
+
+.deposit-aave-live-result-label {
+  color: #d5eadf;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.deposit-aave-live-result-code {
+  font-size: 0.76rem;
+}
+
+.deposit-aave-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.deposit-aave-metrics span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.deposit-aave-metrics em {
+  color: var(--c8-text-muted);
+  font-size: 0.72rem;
+  font-style: normal;
+}
+
+.deposit-aave-metrics strong,
+.deposit-aave-metrics code {
+  overflow-wrap: anywhere;
+  color: #f3f8ff;
+  font-size: 0.86rem;
+}
+
 .deposit-swap-route-list {
   display: grid;
   gap: 8px;
@@ -2927,6 +3022,35 @@ body[data-theme="light"] .market-apr-ts-chart--empty {
 .portfolio-overview-metrics strong,
 .portfolio-overview-risk strong {
   font-size: 1.25rem;
+}
+
+.portfolio-section-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: end;
+  margin-top: 18px;
+  margin-bottom: 10px;
+}
+
+.portfolio-section-head h3 {
+  margin: 0;
+  font-size: 1.08rem;
+}
+
+.portfolio-section-head p {
+  margin: 6px 0 0;
+  color: var(--c8-text-muted);
+  font-size: 0.84rem;
+}
+
+.portfolio-section-head .portfolio-overview-metrics {
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(120px, 1fr);
+}
+
+.portfolio-section-head .portfolio-overview-metrics div {
+  padding: 12px 14px;
 }
 
 .chain-exposure-card {
@@ -3166,6 +3290,40 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
 .protocol-detail-table th:nth-child(6),
 .protocol-detail-table td:nth-child(6) {
   width: 32%;
+}
+
+.protocol-detail-table th:nth-child(7),
+.protocol-detail-table td:nth-child(7) {
+  width: 13%;
+}
+
+.protocol-detail-table th:nth-child(8),
+.protocol-detail-table td:nth-child(8) {
+  width: 18%;
+  text-align: left;
+}
+
+.protocol-detail-table td .badge {
+  white-space: nowrap;
+}
+
+.protocol-detail-table td:nth-child(8) {
+  color: var(--c8-text-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.protocol-detail-table td:nth-child(8) {
+  padding-inline: 10px 12px;
+}
+
+.protocol-detail-table td:nth-child(8) {
+  word-break: break-word;
+}
+
+.portfolio-onchain-table td .badge {
+  justify-content: center;
+  max-width: 100%;
 }
 
 .protocol-detail-table .protocol-inline-transfer {
@@ -4262,6 +4420,8 @@ body[data-theme="light"] .selected-product-ticket,
 body[data-theme="light"] .deposit-risk-check,
 body[data-theme="light"] .deposit-asset-summary,
 body[data-theme="light"] .deposit-swap-route-row,
+body[data-theme="light"] .deposit-aave-panel,
+body[data-theme="light"] .deposit-aave-metrics span,
 body[data-theme="light"] .portfolio-overview-metrics div,
 body[data-theme="light"] .portfolio-overview-risk,
 body[data-theme="light"] .chain-exposure-card,
@@ -4272,8 +4432,33 @@ body[data-theme="light"] .product-pool-item {
   border-color: rgba(170, 194, 220, 0.45);
 }
 
+body[data-theme="light"] .deposit-aave-live-result {
+  border-color: rgba(87, 156, 122, 0.25);
+  background: linear-gradient(180deg, rgba(123, 232, 195, 0.16), rgba(255, 255, 255, 0.92));
+}
+
+body[data-theme="light"] .deposit-aave-live-result-label {
+  color: #2e5d46;
+}
+
 body[data-theme="light"] .deposit-risk-check strong {
   color: #142438;
+}
+
+body[data-theme="light"] .portfolio-section-head p,
+body[data-theme="light"] .deposit-aave-panel p:not(.section-eyebrow),
+body[data-theme="light"] .deposit-aave-panel .deposit-asset-summary em {
+  color: #577390;
+}
+
+body[data-theme="light"] .deposit-aave-panel .deposit-asset-summary {
+  background:
+    linear-gradient(180deg, rgba(123, 232, 195, 0.12), rgba(255, 255, 255, 0.74)),
+    rgba(230, 240, 252, 0.76);
+}
+
+body[data-theme="light"] .portfolio-section-head .portfolio-overview-metrics div {
+  background: rgba(230, 240, 252, 0.82);
 }
 
 body[data-theme="light"] .flow-step {
@@ -4731,6 +4916,13 @@ body[data-theme="light"] .brand-subtitle {
   line-height: 1.45;
 }
 
+.execution-summary-status-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .execution-summary-k {
   display: inline-block;
   min-width: 5.5rem;
@@ -4742,6 +4934,92 @@ body[data-theme="light"] .brand-subtitle {
 .execution-summary-code {
   font-size: 0.78rem;
   word-break: break-all;
+}
+
+.execution-summary-status-pill {
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.execution-summary-status-pill.badge-low {
+  box-shadow: 0 0 0 1px rgba(123, 232, 195, 0.2) inset;
+}
+
+.execution-summary-status-pill.badge-medium {
+  box-shadow: 0 0 0 1px rgba(255, 184, 107, 0.18) inset;
+}
+
+.execution-summary-status-pill.badge-high,
+.execution-summary-status-pill.badge-critical {
+  box-shadow: 0 0 0 1px rgba(255, 117, 117, 0.2) inset;
+}
+
+.deposit-aave-copy-btn {
+  padding: 6px 10px;
+  font-size: 0.76rem;
+}
+
+.runtime-mode-switcher {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(110, 150, 210, 0.2);
+  background: rgba(8, 17, 34, 0.48);
+}
+
+.runtime-live-flag-switcher {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(110, 150, 210, 0.2);
+  background: rgba(8, 17, 34, 0.36);
+}
+
+.runtime-mode-switcher-label {
+  font-size: 0.84rem;
+  color: #d5e4f2;
+}
+
+.runtime-scope-sub--error {
+  color: #ffb6b6;
+}
+
+.runtime-live-blockers {
+  margin: 0;
+  padding-left: 18px;
+  color: #ffcfaf;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.runtime-live-blockers li + li {
+  margin-top: 4px;
+}
+
+body[data-theme="light"] .runtime-mode-switcher {
+  border-color: rgba(170, 194, 220, 0.45);
+  background: rgba(248, 252, 255, 0.95);
+}
+
+body[data-theme="light"] .runtime-live-flag-switcher {
+  border-color: rgba(170, 194, 220, 0.45);
+  background: rgba(248, 252, 255, 0.92);
+}
+
+body[data-theme="light"] .runtime-mode-switcher-label {
+  color: #24425d;
+}
+
+body[data-theme="light"] .runtime-live-blockers {
+  color: #8a4f19;
 }
 
 .execution-payload-pre {
@@ -5483,6 +5761,69 @@ body[data-theme="light"] .ops-status-rail button {
   .product-pool-item--header {
     display: none;
   }
+
+  .portfolio-section-head {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .portfolio-section-head .portfolio-overview-metrics {
+    grid-auto-flow: row;
+    grid-auto-columns: unset;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .portfolio-onchain-table,
+  .portfolio-onchain-table thead,
+  .portfolio-onchain-table tbody,
+  .portfolio-onchain-table tr,
+  .portfolio-onchain-table th,
+  .portfolio-onchain-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .portfolio-onchain-table thead {
+    position: absolute;
+    left: -9999px;
+    top: -9999px;
+  }
+
+  .portfolio-onchain-table tr {
+    margin-bottom: 12px;
+    padding: 12px;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(0, 0, 0, 0.18);
+  }
+
+  .portfolio-onchain-table td {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 7px 0;
+    text-align: left;
+    border: 0;
+  }
+
+  .portfolio-onchain-table td::before {
+    content: attr(data-label);
+    color: var(--c8-text-muted);
+    font-size: 0.76rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    flex: 0 0 96px;
+  }
+
+  .portfolio-onchain-table td:nth-child(8) {
+    color: var(--c8-text);
+    padding-right: 0;
+  }
+
+  .portfolio-onchain-table td:nth-child(8)::before {
+    flex-basis: 72px;
+  }
 }
 
 /* DeFi 운영 관제 패널 */
@@ -5958,4 +6299,560 @@ body[data-theme="light"] .exec-verify-input {
   background: #fff;
   border-color: #aec4e0;
   color: #122131;
+}
+
+/* ── 포지션 회계 패널 (P1) ─────────────────────────────────────────── */
+.accounting-panel {
+  margin-top: 14px;
+  padding: 16px;
+  border-radius: var(--c8-radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(4, 12, 22, 0.45);
+}
+
+.accounting-panel h3 {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--c8-muted);
+  margin: 0 0 12px;
+}
+
+.accounting-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.accounting-kpi {
+  min-height: 72px;
+  padding: 10px 12px;
+  border-radius: var(--c8-radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.02);
+  display: grid;
+  align-content: space-between;
+}
+
+.accounting-kpi strong {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+/* PnL 색상 */
+.pnl-positive strong { color: #4ade80; }
+.pnl-negative strong { color: #f87171; }
+.pnl-neutral strong  { color: var(--c8-text); }
+
+/* 포지션별 손익 목록 */
+.position-pnl-list {
+  margin-top: 6px;
+}
+
+.position-pnl-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 0.82rem;
+  flex-wrap: wrap;
+}
+
+.position-pnl-row:last-child {
+  border-bottom: none;
+}
+
+.position-pnl-id {
+  flex: 1;
+  color: var(--c8-text);
+  font-weight: 500;
+}
+
+.position-pnl-principal {
+  color: var(--c8-muted);
+  min-width: 72px;
+  text-align: right;
+}
+
+.position-pnl-value {
+  font-weight: 600;
+  min-width: 80px;
+  text-align: right;
+}
+
+.position-pnl-apy {
+  color: var(--c8-muted);
+  font-size: 0.78rem;
+}
+
+/* 라이트 모드 보정 */
+body[data-theme="light"] .accounting-panel {
+  background: rgba(240, 246, 255, 0.6);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+
+body[data-theme="light"] .accounting-kpi {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+
+body[data-theme="light"] .pnl-positive strong { color: #16a34a; }
+body[data-theme="light"] .pnl-negative strong { color: #dc2626; }
+
+@media (max-width: 900px) {
+  .accounting-kpi-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .accounting-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ── NetworkSettingsPanel ──────────────────────────────────────── */
+.orchestrator-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.orchestrator-card-header h2 {
+  margin: 0;
+}
+
+.net-settings-trigger-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: var(--c8-radius-sm);
+  border: 1px solid rgba(91, 140, 255, 0.35);
+  background: rgba(91, 140, 255, 0.08);
+  color: var(--c8-accent);
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.net-settings-trigger-btn:hover {
+  background: rgba(91, 140, 255, 0.16);
+  border-color: rgba(91, 140, 255, 0.6);
+}
+
+.net-mode-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.net-mode-badge.badge--live {
+  background: rgba(251, 113, 133, 0.2);
+  color: #fb7185;
+  border: 1px solid rgba(251, 113, 133, 0.4);
+}
+
+.net-mode-badge.badge--dry {
+  background: rgba(147, 197, 253, 0.12);
+  color: #93c5fd;
+  border: 1px solid rgba(147, 197, 253, 0.3);
+}
+
+/* overlay */
+.net-settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 10, 20, 0.75);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+
+.net-settings-panel {
+  background: #0d1829;
+  border: 1px solid rgba(91, 140, 255, 0.3);
+  border-radius: var(--c8-radius-lg);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  width: 100%;
+  max-width: 540px;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.net-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.net-settings-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: #ecf2ff;
+}
+
+.net-settings-close {
+  background: none;
+  border: none;
+  color: var(--c8-text-muted);
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.net-settings-close:hover {
+  color: #ecf2ff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.net-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.net-settings-section:last-of-type {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.net-settings-section-title {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--c8-text-muted);
+}
+
+/* mode toggle */
+.net-settings-mode-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.net-settings-mode-btn {
+  flex: 1;
+  padding: 10px 0;
+  border-radius: var(--c8-radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--c8-text-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.net-settings-mode-btn:hover:not(:disabled) {
+  border-color: rgba(147, 197, 253, 0.4);
+  color: #93c5fd;
+  background: rgba(147, 197, 253, 0.06);
+}
+
+.net-settings-mode-btn.active {
+  background: rgba(147, 197, 253, 0.12);
+  border-color: rgba(147, 197, 253, 0.5);
+  color: #93c5fd;
+}
+
+.net-settings-mode-btn.active.active--live {
+  background: rgba(251, 113, 133, 0.12);
+  border-color: rgba(251, 113, 133, 0.5);
+  color: #fb7185;
+}
+
+.net-settings-spinner {
+  color: var(--c8-text-muted);
+  animation: spin 0.9s linear infinite;
+  display: inline-block;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* prereqs */
+.net-settings-prereq-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.net-settings-prereq {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: var(--c8-radius-sm);
+  font-size: 0.8rem;
+  border: 1px solid transparent;
+}
+
+.net-settings-prereq.ok {
+  background: rgba(52, 211, 153, 0.07);
+  border-color: rgba(52, 211, 153, 0.25);
+  color: #6ee7b7;
+}
+
+.net-settings-prereq.warn {
+  background: rgba(251, 191, 36, 0.07);
+  border-color: rgba(251, 191, 36, 0.25);
+  color: #fcd34d;
+}
+
+.prereq-icon {
+  font-size: 0.9rem;
+  flex-shrink: 0;
+}
+
+/* hint */
+.net-settings-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--c8-text-muted);
+  line-height: 1.5;
+}
+
+.net-settings-hint--warn {
+  color: #fcd34d;
+}
+
+.net-settings-hint code {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+
+.net-settings-badge {
+  margin: 0;
+  font-size: 0.75rem;
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  align-self: flex-start;
+}
+
+.badge--override {
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  color: #fcd34d;
+}
+
+/* protocol list */
+.net-settings-protocol-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.net-settings-protocol-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: var(--c8-radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  gap: 10px;
+}
+
+.net-settings-protocol-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.protocol-label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #ecf2ff;
+  white-space: nowrap;
+}
+
+.protocol-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+}
+
+.protocol-badge.badge--live {
+  background: rgba(251, 113, 133, 0.18);
+  border: 1px solid rgba(251, 113, 133, 0.4);
+  color: #fb7185;
+}
+
+.protocol-badge.badge--dry {
+  background: rgba(147, 197, 253, 0.1);
+  border: 1px solid rgba(147, 197, 253, 0.25);
+  color: #93c5fd;
+}
+
+.protocol-source {
+  font-size: 0.72rem;
+  color: var(--c8-text-muted);
+}
+
+.net-settings-protocol-btns {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.toggle-btn {
+  padding: 3px 10px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: none;
+  color: var(--c8-text-muted);
+  font-size: 0.76rem;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.toggle-btn:hover:not(:disabled) {
+  border-color: rgba(147, 197, 253, 0.4);
+  color: #93c5fd;
+}
+
+.toggle-btn.active {
+  background: rgba(91, 140, 255, 0.18);
+  border-color: rgba(91, 140, 255, 0.45);
+  color: var(--c8-accent);
+}
+
+.toggle-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.net-settings-error {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--c8-radius-sm);
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+  font-size: 0.82rem;
+}
+
+/* ── NetworkSettingsPanel 개선 ────────────────────────────────── */
+.net-settings-mode-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.net-settings-mode-btn small {
+  font-size: 0.68rem;
+  font-weight: 400;
+  opacity: 0.75;
+  letter-spacing: 0;
+}
+
+/* readiness chip */
+.readiness-chip {
+  font-size: 0.66rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+.chip--ready {
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  color: #6ee7b7;
+}
+
+.chip--blocked {
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  color: #fcd34d;
+}
+
+.chip--unimpl {
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  color: #94a3b8;
+}
+
+/* protocol row improvements */
+.protocol-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.protocol-chain {
+  font-size: 0.72rem;
+  color: var(--c8-text-muted);
+}
+
+.protocol-status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 3px;
+}
+
+.protocol-blocker {
+  font-size: 0.71rem;
+  color: #fcd34d;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.net-settings-protocol-row.row--unimpl {
+  opacity: 0.55;
+}
+
+/* prereq sub-text */
+.net-settings-prereq div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 0.78rem;
+}
+
+.net-settings-prereq code {
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 0.7rem;
+  opacity: 0.85;
 }

@@ -163,13 +163,14 @@ export type ExecutionEventPayload = {
   mode: "dry-run" | "live";
   correlationId?: string;
   positionId?: string;
+  simulationId?: string;
   adapterResults?: Array<{
     protocol: string;
     chain: string;
     action: string;
     allocationUsd: number;
     txId: string;
-    status: "simulated" | "submitted";
+    status: "simulated" | "submitted" | "confirmed" | "unsupported" | "failed";
   }>;
   skippedProtocols?: Array<{
     protocol: string;
@@ -181,6 +182,7 @@ export type ExecutionEventPayload = {
     reason: string;
   }>;
   retries?: number;
+  errorMessage?: string;
 };
 
 export type ProtocolExecutionReadiness = {
@@ -257,6 +259,34 @@ export type DepositPositionPayload = {
 
 export type AccountAssetSymbol = "USDC" | "USDT" | "ETH" | "SOL" | "MSOL";
 
+export type AaveUsdcChain = "Arbitrum" | "Base";
+
+export type AaveTxRequest = {
+  kind: "approve" | "supply" | "withdraw";
+  chain: AaveUsdcChain;
+  chainId: number;
+  from: string;
+  to: string;
+  data: string;
+  value: "0x0";
+  description: string;
+};
+
+export type AaveUsdcPositionSnapshot = {
+  chain: AaveUsdcChain;
+  chainId: number;
+  walletAddress: string;
+  poolAddress: string;
+  underlyingAddress: string;
+  aTokenAddress: string;
+  walletUsdc: number;
+  walletUsdcRaw: string;
+  allowanceRaw: string;
+  suppliedUsdc: number;
+  suppliedUsdcRaw: string;
+  liquidityRateRay: string;
+};
+
 export type AccountAssetBalance = {
   symbol: AccountAssetSymbol;
   chain: string;
@@ -305,9 +335,22 @@ export type MarketPriceSnapshot = {
   source: string;
 };
 
+export type LiveProtocol = "aave" | "uniswap" | "orca" | "aerodrome" | "raydium" | "curve";
+
+export type LiveAdapterFlagMap = Record<LiveProtocol, boolean>;
+export type LiveAdapterSourceMap = Record<LiveProtocol, "env" | "override">;
+
+export type ProtocolReadiness = {
+  ready: boolean;
+  implemented: boolean;
+  blockers: string[];
+};
+
 export type RuntimeInfo = {
   executionMode: "dry-run" | "live";
   executionModeRequested: string;
+  executionModeOverride?: "dry-run" | "live" | null;
+  executionModeSource?: "env" | "override";
   liveExecutionConfirmed: boolean;
   solanaOrcaLiveReady: boolean;
   walletUiPolicy: string;
@@ -614,12 +657,53 @@ export async function login(username: string, password: string): Promise<AuthSes
 }
 
 export async function loginWithWallet(walletAddress: string): Promise<AuthSession> {
+  const challengeResponse = await fetchWithLocal8787Fallback(
+    "/api/auth/wallet/challenge",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ walletAddress })
+    },
+    "지갑 로그인 메시지 생성"
+  );
+  const challenge = (await readJsonFromApiResponse(challengeResponse, "지갑 로그인 메시지 생성")) as {
+    ok?: boolean;
+    nonce?: string;
+    message?: string;
+  };
+  if (!challengeResponse.ok || !challenge.nonce || !challenge.message) {
+    throw new Error(typeof challenge.message === "string" ? challenge.message : "지갑 로그인 메시지 생성 실패");
+  }
+  const provider = (window as {
+    phantom?: {
+      solana?: {
+        isPhantom?: boolean;
+        signMessage?: (message: Uint8Array) => Promise<Uint8Array | { signature?: Uint8Array | number[] }>;
+      };
+    };
+  }).phantom?.solana;
+  if (!provider?.isPhantom || typeof provider.signMessage !== "function") {
+    throw new Error("Phantom 지갑 서명이 필요합니다.");
+  }
+  const signed = await provider.signMessage(new TextEncoder().encode(challenge.message));
+  const signatureBytes =
+    signed instanceof Uint8Array
+      ? signed
+      : signed.signature instanceof Uint8Array
+        ? signed.signature
+        : Array.isArray(signed.signature)
+          ? new Uint8Array(signed.signature)
+          : null;
+  if (!signatureBytes) {
+    throw new Error("지갑 서명 결과를 읽지 못했습니다.");
+  }
+  const signature = btoa(String.fromCharCode(...signatureBytes));
   const response = await fetchWithLocal8787Fallback(
     "/api/auth/wallet",
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ walletAddress })
+      body: JSON.stringify({ walletAddress, nonce: challenge.nonce, signature })
     },
     "지갑 로그인"
   );
@@ -724,8 +808,11 @@ export async function listSelfRegistrations(): Promise<SelfRegistrationRow[]> {
   return Array.isArray(regs) ? regs : [];
 }
 
-export async function listAccountAssets(init: Pick<RequestInit, "signal"> = {}): Promise<AccountAssetBalance[]> {
-  const response = await authedFetch("/api/account/assets", init);
+export async function listAccountAssets(
+  init: Pick<RequestInit, "signal"> = {},
+  mode: "dry-run" | "live" = "live"
+): Promise<AccountAssetBalance[]> {
+  const response = await authedFetch(`/api/account/assets?mode=${mode}`, init);
   const raw = (await readJsonFromApiResponse(response, "계정 자산 조회")) as {
     message?: string;
     assets?: AccountAssetBalance[];
@@ -792,10 +879,7 @@ export async function linkAccountWallet(
 }
 
 export async function fetchMarketPrices(init: Pick<RequestInit, "signal"> = {}): Promise<MarketPriceSnapshot> {
-  const response = await fetch(buildApiUrl(API_BASE, "/api/market/prices"), {
-    signal: init.signal,
-    credentials: "include"
-  });
+  const response = await fetchWithLocal8787Fallback("/api/market/prices", { signal: init.signal }, "시장 가격 조회");
   const raw = (await readJsonFromApiResponse(response, "시장 가격 조회")) as MarketPriceSnapshot & { ok?: boolean; message?: string };
   if (!response.ok) {
     throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "시장 가격 조회 실패");
@@ -1001,6 +1085,7 @@ export type ExecuteJobResponse = {
   message: string;
   requestId?: string;
   txId?: string;
+  simulationId?: string;
   summary?: string;
   payload?: ExecutionEventPayload;
 };
@@ -1119,6 +1204,15 @@ export async function listDepositPositions(init: Pick<RequestInit, "signal"> = {
   return data.positions ?? [];
 }
 
+export async function listOnchainPositions(init: Pick<RequestInit, "signal"> = {}): Promise<OnchainPositionPayload[]> {
+  const response = await authedFetch("/api/positions", init);
+  if (!response.ok) {
+    throw new Error("온체인 포지션 조회 실패");
+  }
+  const data = (await response.json()) as { positions?: OnchainPositionPayload[] };
+  return data.positions ?? [];
+}
+
 export type PortfolioWithdrawLine = {
   id: string;
   amountUsd: number;
@@ -1165,14 +1259,14 @@ export async function createDepositPositionRemote(payload: {
   return data.position;
 }
 
-export async function withdrawDepositRemote(amountUsd: number): Promise<{ withdrawnUsd: number }> {
+export async function withdrawDepositRemote(amountUsd: number): Promise<{ withdrawnUsd: number; mode?: string }> {
   const response = await authedFetch("/api/portfolio/withdraw", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ amountUsd })
   });
   const text = await response.text();
-  let data = {} as { ok?: boolean; withdrawnUsd?: number; message?: string };
+  let data = {} as { ok?: boolean; withdrawnUsd?: number; message?: string; mode?: string };
   try {
     if (text) {
       data = JSON.parse(text) as typeof data;
@@ -1198,7 +1292,7 @@ export async function withdrawDepositRemote(amountUsd: number): Promise<{ withdr
     throw new Error("인출 반영 실패");
   }
   const withdrawnUsd = typeof data.withdrawnUsd === "number" ? data.withdrawnUsd : 0;
-  return { withdrawnUsd };
+  return { withdrawnUsd, mode: data.mode };
 }
 
 export async function withdrawProtocolExposureRemote(payload: {
@@ -1206,14 +1300,14 @@ export async function withdrawProtocolExposureRemote(payload: {
   protocol: string;
   chain?: string;
   pool?: string;
-}): Promise<{ withdrawnUsd: number }> {
+}): Promise<{ withdrawnUsd: number; mode?: string }> {
   const response = await authedFetch("/api/portfolio/withdraw-protocol", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
   const text = await response.text();
-  let data = {} as { ok?: boolean; withdrawnUsd?: number; message?: string };
+  let data = {} as { ok?: boolean; withdrawnUsd?: number; message?: string; mode?: string };
   try {
     if (text) {
       data = JSON.parse(text) as typeof data;
@@ -1232,20 +1326,20 @@ export async function withdrawProtocolExposureRemote(payload: {
     throw new Error(msg ?? "프로토콜별 인출 반영 실패");
   }
   const withdrawnUsd = typeof data.withdrawnUsd === "number" ? data.withdrawnUsd : 0;
-  return { withdrawnUsd };
+  return { withdrawnUsd, mode: data.mode };
 }
 
 export async function withdrawProductDepositRemote(payload: {
   amountUsd: number;
   productName: string;
-}): Promise<{ withdrawnUsd: number }> {
+}): Promise<{ withdrawnUsd: number; mode?: string }> {
   const response = await authedFetch("/api/portfolio/withdraw-product", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
   const text = await response.text();
-  let data = {} as { ok?: boolean; withdrawnUsd?: number; message?: string };
+  let data = {} as { ok?: boolean; withdrawnUsd?: number; message?: string; mode?: string };
   try {
     if (text) {
       data = JSON.parse(text) as typeof data;
@@ -1264,7 +1358,108 @@ export async function withdrawProductDepositRemote(payload: {
     throw new Error(msg ?? "상품별 인출 반영 실패");
   }
   const withdrawnUsd = typeof data.withdrawnUsd === "number" ? data.withdrawnUsd : 0;
-  return { withdrawnUsd };
+  return { withdrawnUsd, mode: data.mode };
+}
+
+export async function fetchAaveUsdcPosition(
+  chain: AaveUsdcChain,
+  walletAddress: string,
+  init: Pick<RequestInit, "signal"> = {}
+): Promise<AaveUsdcPositionSnapshot> {
+  const query = new URLSearchParams({ chain, walletAddress });
+  const response = await authedFetch(`/api/aave/usdc/position?${query.toString()}`, init);
+  const raw = (await readJsonFromApiResponse(response, "Aave USDC 포지션 조회")) as {
+    message?: string;
+    position?: AaveUsdcPositionSnapshot;
+  };
+  if (!response.ok || !raw.position) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "Aave USDC 포지션 조회 실패");
+  }
+  return raw.position;
+}
+
+export async function buildAaveUsdcSupplyTx(
+  chain: AaveUsdcChain,
+  walletAddress: string,
+  amountUsdc: number
+): Promise<{ amountRaw: string; transactions: AaveTxRequest[]; position: AaveUsdcPositionSnapshot }> {
+  const response = await authedFetch("/api/aave/usdc/supply-tx", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chain, walletAddress, amountUsdc })
+  });
+  const raw = (await readJsonFromApiResponse(response, "Aave USDC 입금 트랜잭션 생성")) as {
+    message?: string;
+    amountRaw?: string;
+    transactions?: AaveTxRequest[];
+    position?: AaveUsdcPositionSnapshot;
+  };
+  if (!response.ok || !raw.amountRaw || !Array.isArray(raw.transactions) || !raw.position) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "Aave USDC 입금 트랜잭션 생성 실패");
+  }
+  return { amountRaw: raw.amountRaw, transactions: raw.transactions, position: raw.position };
+}
+
+export async function buildAaveUsdcWithdrawTx(
+  chain: AaveUsdcChain,
+  walletAddress: string,
+  amountUsdc: number
+): Promise<{ amountRaw: string; transaction: AaveTxRequest; position: AaveUsdcPositionSnapshot }> {
+  const response = await authedFetch("/api/aave/usdc/withdraw-tx", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chain, walletAddress, amountUsdc })
+  });
+  const raw = (await readJsonFromApiResponse(response, "Aave USDC 출금 트랜잭션 생성")) as {
+    message?: string;
+    amountRaw?: string;
+    transaction?: AaveTxRequest;
+    position?: AaveUsdcPositionSnapshot;
+  };
+  if (!response.ok || !raw.amountRaw || !raw.transaction || !raw.position) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "Aave USDC 출금 트랜잭션 생성 실패");
+  }
+  return { amountRaw: raw.amountRaw, transaction: raw.transaction, position: raw.position };
+}
+
+export async function checkAaveUsdcTxReceipt(
+  chain: AaveUsdcChain,
+  txHash: string,
+  init: Pick<RequestInit, "signal"> = {}
+): Promise<{ status: "pending" | "confirmed"; receipt?: { from: string; to: string | null; blockNumber: string | null; status: string } }> {
+  const response = await authedFetch(`/api/aave/usdc/tx/${encodeURIComponent(chain)}/${encodeURIComponent(txHash)}`, init);
+  const raw = (await readJsonFromApiResponse(response, "Aave USDC 트랜잭션 영수증 조회")) as {
+    message?: string;
+    status?: "pending" | "confirmed";
+    receipt?: { from: string; to: string | null; blockNumber: string | null; status: string };
+  };
+  if (!response.ok || (raw.status !== "pending" && raw.status !== "confirmed")) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "Aave USDC 트랜잭션 영수증 조회 실패");
+  }
+  return { status: raw.status, receipt: raw.receipt };
+}
+
+export async function confirmAaveUsdcTx(
+  chain: AaveUsdcChain,
+  walletAddress: string,
+  txHash: string,
+  kind: "supply" | "withdraw",
+  amountUsdc: number
+): Promise<{ status: "pending" | "confirmed"; position?: unknown }> {
+  const response = await authedFetch("/api/aave/usdc/confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chain, walletAddress, txHash, kind, amountUsdc })
+  });
+  const raw = (await readJsonFromApiResponse(response, "Aave USDC 트랜잭션 확인")) as {
+    message?: string;
+    status?: "pending" | "confirmed";
+    position?: unknown;
+  };
+  if (!response.ok || (raw.status !== "pending" && raw.status !== "confirmed")) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "Aave USDC 트랜잭션 확인 실패");
+  }
+  return { status: raw.status, position: raw.position };
 }
 
 export async function fetchRuntimeInfo(): Promise<RuntimeInfo> {
@@ -1287,11 +1482,52 @@ export async function fetchRuntimeInfo(): Promise<RuntimeInfo> {
   return {
     executionMode: "dry-run",
     executionModeRequested: "dry-run",
+    executionModeOverride: null,
+    executionModeSource: "env",
     liveExecutionConfirmed: false,
     solanaOrcaLiveReady: false,
     walletUiPolicy: "phantom-solana",
     serverExecutionNote: "서버에 연결할 수 없어 실행 모드를 확인하지 못했습니다. 기본값은 dry-run으로 간주합니다."
   };
+}
+
+export async function updateRuntimeExecutionMode(mode: "dry-run" | "live"): Promise<RuntimeInfo> {
+  const response = await authedFetch("/api/runtime/execution-mode", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode })
+  });
+  const raw = (await readJsonFromApiResponse(response, "서버 실행 모드 변경")) as RuntimeInfo & { message?: string };
+  if (!response.ok || !raw.executionMode) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "서버 실행 모드 변경 실패");
+  }
+  return raw;
+}
+
+export async function updateRuntimeLiveFlag(protocol: LiveProtocol, enabled: boolean): Promise<RuntimeInfo> {
+  const response = await authedFetch("/api/runtime/live-flags", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ protocol, enabled })
+  });
+  const raw = (await readJsonFromApiResponse(response, "프로토콜 live 플래그 변경")) as RuntimeInfo & { message?: string };
+  if (!response.ok || !raw.executionMode) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "프로토콜 live 플래그 변경 실패");
+  }
+  return raw;
+}
+
+export async function setRuntimePreset(preset: "dry-run" | "real-run"): Promise<RuntimeInfo> {
+  const response = await authedFetch("/api/runtime/preset", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ preset })
+  });
+  const raw = (await readJsonFromApiResponse(response, "실행 프리셋 변경")) as RuntimeInfo & { message?: string };
+  if (!response.ok || !raw.executionMode) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : "실행 프리셋 변경 실패");
+  }
+  return raw;
 }
 
 export async function fetchMarketAprSnapshot(): Promise<MarketAprSnapshot> {

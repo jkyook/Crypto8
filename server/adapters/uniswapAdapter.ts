@@ -1,4 +1,5 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "./types";
+import { isAdapterLiveEnabled, buildUnsupportedResult } from "./types";
 import { createPublicClient, createWalletClient, encodeFunctionData, http, parseUnits } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { arbitrum } from "viem/chains";
@@ -299,8 +300,6 @@ const UNI_MULTI_FALLBACK: UniswapAlloc[] = [
 export async function executeUniswapPlan(context: AdapterExecutionContext): Promise<AdapterExecutionResult[]> {
   const network = context.productNetwork ?? "Multi";
   const subtype = context.productSubtype ?? "";
-  const status = context.mode === "live" ? "submitted" : "simulated";
-  const txPrefix = context.mode === "live" ? "uni_live" : "uni_sim";
 
   const tableKey = `${network}:${subtype}`;
   const allocs = UNISWAP_ALLOC_TABLE[tableKey] ?? UNI_MULTI_FALLBACK;
@@ -312,23 +311,67 @@ export async function executeUniswapPlan(context: AdapterExecutionContext): Prom
   for (const alloc of allocs) {
     const allocUsd = Number((context.depositUsd * alloc.weight).toFixed(2));
 
-    // Arbitrum USDC-USDT 풀은 live 모드에서 실제 TX 시도
-    if (context.mode === "live" && alloc.isArbLive) {
-      const liveTx = await submitUniswapTxsIfLive(context, allocUsd);
-      results.push(
-        { protocol: "Uniswap", chain: "Arbitrum", action: "USDC approve -> PositionManager", allocationUsd: 0, txId: liveTx.approveUsdcTxId, status },
-        { protocol: "Uniswap", chain: "Arbitrum", action: "USDT approve -> PositionManager", allocationUsd: 0, txId: liveTx.approveUsdtTxId, status },
-        { protocol: "Uniswap", chain: "Arbitrum", action: alloc.action, allocationUsd: allocUsd, txId: liveTx.mintTxId, status }
-      );
-    } else {
+    // dry-run 모드: 항상 dry-run 결과 반환
+    if (context.mode === "dry-run") {
       results.push({
         protocol: "Uniswap",
         chain: alloc.chain,
         action: alloc.action,
         allocationUsd: allocUsd,
-        txId: buildTxId(txPrefix, context),
-        status: context.mode === "live" && alloc.chain !== "Arbitrum" ? "simulated" : status
+        txId: buildTxId("uni_sim", context),
+        status: "dry-run" as const
       });
+      continue;
+    }
+
+    // live 모드: feature flag 확인
+    if (!isAdapterLiveEnabled("Uniswap")) {
+      results.push(buildUnsupportedResult(
+        { protocol: "Uniswap", chain: alloc.chain, action: alloc.action, allocationUsd: allocUsd },
+        "Uniswap live execution requires ENABLE_UNISWAP_LIVE=true and LIVE_EXECUTION_CONFIRM=YES"
+      ));
+      continue;
+    }
+
+    // live 모드 + flag 활성화: Arbitrum USDC-USDT만 실제 TX 시도
+    if (alloc.isArbLive) {
+      try {
+        const liveTx = await submitUniswapTxsIfLive(context, allocUsd);
+        results.push(
+          {
+            protocol: "Uniswap", chain: "Arbitrum",
+            action: "USDC approve -> PositionManager",
+            allocationUsd: 0, txId: liveTx.approveUsdcTxId, status: "submitted"
+          },
+          {
+            protocol: "Uniswap", chain: "Arbitrum",
+            action: "USDT approve -> PositionManager",
+            allocationUsd: 0, txId: liveTx.approveUsdtTxId, status: "submitted"
+          },
+          {
+            protocol: "Uniswap", chain: "Arbitrum",
+            action: alloc.action,
+            allocationUsd: allocUsd, txId: liveTx.mintTxId, status: "submitted"
+          }
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        results.push({
+          protocol: "Uniswap",
+          chain: "Arbitrum",
+          action: alloc.action,
+          allocationUsd: allocUsd,
+          txId: "",
+          status: "failed",
+          errorMessage: `Uniswap/${alloc.chain}/${alloc.action}: ${msg}`
+        });
+      }
+    } else {
+      // Arbitrum 외 풀은 live flag가 있어도 미지원
+      results.push(buildUnsupportedResult(
+        { protocol: "Uniswap", chain: alloc.chain, action: alloc.action, allocationUsd: allocUsd },
+        `Uniswap live execution on ${alloc.chain} is not yet supported (Arbitrum USDC-USDT only)`
+      ));
     }
   }
 

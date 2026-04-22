@@ -9,6 +9,32 @@ function normalizePrivateKey(value: string, source: string): `0x${string}` {
   return key as `0x${string}`;
 }
 
+function normalizeSolanaSecretKey(value: string, source: string): Keypair {
+  const trimmed = value.trim();
+  let bytes: number[] | null = null;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed) && parsed.every((item) => typeof item === "number" && Number.isInteger(item) && item >= 0 && item <= 255)) {
+      bytes = parsed as number[];
+    }
+  } catch {
+    // fall through
+  }
+  if (!bytes && trimmed.includes(",")) {
+    const parsed = trimmed
+      .split(",")
+      .map((item) => Number(item.trim()))
+      .filter((item) => Number.isInteger(item) && item >= 0 && item <= 255);
+    if (parsed.length >= 32) {
+      bytes = parsed;
+    }
+  }
+  if (!bytes) {
+    throw new Error(`${source} must be a JSON array or comma-separated byte list for a Solana secret key`);
+  }
+  return Keypair.fromSecretKey(Uint8Array.from(bytes));
+}
+
 /**
  * Live 서명 키는 모듈 로드 시점에 들고 있지 않고, 서명 직전에만 읽는다.
  * 운영 환경에서는 AWS Secrets Manager/Vault Agent/KMS 복호화 결과를 파일로 마운트하고

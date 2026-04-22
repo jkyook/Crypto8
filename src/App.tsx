@@ -2216,11 +2216,11 @@ export default function App() {
   }, [role, activeMenu, availableMenus]);
 
   const renderContent = () => {
-    switch (activeMenu) {
+      switch (activeMenu) {
       case "signupHistory":
         return <SignupRegistrationsPanel />;
       case "auth":
-        return <AuthPanel onSessionChange={setSession} />;
+        return <AuthPanel />;
       case "my":
         return (
           <CommandCenterPage

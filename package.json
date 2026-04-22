@@ -34,6 +34,8 @@
     "react": "latest",
     "react-dom": "latest",
     "tsx": "^4.21.0",
+    "tweetnacl": "^1.0.3",
+    "utf-8-validate": "5.0.10",
     "viem": "^2.48.1"
   },
   "devDependencies": {

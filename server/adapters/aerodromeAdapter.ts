@@ -1,9 +1,14 @@
 /**
- * Aerodrome Finance adapter — Base chain (simulation only).
- * Aerodrome는 Base 체인의 대표 DEX로, Uniswap V3 기반 CLMM(Slipstream) 풀을 운영한다.
- * 현재는 dry-run 시뮬레이션만 지원하며, live 모드도 simulated 상태로 반환한다.
+ * Aerodrome Finance adapter — Base chain.
+ *
+ * ■ live 실행: 미지원 (unsupported 반환)
+ *   Base 전용 라우팅, pool/gauge 구조 확인, gauge staking 연동 후 활성화 예정.
+ *
+ * Base Stable:   USDC-USDT Slipstream LP 50%
+ * Multi (기본):  USDC-USDT Slipstream LP 20%
  */
 import type { AdapterExecutionContext, AdapterExecutionResult } from "./types";
+import { buildUnsupportedResult } from "./types";
 
 function buildTxId(prefix: string, context: AdapterExecutionContext): string {
   return `${prefix}_${context.jobId}_${Date.now()}`;
@@ -11,43 +16,37 @@ function buildTxId(prefix: string, context: AdapterExecutionContext): string {
 
 export async function executeAerodromePlan(context: AdapterExecutionContext): Promise<AdapterExecutionResult[]> {
   const network = context.productNetwork ?? "Multi";
-  const status = "simulated" as const; // Aerodrome live 실행은 추후 구현
 
-  // Base-only 상품 vs Multi-chain 상품 배분 비율 분기
-  let usdcUsdtAmount: number;
-  let ethUsdcAmount: number;
-
+  let usdcUsdtWeight: number;
   if (network === "Base") {
-    // Base Stable: 50% USDC-USDT / Base Yield: 25% USDC-USDT
-    usdcUsdtAmount = Number((context.depositUsd * 0.5).toFixed(2));
-    ethUsdcAmount = 0;
+    usdcUsdtWeight = 0.5;
   } else {
-    // Multi-chain 포트폴리오에서 Aerodrome Base 비중 (20%)
-    usdcUsdtAmount = Number((context.depositUsd * 0.2).toFixed(2));
-    ethUsdcAmount = 0;
+    usdcUsdtWeight = 0.2;
   }
 
-  const results: AdapterExecutionResult[] = [
-    {
-      protocol: "Aerodrome",
-      chain: "Base",
-      action: "USDC-USDT Slipstream LP (0.01%)",
-      allocationUsd: usdcUsdtAmount,
-      txId: buildTxId("aero_sim", context),
-      status
-    }
-  ];
+  const usdcUsdtAmount = Number((context.depositUsd * usdcUsdtWeight).toFixed(2));
 
-  if (ethUsdcAmount > 0) {
-    results.push({
-      protocol: "Aerodrome",
-      chain: "Base",
-      action: "WETH-USDC Slipstream LP (0.05%)",
-      allocationUsd: ethUsdcAmount,
+  if (usdcUsdtAmount <= 0) return [];
+
+  const baseResult = {
+    protocol: "Aerodrome" as const,
+    chain: "Base" as const,
+    action: "USDC-USDT Slipstream LP (0.01%)",
+    allocationUsd: usdcUsdtAmount
+  };
+
+  // dry-run 모드
+  if (context.mode === "dry-run") {
+    return [{
+      ...baseResult,
       txId: buildTxId("aero_sim", context),
-      status
-    });
+      status: "dry-run" as const
+    }];
   }
 
-  return results;
+  // live 모드: 미지원
+  return [buildUnsupportedResult(
+    baseResult,
+    "Aerodrome live execution requires pool/gauge structure verification and gauge staking support (not yet implemented)"
+  )];
 }

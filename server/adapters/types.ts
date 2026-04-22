@@ -42,7 +42,8 @@ export type AdapterExecutionResult = {
   action: string;
   allocationUsd: number;
   txId: string;
-  status: "simulated" | "submitted";
+  status: "dry-run" | "submitted" | "failed" | "unsupported";
+  errorMessage?: string;
 };
 
 export type ProtocolExecutionReadiness = {
@@ -54,3 +55,20 @@ export type ProtocolExecutionReadiness = {
   ready: boolean;
   reason: string;
 };
+
+export function isAdapterLiveEnabled(protocol: AdapterExecutionResult["protocol"]): boolean {
+  const envKey = `ENABLE_${protocol.toUpperCase()}_LIVE`;
+  return process.env.LIVE_EXECUTION_CONFIRM === "YES" && process.env[envKey] === "true";
+}
+
+export function buildUnsupportedResult(
+  base: Pick<AdapterExecutionResult, "protocol" | "chain" | "action" | "allocationUsd">,
+  reason: string
+): AdapterExecutionResult {
+  return {
+    ...base,
+    txId: "",
+    status: "unsupported",
+    errorMessage: reason
+  };
+}
