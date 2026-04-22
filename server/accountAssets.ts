@@ -1,6 +1,7 @@
 import type { UserRole } from "./auth";
 import { getMarketPriceSnapshot, type PriceSymbol } from "./marketPricing";
 import { listUserWallets } from "./userWallets";
+import { getConfiguredSolanaRpcUrl } from "./runtimeMode";
 import { PublicKey } from "@solana/web3.js";
 import { createPublicClient, formatUnits, http, isAddress, type Address, type Chain } from "viem";
 import { arbitrum, base, mainnet } from "viem/chains";
@@ -105,10 +106,10 @@ const EVM_CHAINS: Record<
 };
 
 function getSolanaRpcCandidates(): string[] {
-  const raw = process.env.SOLANA_RPC_URL?.trim() || process.env.VITE_SOLANA_RPC_URL?.trim() || "";
-  const custom = raw ? [raw] : [];
+  const custom = getConfiguredSolanaRpcUrl();
+  const seeded = custom ? [custom] : [];
   const defaults = ["https://api.mainnet-beta.solana.com", "https://solana-rpc.publicnode.com", "https://rpc.ankr.com/solana"];
-  return [...custom, ...defaults.filter((url) => !custom.includes(url))];
+  return [...seeded, ...defaults.filter((url) => !seeded.includes(url))];
 }
 
 function getEvmRpcCandidates(chainKey: EvmChainKey): string[] {

@@ -46,6 +46,8 @@ npm run prisma:seed
 - `SOLANA_LIVE_RPC_URL` / `SOLANA_MAINNET_RPC_URL`: Orca live 경로용 Solana mainnet RPC URL
 - `SOLANA_EXECUTOR_PRIVATE_KEY_FILE`: Orca live 경로용 Solana executor keypair 파일 경로
 - `SOLANA_EXECUTOR_PRIVATE_KEY`: Orca live 경로용 실행 지갑 키(개발/테스트 전용, `ALLOW_INSECURE_ENV_PRIVATE_KEY=true` 필요)
+- `SOLANA_RPC_URL`: Solana 잔고/Orca 경로용 RPC URL
+- `VITE_SOLANA_RPC_URL`: 프런트에서 Solana 잔고를 바로 읽을 때 사용하는 RPC URL
 - `UNISWAP_SLIPPAGE_BPS`: Uniswap mint 최소수량 계산용 슬리피지 bps (기본 50 = 0.5%)
 - `UNISWAP_USDC_USDT_FEE_TIER`: USDC-USDT 풀 fee tier (기본 100 = 0.01%)
 - `UNISWAP_USDC_USDT_POOL_ADDRESS`: USDC-USDT 풀 주소 (Arbitrum)
@@ -53,6 +55,12 @@ npm run prisma:seed
 - `UNISWAP_FULL_RANGE_TICK_LOWER` / `UNISWAP_FULL_RANGE_TICK_UPPER`: V3 틱 범위
 - `UNISWAP_DEADLINE_SEC`: mint 트랜잭션 deadline 초 (기본 1200초)
 - `EXECUTION_RETRY_COUNT`: 실행 어댑터 실패 시 재시도 횟수 (기본 3)
+
+### RPC 권장값
+
+- 개발용 Solana RPC: `https://api.devnet.solana.com`
+- 운영용 Solana RPC: Helius/QuickNode/Alchemy 같은 전용 RPC
+- 운영에서 public endpoint(`https://api.mainnet-beta.solana.com`)는 가능하면 피하세요. Solana 공식 문서는 public RPC를 production traffic에 권장하지 않습니다.
 
 ## MVP 실행 범위·체인·지갑 정책
 

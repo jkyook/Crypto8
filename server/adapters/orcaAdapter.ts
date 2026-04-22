@@ -4,7 +4,7 @@
  * dry-run 은 시뮬레이션 결과만 반환하고,
  * live 는 Orca public API로 Whirlpool을 찾은 뒤 실제 on-chain open position + add liquidity 를 시도한다.
  */
-import { AnchorProvider, BN } from "@coral-xyz/anchor";
+import { AnchorProvider } from "@coral-xyz/anchor";
 import { Percentage } from "@orca-so/common-sdk";
 import {
   buildWhirlpoolClient,
@@ -14,9 +14,11 @@ import {
   increaseLiquidityQuoteByInputToken
 } from "@orca-so/whirlpools-sdk";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
+import BN from "bn.js";
 import Decimal from "decimal.js";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "./types";
 import { getMarketPriceSnapshot } from "../marketPricing";
+import { getConfiguredSolanaRpcUrl } from "../runtimeMode";
 import { loadSolanaExecutorKeypair } from "../secrets";
 import { resolveOrcaPoolForAction } from "../orcaPools";
 
@@ -28,7 +30,120 @@ function normalizeLabel(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-const ORCA_ALLOC_TABLE: Record<string, OrcaAlloc[]> = {
+function extractPoolSearchQuery(action: string): string {
+  const base = action.replace(/\s*\(.*\)\s*$/, "");
+  const cleaned = base.replace(/\s*Whirlpool.*$/i, "").trim();
+  return cleaned.length > 0 ? cleaned : action;
+}
+
+function expectedPairFromAction(action: string): string[] {
+  const lower = action.toLowerCase();
+  if (lower.includes("usdc-usdt")) return ["usdc", "usdt"];
+  if (lower.includes("sol-usdc")) return ["sol", "usdc"];
+  if (lower.includes("msol-sol")) return ["msol", "sol"];
+  return [];
+}
+
+function symbolPriceUsd(symbol: string, snapshot: Awaited<ReturnType<typeof getMarketPriceSnapshot>>["prices"]): number {
+  const normalized = normalizeLabel(symbol);
+  if (normalized.includes("usdc") || normalized.includes("usdt") || normalized.includes("usd")) {
+    return 1;
+  }
+  if (normalized.includes("sol")) {
+    return snapshot.SOL;
+  }
+  if (normalized.includes("eth")) {
+    return snapshot.ETH;
+  }
+  throw new Error(`unsupported Orca token symbol for USD valuation: ${symbol}`);
+}
+
+function toRawAmount(symbol: string, decimals: number, usdValue: number, snapshot: Awaited<ReturnType<typeof getMarketPriceSnapshot>>["prices"]): BN {
+  const priceUsd = symbolPriceUsd(symbol, snapshot);
+  const raw = new Decimal(usdValue).div(priceUsd).mul(new Decimal(10).pow(decimals)).floor();
+  const rawStr = raw.toFixed(0);
+  const normalized = new BN(rawStr);
+  return normalized.isZero() ? new BN(1) : normalized;
+}
+
+async function resolveOrcaPool(action: string): Promise<OrcaPoolSearchRow> {
+  const query = extractPoolSearchQuery(action);
+  const response = await fetch(`https://api.orca.so/v2/solana/pools/search?q=${encodeURIComponent(query)}&verifiedOnly=true&size=10`, {
+    signal: AbortSignal.timeout(10_000)
+  });
+  if (!response.ok) {
+    throw new Error(`orca pools search http ${response.status}`);
+  }
+  const data = (await response.json()) as OrcaPoolSearchResponse;
+  const expectedPair = expectedPairFromAction(action);
+  const rows = (data.data ?? []).filter((row) => row.poolType === "whirlpool");
+  if (rows.length === 0) {
+    throw new Error(`no Whirlpool pools found for ${action}`);
+  }
+  const matched = rows.filter((row) => {
+    const a = normalizeLabel(row.tokenA?.symbol ?? "");
+    const b = normalizeLabel(row.tokenB?.symbol ?? "");
+    return (
+      expectedPair.length === 0 ||
+      (a === expectedPair[0] && b === expectedPair[1]) ||
+      (a === expectedPair[1] && b === expectedPair[0])
+    );
+  });
+  const candidates = matched.length > 0 ? matched : rows;
+  candidates.sort((left, right) => Number((Number(right.tvlUsdc ?? "0") || 0) - (Number(left.tvlUsdc ?? "0") || 0)));
+  const selected = candidates[0];
+  if (!selected?.address) {
+    throw new Error(`no valid Orca Whirlpool pool resolved for ${action}`);
+  }
+  return selected;
+}
+
+async function executeOrcaLiveAllocation(
+  context: AdapterExecutionContext,
+  allocationUsd: number,
+  action: string
+): Promise<{ txId: string }> {
+  const rpcUrl = process.env.ORCA_SOLANA_RPC_URL?.trim() || getConfiguredSolanaRpcUrl() || "https://api.mainnet-beta.solana.com";
+  const keypair = await loadSolanaExecutorKeypair();
+  const wallet = new SolanaKeypairWallet(keypair);
+  const connection = new Connection(rpcUrl, "confirmed");
+  const ctx = WhirlpoolContext.from(connection, wallet as never);
+  const client = buildWhirlpoolClient(ctx);
+
+  const poolRow = await resolveOrcaPool(action);
+  const pool = await client.getPool(new PublicKey(poolRow.address));
+  const poolData = pool.getData();
+  const [tickLower, tickUpper] = TickUtil.getFullRangeTickIndex(poolData.tickSpacing);
+  const minSqrtPrice = PriceMath.tickIndexToSqrtPriceX64(tickLower);
+  const maxSqrtPrice = PriceMath.tickIndexToSqrtPriceX64(tickUpper);
+  const priceSnapshot = await getMarketPriceSnapshot();
+  const halfUsd = allocationUsd / 2;
+  const tokenA = poolRow.tokenA ?? {};
+  const tokenB = poolRow.tokenB ?? {};
+  const tokenMaxA = toRawAmount(tokenA.symbol ?? "tokenA", tokenA.decimals ?? 6, halfUsd, priceSnapshot.prices);
+  const tokenMaxB = toRawAmount(tokenB.symbol ?? "tokenB", tokenB.decimals ?? 6, halfUsd, priceSnapshot.prices);
+
+  const { tx } = await pool.openPosition(
+    tickLower,
+    tickUpper,
+    {
+      tokenMaxA,
+      tokenMaxB,
+      minSqrtPrice,
+      maxSqrtPrice
+    },
+    wallet.publicKey,
+    wallet.publicKey,
+    undefined,
+    undefined,
+    true
+  );
+
+  const txId = await tx.buildAndExecute(undefined, undefined, "confirmed");
+  return { txId };
+}
+
+const ORCA_ALLOC_TABLE: Record<string, { action: string; weight: number }[]> = {
   "Multi:multi-stable": [{ action: "USDC-USDT Whirlpool (0.01%)", weight: 0.2 }],
   "Multi:multi-balanced": [{ action: "mSOL-SOL Whirlpool", weight: 0.2 }],
   "Arbitrum:arb-stable": [],

@@ -22,6 +22,12 @@ services:
         value: "22.12.0"
       - key: DATABASE_URL
         value: file:../server/data/crypto8.db
+      # 운영용 Solana RPC는 별도 Provider 권장. Render Dashboard에서 값 입력 권장.
+      # 예: https://mainnet.helius-rpc.com/?api-key=YOUR_API_KEY
+      - key: SOLANA_RPC_URL
+        sync: false
+      - key: VITE_SOLANA_RPC_URL
+        sync: false
       - key: JWT_SECRET
         generateValue: true
       - key: EXECUTION_MODE
@@ -51,3 +57,6 @@ services:
       # API 서비스 이름(crypto8-api)과 맞춰야 브라우저에서 호출됩니다.
       - key: VITE_API_BASE_URL
         value: https://crypto8-api.onrender.com
+      # Solana 잔고 조회를 public fallback보다 안정적으로 하려면 값 입력 권장
+      - key: VITE_SOLANA_RPC_URL
+        sync: false
