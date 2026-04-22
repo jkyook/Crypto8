@@ -13,11 +13,13 @@ import {
   linkAccountWallet,
   listAccountAssets,
   listAccountWallets,
+  fetchRuntimeInfo,
   loginWithWallet,
   type AccountAssetBalance,
   type AccountAssetSymbol,
   type AuthSession,
   type DepositPositionPayload,
+  type RuntimeInfo,
   type UserWallet
 } from "../lib/api";
 import { loadCachedAccountAssets, saveCachedAccountAssets } from "../lib/accountAssetCache";
@@ -357,6 +359,7 @@ export function WalletPanel({
   const [accountAssets, setAccountAssets] = useState<AccountAssetBalance[]>([]);
   const [accountAssetsSnapshotLabel, setAccountAssetsSnapshotLabel] = useState("업데이트 전");
   const [accountMenuError, setAccountMenuError] = useState("");
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeInfo["executionMode"]>("dry-run");
   const [walletRefreshTick, setWalletRefreshTick] = useState(0);
   const accountMenuRef = useRef<HTMLDivElement>(null);
 
@@ -390,9 +393,10 @@ export function WalletPanel({
       return;
     }
     const controller = new AbortController();
+    setAccountMenuError("");
     const cacheScope = {
       kind: "wallet" as const,
-      mode: "dry-run" as const,
+      mode: runtimeMode,
       username: appUsername,
       solanaAddress: solanaAccount?.address,
       evmAddress: evmAccount?.address
@@ -402,7 +406,6 @@ export function WalletPanel({
       setAccountAssets(cachedAssets);
       setAccountAssetsSnapshotLabel("업데이트 전");
     }
-    setAccountMenuError("");
     void Promise.allSettled([
       listAccountWallets({ signal: controller.signal }),
       listAccountAssets({ signal: controller.signal }, runtimeMode)
@@ -412,8 +415,8 @@ export function WalletPanel({
         setLinkedWallets(walletsResult.status === "fulfilled" ? walletsResult.value : []);
         if (assetsResult.status === "fulfilled") {
           setAccountAssets(assetsResult.value);
-          setAccountAssetsSnapshotLabel("업데이트 후");
           saveCachedAccountAssets(cacheScope, assetsResult.value);
+          setAccountAssetsSnapshotLabel("업데이트 후");
         } else if (!cachedAssets || cachedAssets.length === 0) {
           setAccountAssets([]);
           setAccountAssetsSnapshotLabel("업데이트 전");
@@ -423,7 +426,32 @@ export function WalletPanel({
         }
     });
     return () => controller.abort();
-  }, [appUsername, evmAccount?.address, solanaAccount?.address]);
+  }, [appUsername, evmAccount?.address, runtimeMode, solanaAccount?.address]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const loadRuntimeMode = async () => {
+      try {
+        const info = await fetchRuntimeInfo();
+        if (!cancelled) {
+          setRuntimeMode(info.executionMode);
+        }
+      } catch {
+        if (!cancelled) {
+          setRuntimeMode("dry-run");
+        }
+      }
+    };
+    void loadRuntimeMode();
+    timer = window.setInterval(() => {
+      void loadRuntimeMode();
+    }, 1000);
+    return () => {
+      cancelled = true;
+      if (timer) window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -468,7 +496,6 @@ export function WalletPanel({
     return "주소 없음";
   }, [appUsername, evmAccount?.address, solanaAccount?.address]);
   const primaryWalletAddress = solanaAccount?.address ?? evmAccount?.address;
-  const runtimeMode = isConnected ? "live" : "dry-run";
 
   const connectPhantomWallet = async (): Promise<void> => {
     const hasInjected =
@@ -883,10 +910,10 @@ export function WalletPanel({
       </div>
       <div className="wallet-account-menu-section">
         <span>자산 요약</span>
-        <strong>
-          {accountAssetsSnapshotLabel} · ${accountAssetsTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-        </strong>
-        <em>{accountAssets.slice(0, 4).map((asset) => `${asset.symbol} $${asset.usdValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`).join(" · ") || "조회 전"}</em>
+        <strong>${accountAssetsTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+        <em>
+          {accountAssetsSnapshotLabel} · {accountAssets.slice(0, 4).map((asset) => `${asset.symbol} $${asset.usdValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`).join(" · ") || "조회 전"}
+        </em>
       </div>
       {accountMenuError ? <p className="wallet-error">{accountMenuError}</p> : null}
       <div className="wallet-account-actions">

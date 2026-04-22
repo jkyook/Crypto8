@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { AddressType } from "@phantom/browser-sdk";
 import { useAccounts, usePhantom } from "@phantom/react-sdk";
 import type { ISolanaChain } from "@phantom/chain-interfaces";
@@ -154,10 +154,14 @@ export function OrchestratorBoard({
   const [planApprovalError, setPlanApprovalError] = useState("");
   const [pendingPlan, setPendingPlan] = useState<DepositExecutionPlanStep[] | null>(null);
   const [executionStepLog, setExecutionStepLog] = useState<ExecutionStepLogEntry[]>([]);
+  const selectedSourceAssetRef = useRef(selectedSourceAsset);
   const correlationId = useMemo(
     () => (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `corr_${Date.now()}`),
     []
   );
+  useEffect(() => {
+    selectedSourceAssetRef.current = selectedSourceAsset;
+  }, [selectedSourceAsset]);
   useEffect(() => {
     void (async () => {
       try {
@@ -234,7 +238,7 @@ export function OrchestratorBoard({
       setAccountAssets(cachedAssets);
       setAssetSnapshotLabel(executionModeIntent === "live" ? "업데이트 전" : "");
       setAssetSourceLabel(executionModeIntent === "live" ? "실잔고(캐시)" : "가상 잔고(캐시)");
-      if (!cachedAssets.some((row) => row.symbol === selectedSourceAsset) && cachedAssets[0]) {
+      if (!cachedAssets.some((row) => row.symbol === selectedSourceAssetRef.current) && cachedAssets[0]) {
         setSelectedSourceAsset(cachedAssets[0].symbol);
       }
     } else if (!canLoadLiveAssets) {
@@ -325,7 +329,7 @@ export function OrchestratorBoard({
               saveCachedAccountAssets(cacheScope, cachedAssets);
               setAssetSnapshotLabel("업데이트 전");
               setAssetSourceLabel("실잔고(공유 캐시)");
-              if (!cachedAssets.some((row) => row.symbol === selectedSourceAsset) && cachedAssets[0]) {
+              if (!cachedAssets.some((row) => row.symbol === selectedSourceAssetRef.current) && cachedAssets[0]) {
                 setSelectedSourceAsset(cachedAssets[0].symbol);
               }
               return;
@@ -334,17 +338,19 @@ export function OrchestratorBoard({
           }
           setAccountAssets(nextAssets);
           saveCachedAccountAssets(cacheScope, nextAssets);
-          setAssetSnapshotLabel("업데이트 후");
           setAssetSourceLabel("실잔고");
-          if (!nextAssets.some((row) => row.symbol === selectedSourceAsset) && nextAssets[0]) {
+          setAssetSnapshotLabel("업데이트 후");
+          if (!nextAssets.some((row) => row.symbol === selectedSourceAssetRef.current) && nextAssets[0]) {
             setSelectedSourceAsset(nextAssets[0].symbol);
           }
         } else if (canUseServerJobs) {
           const rows = await listAccountAssets({ signal: controller.signal }, "dry-run");
           if (controller.signal.aborted) return;
           setAccountAssets(rows);
+          saveCachedAccountAssets(cacheScope, rows);
           setAssetSourceLabel("가상 잔고");
-          if (!rows.some((row) => row.symbol === selectedSourceAsset) && rows[0]) {
+          setAssetSnapshotLabel("업데이트 후");
+          if (!rows.some((row) => row.symbol === selectedSourceAssetRef.current) && rows[0]) {
             setSelectedSourceAsset(rows[0].symbol);
           }
         } else {
@@ -352,9 +358,9 @@ export function OrchestratorBoard({
           if (controller.signal.aborted) return;
           setAccountAssets(rows);
           saveCachedAccountAssets(cacheScope, rows);
-          setAssetSnapshotLabel("업데이트 후");
           setAssetSourceLabel("가상 잔고");
-          if (!rows.some((row) => row.symbol === selectedSourceAsset) && rows[0]) {
+          setAssetSnapshotLabel("업데이트 후");
+          if (!rows.some((row) => row.symbol === selectedSourceAssetRef.current) && rows[0]) {
             setSelectedSourceAsset(rows[0].symbol);
           }
         }
@@ -894,12 +900,7 @@ export function OrchestratorBoard({
               연결 지갑 네트워크: <strong>{connectedWalletNetwork ?? "미연결"}</strong>
               {executionModeIntent === "live" ? ` · 실잔고 네트워크: ${liveSolanaNetwork === "mainnet" ? "메인넷" : "데브넷"}` : ""}
               {assetReadiness.selectedAsset ? ` · 계정 자산 보관 체인: ${assetReadiness.selectedAsset.chain}` : ""}
-              {executionModeIntent === "live" ? (
-                <>
-                  {" "}
-                  · 표시 기준: <strong>{assetSnapshotLabel}</strong>
-                </>
-              ) : null}
+              · 표시 기준: <strong>{assetSnapshotLabel}</strong>
               · 잔고 기준: <strong>{assetSourceLabel}</strong>
             </p>
           </div>
@@ -937,7 +938,7 @@ export function OrchestratorBoard({
                 ? `${assetReadiness.selectedAsset.amount.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${assetReadiness.selectedAsset.symbol}`
                 : "자산 없음"}
             </em>
-            {executionModeIntent === "live" ? <em>{assetSnapshotLabel} · {assetSourceLabel}</em> : <em>{assetSourceLabel}</em>}
+            <em>{assetSnapshotLabel} · {assetSourceLabel}</em>
           </div>
           <div className={assetReadiness.isSufficient ? "deposit-asset-summary ok" : "deposit-asset-summary warn"}>
             <span>입금 가능 여부</span>

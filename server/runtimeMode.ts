@@ -27,6 +27,11 @@ function runtimeLiveFlagKey(protocol: LiveProtocol): string {
   return `${LIVE_FLAG_OVERRIDE_PREFIX}${protocol}`;
 }
 
+export function getConfiguredSolanaRpcUrl(): string | null {
+  const raw = process.env.SOLANA_RPC_URL?.trim() || process.env.VITE_SOLANA_RPC_URL?.trim() || "";
+  return raw.length > 0 ? raw : null;
+}
+
 export function getExecutionModeRequestedFromEnv(): ExecutionMode {
   return process.env.EXECUTION_MODE === "live" ? "live" : "dry-run";
 }
@@ -86,7 +91,7 @@ export type ProtocolReadiness = {
  */
 export function getProtocolReadiness(): Record<LiveProtocol, ProtocolReadiness> {
   const liveConfirmed = process.env.LIVE_EXECUTION_CONFIRM === "YES";
-  const hasSolanaRpc = Boolean(process.env.SOLANA_RPC_URL);
+  const hasSolanaRpc = Boolean(getConfiguredSolanaRpcUrl());
   const hasSolanaKey = Boolean(
     process.env.SOLANA_EXECUTOR_PRIVATE_KEY_FILE ||
       process.env.SOLANA_EXECUTOR_PRIVATE_KEY_JSON ||
@@ -108,7 +113,7 @@ export function getProtocolReadiness(): Record<LiveProtocol, ProtocolReadiness> 
       ...(!hasArbitrumRpc ? ["ARBITRUM_RPC_URL 미설정"] : [])
     ]),
     orca: build(true, [
-      ...(!hasSolanaRpc ? ["SOLANA_RPC_URL 미설정"] : []),
+      ...(!hasSolanaRpc ? ["SOLANA RPC 미설정"] : []),
       ...(!hasSolanaKey ? ["SOLANA_EXECUTOR_PRIVATE_KEY 미설정"] : [])
     ]),
     aerodrome: build(false, ["어댑터 미구현 (예정)"]),
