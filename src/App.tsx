@@ -1794,7 +1794,8 @@ function PortfolioPanel({
     setOnchainMatchSummary("");
     try {
       if (!canPersistToServer) {
-        throw new Error("이 기능은 로그인한 뒤에만 사용할 수 있습니다.");
+        setOnchainMatchError("로그인 후 실제 프로토콜 풀 매치를 확인할 수 있습니다. 조회가능풀은 로그인 없이 사용할 수 있습니다.");
+        return;
       }
       const evmWalletAddress = evmAccount?.address;
       const solanaWalletAddress = solanaAccount?.address;
@@ -1960,8 +1961,8 @@ function PortfolioPanel({
           type="button"
           className="ghost-btn"
           onClick={() => void verifyProtocolPoolMatches()}
-          disabled={onchainMatchLoading || !canPersistToServer}
-          title={!canPersistToServer ? "로그인 후 사용할 수 있습니다." : "실제 지갑 기준으로 프로토콜 풀 매치를 다시 확인합니다."}
+          disabled={onchainMatchLoading}
+          title="실제 지갑 기준으로 프로토콜 풀 매치를 다시 확인합니다. 로그인하지 않았으면 안내 메시지가 표시됩니다."
         >
           {onchainMatchLoading ? "실제 포지션 조회 중..." : "실제 프로토콜 풀 조회 · 매치 확인"}
         </button>
@@ -1969,8 +1970,8 @@ function PortfolioPanel({
           type="button"
           className="ghost-btn"
           onClick={() => void toggleQueryablePools()}
-          disabled={onchainMatchLoading || !canPersistToServer}
-          title={!canPersistToServer ? "로그인 후 사용할 수 있습니다." : "현재 조회 가능한 풀 목록을 펼치거나 닫습니다."}
+          disabled={onchainMatchLoading}
+          title="현재 조회 가능한 풀 목록을 펼치거나 닫습니다. 로그인 없이도 사용할 수 있습니다."
         >
           {showQueryablePools ? "조회가능풀 닫기" : "조회가능풀"}
         </button>
