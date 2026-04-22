@@ -819,22 +819,49 @@ function ProductsPanel({
     });
     return weights;
   }, [selected.protocolMix, selectedPoolLabels]);
+  const latestPoolAprByLabel = useMemo(() => {
+    const out: Record<string, number> = {};
+    const keyByLabel = new Map(marketHistorySeries.map((series) => [series.poolLabel, series.key]));
+    keyByLabel.forEach((key, poolLabel) => {
+      for (let i = marketHistoryPoints.length - 1; i >= 0; i -= 1) {
+        const point = marketHistoryPoints[i];
+        const value = point?.pools?.[key];
+        if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+          out[poolLabel] = value;
+          break;
+        }
+      }
+    });
+    return out;
+  }, [marketHistoryPoints, marketHistorySeries]);
+  const selectedMixAprDecimals = useMemo(
+    () =>
+      selected.protocolMix.map((item, idx) => {
+        const poolLabel = selectedPoolLabels[idx] ?? resolvePoolLabel(item.name, item.pool);
+        const poolApr = latestPoolAprByLabel[poolLabel];
+        if (typeof poolApr === "number" && Number.isFinite(poolApr) && poolApr > 0) {
+          return poolApr;
+        }
+        if (!marketApr) return null;
+        return mixItemAnnualAprDecimal(item.name, marketApr);
+      }),
+    [latestPoolAprByLabel, marketApr, selected.protocolMix, selectedPoolLabels]
+  );
   const estYield = depositAmount * selected.targetApr;
   const estFee = (depositAmount * selected.estFeeBps) / 10_000;
-  const dailyRate = marketApr
-    ? selected.protocolMix.reduce((acc, item) => {
-        const key = item.name.toLowerCase();
-        const protocolApr = key.includes("aave") ? marketApr.aave : key.includes("uniswap") ? marketApr.uniswap : marketApr.orca;
-        return acc + protocolApr * item.weight;
-      }, 0) / 365
-    : selected.targetApr / 365;
-  const periodYield = depositAmount * dailyRate * simulationDays;
-
   const blendedAnnualAprDecimal = useMemo(() => {
-    if (!marketApr) return null;
-    const sel = products.find((item) => item.id === selectedId) ?? products[0];
-    return sel.protocolMix.reduce((acc, item) => acc + mixItemAnnualAprDecimal(item.name, marketApr) * item.weight, 0);
-  }, [marketApr, products, selectedId]);
+    let weighted = 0;
+    let hasAny = false;
+    selected.protocolMix.forEach((item, idx) => {
+      const aprDec = selectedMixAprDecimals[idx];
+      if (aprDec == null) return;
+      hasAny = true;
+      weighted += aprDec * item.weight;
+    });
+    return hasAny ? weighted : null;
+  }, [selected.protocolMix, selectedMixAprDecimals]);
+  const dailyRate = (blendedAnnualAprDecimal ?? selected.targetApr) / 365;
+  const periodYield = depositAmount * dailyRate * simulationDays;
 
   const blendedWeekYieldPercentPoints =
     blendedAnnualAprDecimal != null ? aprDecimalToSimpleWeekYieldPercentPoints(blendedAnnualAprDecimal) : null;
@@ -1227,12 +1254,14 @@ function ProductsPanel({
               <span>비중</span>
               <span>배분(USD)</span>
               <span>1주 이율</span>
+              <span>1년 이율</span>
               <span>상태</span>
             </div>
             {selected.protocolMix.map((item, mixIdx) => {
               const poolAmount = depositAmount * item.weight;
-              const rowAprDec = marketApr ? mixItemAnnualAprDecimal(item.name, marketApr) : null;
+              const rowAprDec = selectedMixAprDecimals[mixIdx];
               const weekPct = rowAprDec != null ? aprDecimalToSimpleWeekYieldPercentPoints(rowAprDec) : null;
+              const annualPct = rowAprDec != null ? rowAprDec * 100 : null;
               const poolLabel = resolvePoolLabel(item.name, item.pool);
               const liveState = poolLiveMap[poolLabel] ?? "checking";
               return (
@@ -1242,6 +1271,7 @@ function ProductsPanel({
                   <span>{(item.weight * 100).toFixed(0)}%</span>
                   <span>${poolAmount.toFixed(2)}</span>
                   <span className="product-pool-week-cell">{weekPct != null ? `${weekPct.toFixed(3)}%` : "—"}</span>
+                  <span className="product-pool-annual-cell">{annualPct != null ? `${annualPct.toFixed(2)}%` : "—"}</span>
                   <span
                     className={
                       liveState === "live"

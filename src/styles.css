@@ -2474,7 +2474,7 @@ body[data-theme="light"] .product-action-btn.btn-primary {
 
 .product-pool-item {
   display: grid;
-  grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.05fr) auto auto minmax(4.2rem, auto) minmax(2.2rem, auto);
+  grid-template-columns: minmax(0, 0.65fr) minmax(0, 1.05fr) auto auto minmax(4.2rem, auto) minmax(4.6rem, auto) minmax(2.2rem, auto);
   gap: 10px 14px;
   align-items: center;
   padding: 11px 12px;
@@ -2508,6 +2508,13 @@ body[data-theme="light"] .product-action-btn.btn-primary {
   white-space: nowrap;
   color: #7be8c3;
   font-weight: 850;
+}
+
+.product-pool-annual-cell {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: #bfe2ff;
+  font-weight: 750;
 }
 
 .product-pool-live {
