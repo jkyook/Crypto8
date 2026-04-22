@@ -367,6 +367,7 @@ export async function executeOrcaPlanWithWallet(input: {
   sourceAsset?: AccountAssetSymbol;
   sourceChain?: string;
   actionFilter?: string[];
+  applyMinimumAllocationCheck?: boolean;
   /** true(기본)이면 각 tx 가 네트워크에서 confirmed 될 때까지 폴링 후 반환. */
   waitForConfirmation?: boolean;
   /** 컨펌 폴링 타임아웃(ms). 기본 90초. */
@@ -400,7 +401,7 @@ export async function executeOrcaPlanWithWallet(input: {
   const results: OrcaClientExecutionResult[] = [];
   for (const alloc of allocs) {
     const allocationUsd = Number((input.depositUsd * alloc.weight).toFixed(2));
-    if (input.network === "mainnet" && allocationUsd < ORCA_MIN_LIVE_ALLOCATION_USD) {
+    if (input.applyMinimumAllocationCheck !== false && input.network === "mainnet" && allocationUsd < ORCA_MIN_LIVE_ALLOCATION_USD) {
       results.push({
         protocol: "Orca",
         chain: "Solana",

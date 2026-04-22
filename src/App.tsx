@@ -24,6 +24,7 @@ import {
   listExecutionEvents,
   listJobs,
   listOnchainPositions,
+  listOrcaWalletPositions,
   listWithdrawalLedger,
   login,
   resetPortfolioLedgerRemote,
@@ -92,7 +93,7 @@ type ProtocolDetailRow = {
   pool: string;
   amount: number;
 };
-type ProtocolPoolMatchState = "matched" | "drift" | "missing" | "unsupported" | "error";
+type ProtocolPoolMatchState = "matched" | "drift" | "missing" | "unsupported" | "error" | "available";
 type PoolLiveState = "checking" | "live" | "down";
 
 const PROTOCOL_SORT_ORDER = ["Aave", "Uniswap", "Orca"] as const;
@@ -1537,6 +1538,81 @@ function getProtocolSortRank(protocolName: string): number {
   return rank === -1 ? PROTOCOL_SORT_ORDER.length : rank;
 }
 
+function inferOrcaActionFromPoolLabel(poolLabel: string): string | null {
+  const normalized = poolLabel.toLowerCase();
+  if (normalized.includes("usdc-usdt")) return "USDC-USDT Whirlpool (0.01%)";
+  if (normalized.includes("sol-usdc")) return "SOL-USDC Whirlpool";
+  if (normalized.includes("msol-sol") || normalized.includes("m-sol")) return "mSOL-SOL Whirlpool";
+  return null;
+}
+
+function isPoolDepositPossible(protocolName: string, chain: string): boolean {
+  const protocol = protocolName.toLowerCase();
+  const lcChain = chain.toLowerCase();
+  if (protocol.includes("aave")) return lcChain === "arbitrum" || lcChain === "base" || lcChain === "ethereum";
+  if (protocol.includes("uniswap")) return lcChain === "arbitrum" || lcChain === "base" || lcChain === "ethereum";
+  if (protocol.includes("orca")) return lcChain === "solana";
+  if (protocol.includes("aerodrome")) return lcChain === "base";
+  if (protocol.includes("curve")) return lcChain === "ethereum";
+  if (protocol.includes("raydium")) return lcChain === "solana";
+  return false;
+}
+
+function isPoolPositionQueryable(protocolName: string): boolean {
+  const protocol = protocolName.toLowerCase();
+  return protocol.includes("aave") || protocol.includes("orca");
+}
+
+function getPoolDepositReason(protocolName: string, chain: string): string {
+  const protocol = protocolName.toLowerCase();
+  const lcChain = chain.toLowerCase();
+  if (protocol.includes("aave")) {
+    return lcChain === "arbitrum" || lcChain === "base" || lcChain === "ethereum"
+      ? "Aave는 Arbitrum / Base / Ethereum 입금 경로가 있습니다."
+      : "Aave 입금 경로가 없는 체인입니다.";
+  }
+  if (protocol.includes("uniswap")) {
+    return lcChain === "arbitrum" || lcChain === "base" || lcChain === "ethereum"
+      ? "Uniswap은 이 체인에 대해 입금 경로가 있습니다."
+      : "Uniswap 입금 경로가 없는 체인입니다.";
+  }
+  if (protocol.includes("orca")) {
+    return lcChain === "solana" ? "Orca는 Solana 입금 경로가 있습니다." : "Orca 입금 경로는 Solana에서만 지원됩니다.";
+  }
+  if (protocol.includes("aerodrome")) {
+    return lcChain === "base" ? "Aerodrome은 Base 입금 경로가 있습니다." : "Aerodrome 입금 경로는 Base에서만 지원됩니다.";
+  }
+  if (protocol.includes("curve")) {
+    return lcChain === "ethereum" ? "Curve는 Ethereum 입금 경로가 있습니다." : "Curve 입금 경로는 Ethereum에서만 지원됩니다.";
+  }
+  if (protocol.includes("raydium")) {
+    return lcChain === "solana" ? "Raydium은 Solana 입금 경로가 있습니다." : "Raydium 입금 경로는 Solana에서만 지원됩니다.";
+  }
+  return "해당 프로토콜의 입금 경로를 현재 정의하지 않았습니다.";
+}
+
+function getPoolQueryReason(protocolName: string): string {
+  const protocol = protocolName.toLowerCase();
+  if (protocol.includes("aave")) return "Aave는 현재 온체인 포지션 검증기가 연결되어 있습니다.";
+  if (protocol.includes("uniswap")) return "Uniswap 포지션 조회 어댑터는 아직 미구현입니다.";
+  if (protocol.includes("orca")) return "Orca Whirlpool 포지션 조회 어댑터가 연결되어 있습니다.";
+  if (protocol.includes("aerodrome")) return "Aerodrome 포지션 조회 어댑터는 아직 미구현입니다.";
+  if (protocol.includes("curve")) return "Curve 포지션 조회 어댑터는 아직 미구현입니다.";
+  if (protocol.includes("raydium")) return "Raydium 포지션 조회 어댑터는 아직 미구현입니다.";
+  return "해당 프로토콜의 포지션 조회 기준을 현재 정의하지 않았습니다.";
+}
+
+type PoolCatalogRow = {
+  key: string;
+  productNames: string[];
+  protocol: string;
+  chain: string;
+  pool: string;
+  depositPossible: boolean;
+  queryable: boolean;
+  memo: string;
+};
+
 function PortfolioPanel({
   positions,
   onExecutionComplete,
@@ -1565,6 +1641,7 @@ function PortfolioPanel({
   const [onchainMatchSummary, setOnchainMatchSummary] = useState("");
   const [onchainMatchLoading, setOnchainMatchLoading] = useState(false);
   const [onchainMatchError, setOnchainMatchError] = useState("");
+  const [showQueryablePools, setShowQueryablePools] = useState(false);
   const [ledgerResetLoading, setLedgerResetLoading] = useState(false);
   const [ledgerResetError, setLedgerResetError] = useState("");
 
@@ -1657,10 +1734,59 @@ function PortfolioPanel({
     () =>
       Object.values(onchainMatchMap).reduce<Record<ProtocolPoolMatchState, number>>(
         (acc, row) => ({ ...acc, [row.state]: acc[row.state] + 1 }),
-        { matched: 0, drift: 0, missing: 0, unsupported: 0, error: 0 }
-      ),
+        { matched: 0, drift: 0, missing: 0, unsupported: 0, error: 0, available: 0 }
+    ),
     [onchainMatchMap]
   );
+  const catalogPoolRows = useMemo<PoolCatalogRow[]>(() => {
+    const rows = new Map<
+      string,
+      {
+        productNames: Set<string>;
+        protocol: string;
+        chain: string;
+        pool: string;
+        depositPossible: boolean;
+        queryable: boolean;
+      }
+    >();
+    for (const product of DEFAULT_PRODUCTS) {
+      for (const mix of product.protocolMix) {
+        const chain = inferProtocolChain(mix.name, mix.pool);
+        const pool = mix.pool ?? `${chain} · ${mix.name}`;
+        const key = `${mix.name.toLowerCase()}__${chain.toLowerCase()}__${pool.toLowerCase()}`;
+        const prev = rows.get(key);
+        const productNames = prev?.productNames ?? new Set<string>();
+        productNames.add(product.name);
+        rows.set(key, {
+          productNames,
+          protocol: mix.name,
+          chain,
+          pool,
+          depositPossible: isPoolDepositPossible(mix.name, chain),
+          queryable: isPoolPositionQueryable(mix.name)
+        });
+      }
+    }
+    return Array.from(rows.entries())
+      .map(([key, row]) => ({
+        key,
+        productNames: Array.from(row.productNames),
+        protocol: row.protocol,
+        chain: row.chain,
+        pool: row.pool,
+        depositPossible: row.depositPossible,
+        queryable: row.queryable,
+        memo: `${row.depositPossible ? "입금 경로 있음" : "입금 경로 없음"} · ${row.queryable ? "포지션 조회 가능" : "포지션 조회 미지원"}`
+      }))
+      .sort((a, b) => {
+        const byProtocolRank = getProtocolSortRank(a.protocol) - getProtocolSortRank(b.protocol);
+        if (byProtocolRank !== 0) return byProtocolRank;
+        const byChain = a.chain.localeCompare(b.chain, "ko-KR", { sensitivity: "base" });
+        if (byChain !== 0) return byChain;
+        return a.pool.localeCompare(b.pool, "ko-KR", { sensitivity: "base" });
+      });
+  }, []);
 
   const verifyProtocolPoolMatches = async () => {
     setOnchainMatchLoading(true);
@@ -1670,23 +1796,60 @@ function PortfolioPanel({
       if (!canPersistToServer) {
         throw new Error("이 기능은 로그인한 뒤에만 사용할 수 있습니다.");
       }
-      const walletAddress = evmAccount?.address ?? solanaAccount?.address;
-      if (!walletAddress) {
+      const evmWalletAddress = evmAccount?.address;
+      const solanaWalletAddress = solanaAccount?.address;
+      if (!evmWalletAddress && !solanaWalletAddress) {
         throw new Error("연결된 지갑 주소가 없습니다. Solana 또는 EVM 지갑을 연결한 뒤 다시 시도해 주세요.");
       }
-      const onchainRows = await listOnchainPositions({}, { forceRefresh: true, walletAddress });
-      const byProtocolChain = onchainRows.reduce<Record<string, OnchainPositionPayload[]>>((acc, row) => {
+      const [onchainRows, orcaWalletRows] = await Promise.all([
+        listOnchainPositions({}, { forceRefresh: true, evmWalletAddress, solanaWalletAddress }),
+        solanaWalletAddress ? listOrcaWalletPositions(solanaWalletAddress) : Promise.resolve([])
+      ]);
+      const combinedRows = [...onchainRows];
+      const seenKeys = new Set(
+        combinedRows.map((row) =>
+          `${row.protocol.toLowerCase()}__${row.chain.toLowerCase()}__${(row.poolAddress ?? row.protocolPositionId ?? row.positionToken ?? row.id).toLowerCase()}`
+        )
+      );
+      for (const row of orcaWalletRows) {
+        const key = `${row.protocol.toLowerCase()}__${row.chain.toLowerCase()}__${(row.poolAddress ?? row.protocolPositionId ?? row.positionToken ?? row.id).toLowerCase()}`;
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
+        combinedRows.push(row);
+      }
+      const nextMap: Record<string, { state: ProtocolPoolMatchState; detail: string }> = {};
+      const orcaCandidateCache = new Map<string, { address: string; label: string } | null>();
+      const byProtocolChain = combinedRows.reduce<Record<string, OnchainPositionPayload[]>>((acc, row) => {
         const key = `${row.protocol.toLowerCase()}__${row.chain.toLowerCase()}`;
         acc[key] = [...(acc[key] ?? []), row];
         return acc;
       }, {});
-      const nextMap: Record<string, { state: ProtocolPoolMatchState; detail: string }> = {};
-      protocolRows.forEach((row) => {
+      for (const row of protocolRows) {
         const key = `${row.name.toLowerCase()}__${row.chain.toLowerCase()}`;
         const protocolChainCandidates = byProtocolChain[key] ?? [];
         if (protocolChainCandidates.length === 0) {
+          const orcaAction = row.name === "Orca" ? inferOrcaActionFromPoolLabel(row.pool) : null;
+          if (orcaAction) {
+            let candidate = orcaCandidateCache.get(orcaAction) ?? null;
+            if (candidate === undefined) {
+              try {
+                const candidates = await resolveOrcaPoolCandidatesForAction(orcaAction, "mainnet");
+                candidate = candidates[0] ? { address: candidates[0].address, label: orcaAction } : null;
+              } catch {
+                candidate = null;
+              }
+              orcaCandidateCache.set(orcaAction, candidate);
+            }
+            if (candidate) {
+              nextMap[row.key] = {
+                state: "available",
+                detail: `Orca 풀 후보 확인 · ${candidate.label} · ${candidate.address}`
+              };
+              continue;
+            }
+          }
           nextMap[row.key] = { state: "missing", detail: "실제 조회 포지션 없음" };
-          return;
+          continue;
         }
         const poolAddressHint = (() => {
           const hex = row.pool.match(/0x[a-fA-F0-9]{40}/)?.[0];
@@ -1706,11 +1869,11 @@ function PortfolioPanel({
         const statuses = candidates.map((item) => item.verify?.status ?? "unsupported");
         if (statuses.every((status) => status === "unsupported")) {
           nextMap[row.key] = { state: "unsupported", detail: `${basisLabel} · 해당 프로토콜의 온체인 검증 미지원` };
-          return;
+          continue;
         }
         if (statuses.some((status) => status === "rpc_error")) {
           nextMap[row.key] = { state: "error", detail: `${basisLabel} · RPC 응답 불안정 (재시도 필요)` };
-          return;
+          continue;
         }
         const actualUsd = candidates.reduce((sum, item) => sum + (item.currentValueUsd ?? item.amountUsd ?? 0), 0);
         const base = Math.max(row.amount, 0.01);
@@ -1720,10 +1883,10 @@ function PortfolioPanel({
         } else {
           nextMap[row.key] = { state: "drift", detail: `${basisLabel} · 실제 $${actualUsd.toFixed(2)} · 차이 ${driftPct.toFixed(1)}%` };
         }
-      });
+      }
       const counts = Object.values(nextMap).reduce<Record<ProtocolPoolMatchState, number>>(
         (acc, row) => ({ ...acc, [row.state]: acc[row.state] + 1 }),
-        { matched: 0, drift: 0, missing: 0, unsupported: 0, error: 0 }
+        { matched: 0, drift: 0, missing: 0, unsupported: 0, error: 0, available: 0 }
       );
       setOnchainMatchMap(nextMap);
       setOnchainMatchSummary(
@@ -1734,6 +1897,14 @@ function PortfolioPanel({
     } finally {
       setOnchainMatchLoading(false);
     }
+  };
+
+  const toggleQueryablePools = async () => {
+    if (showQueryablePools) {
+      setShowQueryablePools(false);
+      return;
+    }
+    setShowQueryablePools(true);
   };
 
   const resetLedger = async () => {
@@ -1793,6 +1964,15 @@ function PortfolioPanel({
           title={!canPersistToServer ? "로그인 후 사용할 수 있습니다." : "실제 지갑 기준으로 프로토콜 풀 매치를 다시 확인합니다."}
         >
           {onchainMatchLoading ? "실제 포지션 조회 중..." : "실제 프로토콜 풀 조회 · 매치 확인"}
+        </button>
+        <button
+          type="button"
+          className="ghost-btn"
+          onClick={() => void toggleQueryablePools()}
+          disabled={onchainMatchLoading || !canPersistToServer}
+          title={!canPersistToServer ? "로그인 후 사용할 수 있습니다." : "현재 조회 가능한 풀 목록을 펼치거나 닫습니다."}
+        >
+          {showQueryablePools ? "조회가능풀 닫기" : "조회가능풀"}
         </button>
         <button
           type="button"
@@ -1939,6 +2119,59 @@ function PortfolioPanel({
           )}
         </tbody>
       </table>
+      {showQueryablePools ? (
+        <>
+          <h3>대상 풀 전체</h3>
+          <p className="kpi-label">현재 상품 카탈로그에 들어있는 풀 전체를 보여주고, 각 풀의 입금 가능 여부와 포지션 조회 가능 여부를 O/X로 표시합니다.</p>
+          <table className="protocol-detail-table portfolio-onchain-table">
+            <thead>
+              <tr>
+                <th>상품</th>
+                <th>프로토콜</th>
+                <th>체인</th>
+                <th>풀</th>
+                <th>입금가능</th>
+                <th>포지션조회가능</th>
+                <th>메모</th>
+              </tr>
+            </thead>
+            <tbody>
+              {catalogPoolRows.length > 0 ? (
+                catalogPoolRows.map((row) => {
+                  return (
+                    <tr key={row.key}>
+                      <td data-label="상품">{row.productNames.join(" / ")}</td>
+                      <td data-label="프로토콜">{row.protocol}</td>
+                      <td data-label="체인">{row.chain}</td>
+                      <td data-label="풀" className="product-pool-pool-label">
+                        {row.pool}
+                      </td>
+                      <td data-label="입금가능">
+                        <span
+                          className={row.depositPossible ? "badge badge-low" : "badge badge-high"}
+                          title={getPoolDepositReason(row.protocol, row.chain)}
+                        >
+                          {row.depositPossible ? "O" : "X"}
+                        </span>
+                      </td>
+                      <td data-label="포지션조회가능">
+                        <span className={row.queryable ? "badge badge-low" : "badge badge-high"} title={getPoolQueryReason(row.protocol)}>
+                          {row.queryable ? "O" : "X"}
+                        </span>
+                      </td>
+                      <td data-label="메모">{row.memo}</td>
+                    </tr>
+                  );
+                })
+              ) : (
+                <tr><td colSpan={7}>아직 대상 풀이 없습니다.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </>
+      ) : (
+        <p className="kpi-label">`조회가능풀` 버튼을 누르면 현재 대상 풀 전체가 펼쳐집니다.</p>
+      )}
       {/* ── 인출 확인 패널 ── */}
       {withdrawDraft ? (
         <div className="protocol-withdraw-confirm" role="dialog" aria-label="인출 확인">

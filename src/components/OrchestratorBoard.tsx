@@ -32,6 +32,7 @@ import {
 import { loadCachedAccountAssets, saveCachedAccountAssets } from "../lib/accountAssetCache";
 import { getSolanaNetworkPreference } from "../lib/solanaNetworkPreference";
 import { getMainnetLivePreference, setMainnetLivePreference } from "../lib/mainnetLivePreference";
+import { getOrcaMinimumAllocationPreference, setOrcaMinimumAllocationPreference } from "../lib/orcaMinimumAllocationPreference";
 import { buildDepositAssetReadiness } from "../lib/depositAssetPlan";
 import { buildDepositExecutionPlan, type DepositExecutionPlanStep } from "../lib/depositExecutionPlan";
 import { buildExecutionPreviewRows } from "../lib/executionPreview";
@@ -145,6 +146,9 @@ export function OrchestratorBoard({
   const [executionModeIntent, setExecutionModeIntent] = useState<"dry-run" | "live">(() =>
     getMainnetLivePreference() ? "live" : "dry-run"
   );
+  const [applyOrcaMinimumAllocation, setApplyOrcaMinimumAllocation] = useState<boolean>(() =>
+    getOrcaMinimumAllocationPreference()
+  );
   const [lastExecution, setLastExecution] = useState<ExecuteJobResponse | null>(null);
   /** Job 생성 시 quoteRows로 미리 만들어 둔 포지션 ID (서버 중복 생성 방지용) */
   const [preCreatedPositionId, setPreCreatedPositionId] = useState<string | undefined>(undefined);
@@ -218,6 +222,7 @@ export function OrchestratorBoard({
     const sync = () => {
       setSolanaNetworkPreference(getSolanaNetworkPreference());
       setExecutionModeIntent(getMainnetLivePreference() ? "live" : "dry-run");
+      setApplyOrcaMinimumAllocation(getOrcaMinimumAllocationPreference());
     };
     if (typeof window !== "undefined") {
       window.addEventListener("storage", sync);
@@ -499,7 +504,11 @@ export function OrchestratorBoard({
         const requiresEvmWallet = !requiresSolanaWallet && ["Ethereum", "Arbitrum", "Base"].includes(row.chain);
         const hasRequiredWallet = requiresSolanaWallet ? Boolean(solanaAccount?.address) : requiresEvmWallet ? Boolean(evmAccount?.address) : true;
         const orcaLiveSupported = !isLiveExecution || row.protocol !== "Orca" || Boolean(solanaAccount?.address);
-        const orcaMinReady = !isLiveExecution || row.protocol !== "Orca" || row.allocationUsd >= ORCA_MIN_LIVE_ALLOCATION_USD;
+        const orcaMinReady =
+          !isLiveExecution ||
+          row.protocol !== "Orca" ||
+          !applyOrcaMinimumAllocation ||
+          row.allocationUsd >= ORCA_MIN_LIVE_ALLOCATION_USD;
         const ready = implemented && hasRequiredWallet && orcaLiveSupported && orcaMinReady;
         return {
           protocol: row.protocol,
@@ -516,12 +525,14 @@ export function OrchestratorBoard({
               : "EVM 키 필요"
               : isLiveExecution && row.protocol === "Orca" && !solanaAccount?.address
                 ? "Phantom Solana 지갑 필요"
-              : isLiveExecution && row.protocol === "Orca" && row.allocationUsd < ORCA_MIN_LIVE_ALLOCATION_USD
+              : isLiveExecution && row.protocol === "Orca" && applyOrcaMinimumAllocation && row.allocationUsd < ORCA_MIN_LIVE_ALLOCATION_USD
                 ? `Orca 최소 $${ORCA_MIN_LIVE_ALLOCATION_USD.toFixed(2)} 필요`
+              : isLiveExecution && row.protocol === "Orca" && !applyOrcaMinimumAllocation && row.allocationUsd < ORCA_MIN_LIVE_ALLOCATION_USD
+                ? `최소금액 미적용 · $${ORCA_MIN_LIVE_ALLOCATION_USD.toFixed(2)} 미만도 시도`
               : "실행 가능"
         };
       }),
-    [evmAccount?.address, isLiveExecution, quoteRows, solanaAccount?.address]
+    [applyOrcaMinimumAllocation, evmAccount?.address, isLiveExecution, quoteRows, solanaAccount?.address]
   );
   const protocolReadyCount = protocolReadiness.filter((row) => row.ready).length;
   const protocolFlagOnlyCount = protocolReadiness.filter((row) => row.flagOn && !row.ready).length;
@@ -884,7 +895,8 @@ export function OrchestratorBoard({
             network: liveSolanaNetwork,
             sourceAsset: selectedSourceAsset,
             sourceChain: assetReadiness.selectedAsset?.chain,
-            actionFilter: [row.action]
+            actionFilter: [row.action],
+            applyMinimumAllocationCheck: applyOrcaMinimumAllocation
           });
           if (results.length === 0) {
             throw new Error(`Orca 실행 결과가 비어 있습니다: ${row.action}`);
@@ -1241,6 +1253,30 @@ export function OrchestratorBoard({
         ) : (
           <p className="quote-card-empty">금액을 입력하면 어댑터별 시뮬 배분이 표시됩니다.</p>
         )}
+        <div className="quote-orca-min-row" aria-label="Orca 최소 배분 설정">
+          <label className="quote-orca-min-toggle">
+            <input
+              type="checkbox"
+              checked={applyOrcaMinimumAllocation}
+              onChange={(event) => {
+                const next = event.target.checked;
+                setApplyOrcaMinimumAllocation(next);
+                setOrcaMinimumAllocationPreference(next);
+                setIsExecutionConfirmed(false);
+                setApiMessage(
+                  next
+                    ? `Orca 최소 배분 $${ORCA_MIN_LIVE_ALLOCATION_USD.toFixed(2)} 적용`
+                    : `Orca 최소 배분 $${ORCA_MIN_LIVE_ALLOCATION_USD.toFixed(2)} 미적용`
+                );
+              }}
+            />
+            <span>Orca 최소 배분 적용</span>
+          </label>
+          <span className="quote-orca-min-hint">
+            live 실행에서 <strong>${ORCA_MIN_LIVE_ALLOCATION_USD.toFixed(2)}</strong> 미만 Orca 항목을{" "}
+            {applyOrcaMinimumAllocation ? "자동 제외" : "그대로 시도"}합니다.
+          </span>
+        </div>
         <p className="quote-card-foot">
           입금 전·후 동일한 표 형식으로 예상 배분과 서버 응답을 비교합니다.
           {!isResultQuote ? ` 조율 합계 $${adjustedAllocationTotal.toFixed(2)}` : ""}
@@ -1264,7 +1300,7 @@ export function OrchestratorBoard({
         </div>
         {isLiveExecution && protocolSkippedCount > 0 ? (
           <p className="kpi-label">
-            live 실행에서는 Orca 최소 금액 미만 또는 미지원 항목 {protocolSkippedCount}건이 자동 제외됩니다.
+            live 실행에서는 {applyOrcaMinimumAllocation ? "Orca 최소 금액 미만 또는 " : ""}미지원 항목 {protocolSkippedCount}건이 자동 제외됩니다.
           </p>
         ) : null}
         {showExecutionPlanDetails ? (

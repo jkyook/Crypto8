@@ -43,6 +43,10 @@ const ORCA_ACTION_MINTS: Record<string, [string, string]> = {
   ]
 };
 
+function canUseBrowserFetch(): boolean {
+  return typeof window !== "undefined" && typeof window.fetch === "function";
+}
+
 function sameMintPair(left: OrcaPoolSearchResult, a: string, b: string): boolean {
   const pair = new Set([left.tokenMintA.toLowerCase(), left.tokenMintB.toLowerCase()]);
   return pair.has(a.toLowerCase()) && pair.has(b.toLowerCase());
@@ -103,19 +107,7 @@ export async function resolveOrcaPoolCandidatesForAction(
     throw new Error(`unsupported Orca action: ${action}`);
   }
 
-  const url = new URL(ORCA_POOL_SEARCH_URL);
-  url.searchParams.set("q", query.query);
-  url.searchParams.set("size", "20");
-  url.searchParams.set("sortBy", "tvl");
-  url.searchParams.set("sortDirection", "desc");
-  url.searchParams.set("verifiedOnly", "true");
-
-  const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
-  if (!response.ok) {
-    throw new Error(`Orca pool search failed: HTTP ${response.status}`);
-  }
-  const json = await response.json();
-  const rows = parsePoolSearchResults(json);
+  const rows = await fetchOrcaPools(action, query.query, network);
   if (rows.length === 0) {
     throw new Error(`No Orca pools found for query: ${query.query}`);
   }
@@ -156,4 +148,34 @@ export async function resolveOrcaPoolCandidatesForAction(
     ...rows.filter((row) => row.address !== selected.address)
   ];
   return ordered;
+}
+
+async function fetchOrcaPools(action: string, query: string, network: SolanaNetwork): Promise<OrcaPoolSearchResult[]> {
+  const url = new URL(ORCA_POOL_SEARCH_URL);
+  url.searchParams.set("q", query);
+  url.searchParams.set("size", "20");
+  url.searchParams.set("sortBy", "tvl");
+  url.searchParams.set("sortDirection", "desc");
+  url.searchParams.set("verifiedOnly", "true");
+
+  if (canUseBrowserFetch()) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (response.ok) {
+        const json = await response.json();
+        return parsePoolSearchResults(json);
+      }
+    } catch {
+      // 브라우저 직접 호출 실패 시 API 프록시로 폴백
+    }
+  }
+
+  try {
+    const { resolveOrcaPoolCandidatesRemote } = await import("./api");
+    return await resolveOrcaPoolCandidatesRemote(action, network);
+  } catch (error) {
+    throw new Error(
+      `Orca pool search failed via browser and API proxy: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
 }

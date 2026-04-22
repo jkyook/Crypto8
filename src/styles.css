@@ -6417,6 +6417,39 @@ body[data-theme="light"] .unified-search-hit-sub {
   border-color: rgba(255, 92, 92, 0.24);
 }
 
+.quote-orca-min-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 184, 107, 0.2);
+  background: linear-gradient(135deg, rgba(255, 184, 107, 0.08), rgba(255, 255, 255, 0.03));
+}
+
+.quote-orca-min-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #f3f8ff;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.quote-orca-min-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: #ffb86b;
+}
+
+.quote-orca-min-hint {
+  color: var(--c8-text-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
 .quote-card-grid {
   display: grid;
   gap: 6px;

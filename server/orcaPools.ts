@@ -138,3 +138,37 @@ export async function resolveOrcaPoolForAction(action: string): Promise<OrcaPool
   ORCA_POOL_CACHE.set(action, selected);
   return selected;
 }
+
+export async function resolveOrcaPoolCandidatesForAction(
+  action: string,
+  network: SolanaNetwork = "mainnet"
+): Promise<OrcaPoolSearchResult[]> {
+  const cacheKey = `${network}:${action}`;
+  const cached = ORCA_POOL_CACHE.get(cacheKey);
+  if (cached) {
+    return [cached];
+  }
+
+  const query = ORCA_ACTION_TO_QUERY[action];
+  if (!query) {
+    throw new Error(`unsupported Orca action: ${action}`);
+  }
+
+  const url = new URL(ORCA_POOL_SEARCH_URL);
+  url.searchParams.set("q", query.query);
+  url.searchParams.set("size", "20");
+  url.searchParams.set("sortBy", "tvl");
+  url.searchParams.set("sortDirection", "desc");
+  url.searchParams.set("verifiedOnly", "true");
+
+  const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  if (!response.ok) {
+    throw new Error(`Orca pool search failed: HTTP ${response.status}`);
+  }
+  const json = await response.json();
+  const rows = parsePoolSearchResults(json);
+  if (rows.length === 0) {
+    throw new Error(`No Orca pools found for query: ${query.query}`);
+  }
+  return rows;
+}

@@ -8,7 +8,16 @@ function stripTrailingSlash(s: string): string {
 function resolveApiBase(): string {
   const raw = import.meta.env.VITE_API_BASE_URL as string | undefined;
   if (typeof raw === "string" && raw.trim().length > 0) {
-    return stripTrailingSlash(raw.trim());
+    const candidate = stripTrailingSlash(raw.trim());
+    try {
+      const parsed = new URL(candidate);
+      if (parsed.hostname === "0.0.0.0") {
+        return import.meta.env.DEV ? "" : "http://localhost:8787";
+      }
+    } catch {
+      // 절대 URL이 아니면 아래 로직으로 진행
+    }
+    return candidate;
   }
   if (import.meta.env.DEV) {
     return "";
@@ -118,6 +127,20 @@ export type ProductSubtype =
   | "sol-stable"
   | "eth-stable"
   | "eth-bluechip";
+
+export type OrcaPoolSearchResult = {
+  address: string;
+  tickSpacing: number;
+  feeRate?: number;
+  tokenMintA: string;
+  tokenMintB: string;
+  tokenA?: { symbol?: string; address?: string };
+  tokenB?: { symbol?: string; address?: string };
+  tvlUsdc?: string;
+  price?: string;
+  poolType?: string;
+  hasWarning?: boolean;
+};
 
 export type JobInput = {
   depositUsd: number;
@@ -1247,7 +1270,7 @@ export async function listDepositPositions(init: Pick<RequestInit, "signal"> = {
 
 export async function listOnchainPositions(
   init: Pick<RequestInit, "signal"> = {},
-  opts?: { forceRefresh?: boolean; walletAddress?: string }
+  opts?: { forceRefresh?: boolean; walletAddress?: string; solanaWalletAddress?: string; evmWalletAddress?: string }
 ): Promise<OnchainPositionPayload[]> {
   const query = new URLSearchParams();
   if (opts?.forceRefresh) {
@@ -1256,11 +1279,52 @@ export async function listOnchainPositions(
   if (opts?.walletAddress) {
     query.set("walletAddress", opts.walletAddress);
   }
+  if (opts?.solanaWalletAddress) {
+    query.set("solanaWalletAddress", opts.solanaWalletAddress);
+  }
+  if (opts?.evmWalletAddress) {
+    query.set("evmWalletAddress", opts.evmWalletAddress);
+  }
   const suffix = query.toString();
   const response = await authedFetch(`/api/positions${suffix ? `?${suffix}` : ""}`, init);
   if (!response.ok) {
     const raw = (await response.json().catch(() => null)) as { message?: string } | null;
     throw new Error(raw?.message ?? "온체인 포지션 조회 실패");
+  }
+  const data = (await response.json()) as { positions?: OnchainPositionPayload[] };
+  return data.positions ?? [];
+}
+
+export async function resolveOrcaPoolCandidatesRemote(
+  action: string,
+  network: "mainnet" | "devnet" = "mainnet"
+): Promise<OrcaPoolSearchResult[]> {
+  const query = new URLSearchParams({ action, network });
+  const response = await authedFetch(`/api/orca/pools/search?${query.toString()}`);
+  const text = await response.text();
+  let data = {} as { ok?: boolean; pools?: OrcaPoolSearchResult[]; message?: string };
+  try {
+    if (text) {
+      data = JSON.parse(text) as typeof data;
+    }
+  } catch {
+    /* 비 JSON */
+  }
+  if (!response.ok) {
+    throw new Error(data.message ?? "Orca 풀 조회 실패");
+  }
+  return data.pools ?? [];
+}
+
+export async function listOrcaWalletPositions(
+  walletAddress: string,
+  init: Pick<RequestInit, "signal"> = {}
+): Promise<OnchainPositionPayload[]> {
+  const query = new URLSearchParams({ walletAddress });
+  const response = await authedFetch(`/api/orca/positions?${query.toString()}`, init);
+  if (!response.ok) {
+    const raw = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(raw?.message ?? "Orca 포지션 조회 실패");
   }
   const data = (await response.json()) as { positions?: OnchainPositionPayload[] };
   return data.positions ?? [];

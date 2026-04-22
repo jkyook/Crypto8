@@ -29,8 +29,9 @@ import { getMarketPriceSnapshot } from "./marketPricing";
 import { linkUserWallet, listUserWallets } from "./userWallets";
 import type { ProtocolExecutionReadiness } from "./adapters/types";
 import { listLiveAccountAssets } from "./liveAccountAssets";
+import { resolveOrcaPoolCandidatesForAction } from "./orcaPools";
 import { listPositionsByUser } from "./intentStore";
-import { enrichPositionsWithOnchain } from "./positionVerifier";
+import { enrichPositionsWithOnchain, listOrcaWalletPositions } from "./positionVerifier";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
@@ -714,9 +715,16 @@ app.get("/api/positions", requireAuth(["orchestrator", "security", "viewer"]), a
   const username = res.locals.user.username as string;
   const forceRefresh = req.query.force === "1" || req.query.force === "true";
   const walletAddress = typeof req.query.walletAddress === "string" ? req.query.walletAddress.trim() : undefined;
+  const solanaWalletAddress = typeof req.query.solanaWalletAddress === "string" ? req.query.solanaWalletAddress.trim() : undefined;
+  const evmWalletAddress = typeof req.query.evmWalletAddress === "string" ? req.query.evmWalletAddress.trim() : undefined;
   try {
     const rows = await listPositionsByUser(username);
-    const enriched = await enrichPositionsWithOnchain(rows, walletAddress, forceRefresh);
+    const walletAddressMap = {
+      ...(walletAddress ? { "*": walletAddress } : {}),
+      ...(solanaWalletAddress ? { Solana: solanaWalletAddress } : {}),
+      ...(evmWalletAddress ? { Ethereum: evmWalletAddress, Arbitrum: evmWalletAddress, Base: evmWalletAddress } : {})
+    };
+    const enriched = await enrichPositionsWithOnchain(rows, walletAddress, walletAddressMap, forceRefresh);
     res.json({
       ok: true,
       positions: enriched.map((row) => stripUsername(row))
@@ -725,6 +733,24 @@ app.get("/api/positions", requireAuth(["orchestrator", "security", "viewer"]), a
     res.status(500).json({
       ok: false,
       message: error instanceof Error ? error.message : "onchain positions query failed"
+    });
+  }
+});
+
+app.get("/api/orca/positions", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+  const username = res.locals.user.username as string;
+  const walletAddress = typeof req.query.walletAddress === "string" ? req.query.walletAddress.trim() : "";
+  if (!walletAddress) {
+    res.status(400).json({ ok: false, message: "walletAddress required" });
+    return;
+  }
+  try {
+    const positions = await listOrcaWalletPositions(username, walletAddress);
+    res.json({ ok: true, positions });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      message: error instanceof Error ? error.message : "orca positions query failed"
     });
   }
 });
@@ -851,6 +877,26 @@ app.get("/api/insights/news", async (req, res) => {
   }
   const bundle = await gatherProtocolInsightsNews(protocol);
   res.json({ ok: true, items: bundle.items, digest: bundle.digest, scannedSources: bundle.scannedSources });
+});
+
+app.get("/api/orca/pools/search", async (req, res) => {
+  const actionParam = req.query.action;
+  const action = typeof actionParam === "string" ? actionParam.trim() : "";
+  const networkParam = req.query.network;
+  const network = networkParam === "devnet" ? "devnet" : "mainnet";
+  if (!action) {
+    res.status(400).json({ ok: false, message: "action query is required" });
+    return;
+  }
+  try {
+    const rows = await resolveOrcaPoolCandidatesForAction(action, network);
+    res.json({ ok: true, pools: rows });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      message: error instanceof Error ? error.message : "orca pool search failed"
+    });
+  }
 });
 
 app.post("/api/orchestrator/jobs", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
