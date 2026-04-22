@@ -30,6 +30,7 @@ import {
 } from "../lib/api";
 import { loadCachedAccountAssets, saveCachedAccountAssets } from "../lib/accountAssetCache";
 import { getSolanaNetworkPreference } from "../lib/solanaNetworkPreference";
+import { getMainnetLivePreference, setMainnetLivePreference } from "../lib/mainnetLivePreference";
 import { buildDepositAssetReadiness } from "../lib/depositAssetPlan";
 import { buildDepositExecutionPlan, type DepositExecutionPlanStep } from "../lib/depositExecutionPlan";
 import { buildExecutionPreviewRows } from "../lib/executionPreview";
@@ -38,6 +39,7 @@ import { checkGuardrails } from "../lib/strategyEngine";
 import type { ExecutionPreviewRow } from "../lib/executionPreview";
 import { fetchEvmPortfolioWithFallback, getEvmRpcCandidates } from "../lib/evmChainAssets";
 import { fetchOnChainPortfolioWithFallback, getSolanaRpcCandidates } from "../lib/solanaChainAssets";
+import { diffOnChainPortfolios, summarizeDepositEvidence } from "../lib/solanaTxMonitor";
 import type { OrcaClientExecutionResult } from "../lib/orcaWalletExecution";
 
 type OrchestratorBoardProps = {
@@ -138,7 +140,9 @@ export function OrchestratorBoard({
   const [feeEstimate, setFeeEstimate] = useState<ProtocolFeeEstimate | null>(null);
   const [feeEstimateError, setFeeEstimateError] = useState("");
   const [feeEstimateLoading, setFeeEstimateLoading] = useState(false);
-  const [executionModeIntent, setExecutionModeIntent] = useState<"dry-run" | "live">("dry-run");
+  const [executionModeIntent, setExecutionModeIntent] = useState<"dry-run" | "live">(() =>
+    getMainnetLivePreference() ? "live" : "dry-run"
+  );
   const [lastExecution, setLastExecution] = useState<ExecuteJobResponse | null>(null);
   /** Job 생성 시 quoteRows로 미리 만들어 둔 포지션 ID (서버 중복 생성 방지용) */
   const [preCreatedPositionId, setPreCreatedPositionId] = useState<string | undefined>(undefined);
@@ -205,7 +209,10 @@ export function OrchestratorBoard({
   const canLoadLiveAssets = executionModeIntent === "live" ? hasWallet : canUseServerJobs;
   const sessionUsername = getSession()?.username ?? "";
   useEffect(() => {
-    const sync = () => setSolanaNetworkPreference(getSolanaNetworkPreference());
+    const sync = () => {
+      setSolanaNetworkPreference(getSolanaNetworkPreference());
+      setExecutionModeIntent(getMainnetLivePreference() ? "live" : "dry-run");
+    };
     if (typeof window !== "undefined") {
       window.addEventListener("storage", sync);
     }
@@ -779,6 +786,27 @@ export function OrchestratorBoard({
         }
         const { executeOrcaPlanWithWallet } = await import("../lib/orcaWalletExecution");
         clientExecutionResults = [];
+        // 실입금 증빙을 위한 사전 잔고 스냅샷 (실패해도 전체 실행을 막지 않음)
+        const solanaAddressForSnapshot = (() => {
+          const pk = phantomSolana.publicKey;
+          if (!pk) return undefined;
+          if (typeof pk === "string") return pk;
+          const maybe = pk as { toBase58?: () => string; toString?: () => string };
+          return maybe.toBase58?.() ?? maybe.toString?.() ?? undefined;
+        })();
+        let portfolioBefore: Awaited<ReturnType<typeof fetchOnChainPortfolioWithFallback>>["portfolio"] | null = null;
+        if (solanaAddressForSnapshot) {
+          try {
+            const snap = await fetchOnChainPortfolioWithFallback(
+              getSolanaRpcCandidates(liveSolanaNetwork, liveSolanaNetwork !== "devnet"),
+              solanaAddressForSnapshot,
+              liveSolanaNetwork
+            );
+            portfolioBefore = snap.portfolio;
+          } catch (snapError) {
+            console.warn("[OrchestratorBoard] pre-deposit balance snapshot failed:", snapError);
+          }
+        }
         for (const [index, row] of orcaRows.entries()) {
           const rowPlanSteps = pendingPlan.filter((step) => step.action === row.action && step.requiresWalletApproval);
           for (const step of rowPlanSteps) {
@@ -829,6 +857,38 @@ export function OrchestratorBoard({
             message: "실제 처리 확인됨"
           };
           setExecutionStepLog([...nextLogs]);
+        }
+        // 실입금 증빙: 사전 스냅샷이 있었다면 사후 잔고 비교로 변화 감지 로그 남김
+        if (portfolioBefore && solanaAddressForSnapshot) {
+          try {
+            const snapAfter = await fetchOnChainPortfolioWithFallback(
+              getSolanaRpcCandidates(liveSolanaNetwork, liveSolanaNetwork !== "devnet"),
+              solanaAddressForSnapshot,
+              liveSolanaNetwork
+            );
+            const deltas = diffOnChainPortfolios(portfolioBefore, snapAfter.portfolio);
+            const evidence = summarizeDepositEvidence(deltas);
+            if (evidence.hasOutflow && evidence.topOutflow) {
+              nextLogs.push({
+                key: "deposit-evidence",
+                title: "실입금 감지",
+                detail: `잔고 변화: ${evidence.outflowSymbols.join(", ")} 차감 확인 (top: ${evidence.topOutflow.symbol} ${evidence.topOutflow.delta.toFixed(4)})`,
+                state: "done",
+                message: "on-chain 잔고 스냅샷 비교"
+              });
+            } else {
+              nextLogs.push({
+                key: "deposit-evidence",
+                title: "실입금 감지",
+                detail: "on-chain 잔고 변화가 감지되지 않았습니다. (네트워크 지연/컨펌 대기 중일 수 있습니다)",
+                state: "done",
+                message: "잔고 변화 미확인"
+              });
+            }
+            setExecutionStepLog([...nextLogs]);
+          } catch (verifyError) {
+            console.warn("[OrchestratorBoard] post-deposit balance snapshot failed:", verifyError);
+          }
         }
       } else {
         for (const step of pendingPlan) {
@@ -1046,7 +1106,9 @@ export function OrchestratorBoard({
               type="button"
               className={isLiveExecution ? "quote-card-mode quote-card-mode--live" : "quote-card-mode"}
               onClick={() => {
-                setExecutionModeIntent((prev) => (prev === "dry-run" ? "live" : "dry-run"));
+                const nextMode = executionModeIntent === "dry-run" ? "live" : "dry-run";
+                setExecutionModeIntent(nextMode);
+                setMainnetLivePreference(nextMode === "live");
                 setIsExecutionConfirmed(false);
                 setIsExecutionDone(false);
                 setLastExecution(null);

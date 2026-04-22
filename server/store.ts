@@ -36,17 +36,30 @@ function rowToExecutionJob(row: {
   hasPendingRelease: number;
   riskLevel: string;
   requestedBy: string | null;
+  sourceAsset?: string | null;
+  productNetwork?: string | null;
+  productSubtype?: string | null;
 }): ExecutionJob {
+  const input: ExecutionJob["input"] = {
+    depositUsd: row.depositUsd,
+    isRangeOut: Boolean(row.isRangeOut),
+    isDepegAlert: Boolean(row.isDepegAlert),
+    hasPendingRelease: Boolean(row.hasPendingRelease)
+  };
+  if (row.sourceAsset) {
+    input.sourceAsset = row.sourceAsset as NonNullable<JobInput["sourceAsset"]>;
+  }
+  if (row.productNetwork) {
+    input.productNetwork = row.productNetwork as NonNullable<JobInput["productNetwork"]>;
+  }
+  if (row.productSubtype) {
+    input.productSubtype = row.productSubtype as NonNullable<JobInput["productSubtype"]>;
+  }
   return {
     id: row.id,
     createdAt: row.createdAt,
     status: row.status as ExecutionJob["status"],
-    input: {
-      depositUsd: row.depositUsd,
-      isRangeOut: Boolean(row.isRangeOut),
-      isDepegAlert: Boolean(row.isDepegAlert),
-      hasPendingRelease: Boolean(row.hasPendingRelease)
-    },
+    input,
     riskLevel: row.riskLevel as RiskLevel,
     requestedBy: row.requestedBy
   };
@@ -76,6 +89,9 @@ export async function createJob(input: JobInput, requestedBy: string): Promise<E
       isDepegAlert: input.isDepegAlert ? 1 : 0,
       hasPendingRelease: input.hasPendingRelease ? 1 : 0,
       riskLevel: job.riskLevel,
+      sourceAsset: input.sourceAsset ?? null,
+      productNetwork: input.productNetwork ?? null,
+      productSubtype: input.productSubtype ?? null,
       requestedBy
     }
   });

@@ -114,6 +114,67 @@ body[data-theme="light"] th {
   gap: 8px;
 }
 
+.mainnet-live-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(126, 146, 204, 0.7);
+  background: rgba(18, 33, 55, 0.9);
+  color: #d7e6ff;
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.mainnet-live-toggle:hover {
+  border-color: rgba(123, 232, 195, 0.58);
+}
+
+.mainnet-live-toggle-track {
+  width: 32px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(135, 157, 198, 0.78);
+  background: rgba(12, 24, 40, 0.95);
+  display: inline-flex;
+  align-items: center;
+  padding: 1px;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.mainnet-live-toggle-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #98add8;
+  box-shadow: 0 1px 3px rgba(6, 14, 24, 0.5);
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+
+.mainnet-live-toggle--on {
+  border-color: rgba(123, 232, 195, 0.68);
+  background: rgba(8, 39, 42, 0.9);
+  color: #b9ffeb;
+}
+
+.mainnet-live-toggle--on .mainnet-live-toggle-track {
+  border-color: rgba(123, 232, 195, 0.78);
+  background: rgba(24, 95, 79, 0.88);
+}
+
+.mainnet-live-toggle--on .mainnet-live-toggle-thumb {
+  transform: translateX(14px);
+  background: #7be8c3;
+}
+
+.mainnet-live-toggle-text {
+  line-height: 1;
+}
+
 .header-search-trigger {
   flex-shrink: 0;
 }
@@ -5051,6 +5112,27 @@ body[data-theme="light"] .corner-icon {
   background: rgba(250, 253, 255, 0.95);
   border-color: #c4d6ea;
   color: #132741;
+}
+
+body[data-theme="light"] .mainnet-live-toggle {
+  background: rgba(250, 253, 255, 0.95);
+  border-color: #c4d6ea;
+  color: #163553;
+}
+
+body[data-theme="light"] .mainnet-live-toggle-track {
+  background: rgba(233, 243, 252, 0.98);
+  border-color: #b8cee3;
+}
+
+body[data-theme="light"] .mainnet-live-toggle-thumb {
+  background: #8aa5ca;
+}
+
+body[data-theme="light"] .mainnet-live-toggle--on {
+  border-color: rgba(55, 147, 122, 0.46);
+  background: rgba(236, 251, 244, 0.96);
+  color: #1e654f;
 }
 
 body[data-theme="light"] .alert-unread-badge {

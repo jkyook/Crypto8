@@ -14,6 +14,7 @@ import { fetchMarketPrices, type AccountAssetSymbol, type ProductNetwork, type P
 import { getSolanaRpcCandidates } from "./solanaChainAssets";
 import { resolveOrcaPoolCandidatesForAction } from "./orcaPools";
 import { executeJupiterExactInSwap } from "./solanaJupiterSwap";
+import { waitForSolanaTxConfirmation } from "./solanaTxMonitor";
 import {
   resolveSolanaSymbolForMint,
   resolveSolanaTokenDecimals,
@@ -334,6 +335,10 @@ export async function executeOrcaPlanWithWallet(input: {
   sourceAsset?: AccountAssetSymbol;
   sourceChain?: string;
   actionFilter?: string[];
+  /** true(기본)이면 각 tx 가 네트워크에서 confirmed 될 때까지 폴링 후 반환. */
+  waitForConfirmation?: boolean;
+  /** 컨펌 폴링 타임아웃(ms). 기본 90초. */
+  confirmTimeoutMs?: number;
 }): Promise<OrcaClientExecutionResult[]> {
   if (!normalizeSolanaPublicKey(input.solana.publicKey)) {
     throw new Error("Solana 지갑이 연결되어 있지 않습니다.");
@@ -426,6 +431,18 @@ export async function executeOrcaPlanWithWallet(input: {
         true
       );
       const signature = await tx.buildAndExecute();
+      const shouldWait = input.waitForConfirmation !== false;
+      if (shouldWait) {
+        const confirm = await waitForSolanaTxConfirmation({
+          signature,
+          rpcCandidates,
+          target: "confirmed",
+          timeoutMs: input.confirmTimeoutMs ?? 90_000
+        });
+        if (confirm.error && !confirm.timedOut) {
+          throw new Error(`Orca tx 실패(${alloc.action}): ${confirm.error}`);
+        }
+      }
       results.push({
         protocol: "Orca",
         chain: "Solana",

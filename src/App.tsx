@@ -40,6 +40,8 @@ import { aggregateChainUsdFromPositions, estimateAnnualYieldUsd } from "./lib/po
 import { getNextQuarterStart } from "./lib/quarterSchedule";
 import type { ExecutionPreviewRow } from "./lib/executionPreview";
 import { OPTION_L2_STAR } from "./lib/strategyEngine";
+import { getMainnetLivePreference, setMainnetLivePreference } from "./lib/mainnetLivePreference";
+import { setSolanaNetworkPreference } from "./lib/solanaNetworkPreference";
 
 const PORTFOLIO_DONUT_COLORS = ["#8b7bff", "#3bd4ff", "#47d9a8", "#ffb86b"];
 
@@ -1970,6 +1972,7 @@ function ExecutionPage({
 export default function App() {
   const [session, setSession] = useState<AuthSession | null>(getSession());
   const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [mainnetLiveEnabled, setMainnetLiveEnabled] = useState<boolean>(() => getMainnetLivePreference());
   const [activeMenu, setActiveMenu] = useState<MenuKey>("my");
   const [openTopMenu, setOpenTopMenu] = useState<TopNavGroupKey | null>(null);
   const [recentJobs, setRecentJobs] = useState<Job[]>([]);
@@ -2157,6 +2160,19 @@ export default function App() {
   useEffect(() => {
     document.body.setAttribute("data-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    const sync = () => setMainnetLiveEnabled(getMainnetLivePreference());
+    if (typeof window !== "undefined") {
+      window.addEventListener("storage", sync);
+    }
+    sync();
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("storage", sync);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const onAuthCleared = (): void => {
@@ -2419,6 +2435,34 @@ export default function App() {
           </div>
         </nav>
         <div className="header-tools" aria-label="빠른 도구">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={mainnetLiveEnabled}
+            className={mainnetLiveEnabled ? "mainnet-live-toggle mainnet-live-toggle--on" : "mainnet-live-toggle"}
+            onClick={() => {
+              const next = !mainnetLiveEnabled;
+              setMainnetLivePreference(next);
+              if (next) {
+                setSolanaNetworkPreference("mainnet");
+                setPortfolioNotice({
+                  variant: "info",
+                  text: "Mainnet LIVE 모드가 활성화되었습니다. Execution 화면 기본값이 REAL-RUN + 메인넷으로 동작합니다."
+                });
+              } else {
+                setPortfolioNotice({
+                  variant: "info",
+                  text: "Mainnet LIVE 모드가 비활성화되었습니다. Execution 화면 기본값이 dry-run으로 돌아갑니다."
+                });
+              }
+            }}
+            title={mainnetLiveEnabled ? "Mainnet LIVE 비활성화" : "Mainnet LIVE 활성화"}
+          >
+            <span className="mainnet-live-toggle-track" aria-hidden>
+              <span className="mainnet-live-toggle-thumb" />
+            </span>
+            <span className="mainnet-live-toggle-text">Mainnet LIVE</span>
+          </button>
           <WalletPanel
             compact
             positions={positions}
