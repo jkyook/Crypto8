@@ -4,6 +4,7 @@ import { useAccounts, usePhantom } from "@phantom/react-sdk";
 import type { ISolanaChain } from "@phantom/chain-interfaces";
 import {
   listAccountAssets,
+  listLiveAccountAssets,
   listAccountWallets,
   fetchMarketPrices,
   login,
@@ -158,6 +159,10 @@ export function OrchestratorBoard({
   const [planApprovalError, setPlanApprovalError] = useState("");
   const [pendingPlan, setPendingPlan] = useState<DepositExecutionPlanStep[] | null>(null);
   const [executionStepLog, setExecutionStepLog] = useState<ExecutionStepLogEntry[]>([]);
+  const [showFundingDetails, setShowFundingDetails] = useState(false);
+  const [showRiskDetails, setShowRiskDetails] = useState(false);
+  const [showExecutionPlanDetails, setShowExecutionPlanDetails] = useState(false);
+  const [showRawPayload, setShowRawPayload] = useState(false);
   const selectedSourceAssetRef = useRef(selectedSourceAsset);
   const correlationId = useMemo(
     () => (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `corr_${Date.now()}`),
@@ -264,10 +269,16 @@ export function OrchestratorBoard({
             throw new Error("REAL-RUN은 실제 지갑 연결이 필요합니다.");
           }
           const evmAddress = evmAccount?.address as `0x${string}` | undefined;
-          const [solanaPortfolio, evmPortfolios] = await Promise.all([
+          const [solanaPortfolioResult, evmPortfolios] = await Promise.all([
             solanaAccount?.address
-              ? fetchOnChainPortfolioWithFallback(getSolanaRpcCandidates(liveSolanaNetwork, liveSolanaNetwork !== "devnet"), solanaAccount.address, liveSolanaNetwork)
-              : Promise.resolve(null),
+              ? fetchOnChainPortfolioWithFallback(
+                  getSolanaRpcCandidates(liveSolanaNetwork, liveSolanaNetwork !== "devnet"),
+                  solanaAccount.address,
+                  liveSolanaNetwork
+                )
+                  .then((value) => ({ ok: true as const, value }))
+                  .catch((error: unknown) => ({ ok: false as const, error }))
+              : Promise.resolve({ ok: true as const, value: null }),
             evmAddress
               ? Promise.allSettled(
                   (["Ethereum", "Arbitrum", "Base"] as const).map((chainName) =>
@@ -284,7 +295,8 @@ export function OrchestratorBoard({
               : Promise.resolve([])
           ]);
           const nextAssets: AccountAssetBalance[] = [];
-          if (solanaPortfolio) {
+          if (solanaPortfolioResult.ok && solanaPortfolioResult.value) {
+            const solanaPortfolio = solanaPortfolioResult.value;
             const solanaRows: AccountAssetBalance[] = [
               {
                 symbol: "SOL",
@@ -330,6 +342,24 @@ export function OrchestratorBoard({
               console.warn(`EVM ${(["Ethereum", "Arbitrum", "Base"] as const)[idx]} balance fetch failed:`, result.reason);
             }
           });
+          // 브라우저 RPC(CORS/레이트리밋) 실패 시 서버 경유 실잔고 API로 자동 폴백
+          if (!solanaPortfolioResult.ok || nextAssets.length === 0) {
+            const fallbackRows = await listLiveAccountAssets(
+              {
+                network: liveSolanaNetwork,
+                solanaAddress: solanaAccount?.address ?? null,
+                evmAddress: evmAddress ?? null
+              },
+              { signal: controller.signal }
+            ).catch(() => []);
+            if (fallbackRows.length > 0) {
+              if (nextAssets.length === 0) {
+                nextAssets.push(...fallbackRows);
+              } else if (!nextAssets.some((row) => row.chain === "Solana")) {
+                nextAssets.push(...fallbackRows.filter((row) => row.chain === "Solana"));
+              }
+            }
+          }
           if (nextAssets.length === 0) {
             if (cachedAssets && cachedAssets.length > 0) {
               setAccountAssets(cachedAssets);
@@ -545,6 +575,8 @@ export function OrchestratorBoard({
     { key: "identity", label: "본인 확인", ok: isIdentityConfirmed, detail: isIdentityConfirmed ? "계정 기준 진행" : "확인 대기" },
     { key: "depeg", label: "스테이블 디페그", ok: !isDepegAlert, detail: "실시간 피드 연동 전 기본 정상값" }
   ] as const;
+  const riskCheckItems = autoChecks.slice(1);
+  const passedRiskChecks = riskCheckItems.filter((item) => item.ok).length;
   const findFeeForRoute = (route: (typeof assetReadiness.swapRows)[number]) =>
     feeEstimate?.rows.find((fee) => fee.protocol === route.protocol && fee.chain === route.chain && fee.action === route.action);
   /**
@@ -1026,42 +1058,51 @@ export function OrchestratorBoard({
             <em>{feeEstimate ? `${feeEstimate.priceSource} · ${new Date(feeEstimate.updatedAt).toLocaleTimeString()}` : "가스·스왑 수수료 포함"}</em>
           </div>
         </div>
-        <div className="deposit-swap-route-list" aria-label="스왑 및 브릿지 계획">
-          {assetReadiness.swapRows.map((row, idx) => {
-            const fee = findFeeForRoute(row);
-            return (
-              <div key={`${row.target}-${idx}`} className="deposit-swap-route-row">
-                <span>
-                  <strong>{row.target}</strong>
-                  <em>
-                    현재 {row.sourceAsset} · {row.sourceChain} / 목표 {row.requiredAssets.join("/")} · {row.chain}
-                  </em>
-                </span>
-                <span>
-                  <strong>{row.note}</strong>
-                  <em>{row.route}</em>
-                </span>
-                <span>
-                  <strong>
-                    {fee ? `$${fee.estimatedFeeUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : feeEstimateLoading ? "비용 조회 중" : "비용 —"}
-                  </strong>
-                  <em>
-                    배분 ${row.requiredUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                    {fee
-                      ? ` · 네트워크 $${fee.networkFeeUsd.toFixed(4)} · 스왑 $${fee.swapFeeUsd.toFixed(2)} · 전송 $${fee.bridgeFeeUsd.toFixed(2)}`
-                      : ""}
-                  </em>
-                </span>
-              </div>
-            );
-          })}
+        <div className="button-row" style={{ marginTop: 8 }}>
+          <button type="button" className="ghost-btn" onClick={() => setShowFundingDetails((prev) => !prev)} aria-expanded={showFundingDetails}>
+            {showFundingDetails ? "스왑/수수료 상세 닫기" : "스왑/수수료 상세 보기"}
+          </button>
         </div>
-        {feeEstimateError ? <p className="deposit-asset-error">{feeEstimateError}</p> : null}
-        {feeEstimate ? (
-          <p className="deposit-fee-estimate-total">
-            총 예상 처리비용 ${feeEstimate.totalFeeUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })} ·{" "}
-            {feeEstimate.rows.some((row) => row.confidence === "medium") ? "일부 실시간 가스 기반" : "fallback 추정"} · 가격 {feeEstimate.priceSource}
-          </p>
+        {showFundingDetails ? (
+          <>
+            <div className="deposit-swap-route-list" aria-label="스왑 및 브릿지 계획">
+              {assetReadiness.swapRows.map((row, idx) => {
+                const fee = findFeeForRoute(row);
+                return (
+                  <div key={`${row.target}-${idx}`} className="deposit-swap-route-row">
+                    <span>
+                      <strong>{row.target}</strong>
+                      <em>
+                        현재 {row.sourceAsset} · {row.sourceChain} / 목표 {row.requiredAssets.join("/")} · {row.chain}
+                      </em>
+                    </span>
+                    <span>
+                      <strong>{row.note}</strong>
+                      <em>{row.route}</em>
+                    </span>
+                    <span>
+                      <strong>
+                        {fee ? `$${fee.estimatedFeeUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : feeEstimateLoading ? "비용 조회 중" : "비용 —"}
+                      </strong>
+                      <em>
+                        배분 ${row.requiredUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                        {fee
+                          ? ` · 네트워크 $${fee.networkFeeUsd.toFixed(4)} · 스왑 $${fee.swapFeeUsd.toFixed(2)} · 전송 $${fee.bridgeFeeUsd.toFixed(2)}`
+                          : ""}
+                      </em>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            {feeEstimateError ? <p className="deposit-asset-error">{feeEstimateError}</p> : null}
+            {feeEstimate ? (
+              <p className="deposit-fee-estimate-total">
+                총 예상 처리비용 ${feeEstimate.totalFeeUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })} ·{" "}
+                {feeEstimate.rows.some((row) => row.confidence === "medium") ? "일부 실시간 가스 기반" : "fallback 추정"} · 가격 {feeEstimate.priceSource}
+              </p>
+            ) : null}
+          </>
         ) : null}
       </div>
 
@@ -1070,15 +1111,25 @@ export function OrchestratorBoard({
           <p className="section-eyebrow">Risk Review</p>
           <h3>입금 전 본인 리스크 체크</h3>
         </div>
-        <div className="deposit-risk-check-grid">
-          {autoChecks.slice(1).map((item) => (
-            <div key={item.key} className={item.ok ? "deposit-risk-check ok" : "deposit-risk-check wait"}>
-              <span>{item.label}</span>
-              <strong>{item.ok ? "통과" : "점검 필요"}</strong>
-              <em>{item.detail}</em>
-            </div>
-          ))}
+        <p className="kpi-label">
+          핵심 체크 {passedRiskChecks}/{riskCheckItems.length} 통과
+        </p>
+        <div className="button-row" style={{ marginTop: 6 }}>
+          <button type="button" className="ghost-btn" onClick={() => setShowRiskDetails((prev) => !prev)} aria-expanded={showRiskDetails}>
+            {showRiskDetails ? "리스크 상세 닫기" : "리스크 상세 보기"}
+          </button>
         </div>
+        {showRiskDetails ? (
+          <div className="deposit-risk-check-grid">
+            {riskCheckItems.map((item) => (
+              <div key={item.key} className={item.ok ? "deposit-risk-check ok" : "deposit-risk-check wait"}>
+                <span>{item.label}</span>
+                <strong>{item.ok ? "통과" : "점검 필요"}</strong>
+                <em>{item.detail}</em>
+              </div>
+            ))}
+          </div>
+        ) : null}
       </div>
 
       <ol className={`execution-steps-strip${isExecutionDone ? " execution-steps-strip--complete" : ""}`} aria-label="진행 단계">
@@ -1184,22 +1235,37 @@ export function OrchestratorBoard({
 
       <div className="orchestrator-section" aria-label="실행 순서">
         <h3>배분안 실행 순서</h3>
-        <p className="kpi-label">
-          각 항목은 순서대로 확인되고, REAL-RUN에서는 지갑 승인 프롬프트가 단계별로 뜹니다. 승인 없이 다음 단계로 넘어가지 않습니다.
-        </p>
-        <ol className="approval-plan-list">
-          {executionPlan.map((step) => (
-            <li key={`${step.order}-${step.kind}-${step.title}`} className={`approval-plan-step approval-plan-step--${step.kind}`}>
-              <div>
-                <strong>
-                  {step.order}. {step.title}
-                </strong>
-                <p>{step.detail}</p>
-              </div>
-              <span>{step.requiresWalletApproval ? "지갑 승인 필요" : "검토만"}</span>
-            </li>
-          ))}
-        </ol>
+        <p className="kpi-label">지갑 승인 필요 단계 {walletApprovalStepCount}개 / 전체 {executionPlan.length}개</p>
+        <div className="button-row" style={{ marginTop: 6 }}>
+          <button
+            type="button"
+            className="ghost-btn"
+            onClick={() => setShowExecutionPlanDetails((prev) => !prev)}
+            aria-expanded={showExecutionPlanDetails}
+          >
+            {showExecutionPlanDetails ? "실행 순서 상세 닫기" : "실행 순서 상세 보기"}
+          </button>
+        </div>
+        {showExecutionPlanDetails ? (
+          <>
+            <p className="kpi-label">
+              각 항목은 순서대로 확인되고, REAL-RUN에서는 지갑 승인 프롬프트가 단계별로 뜹니다. 승인 없이 다음 단계로 넘어가지 않습니다.
+            </p>
+            <ol className="approval-plan-list">
+              {executionPlan.map((step) => (
+                <li key={`${step.order}-${step.kind}-${step.title}`} className={`approval-plan-step approval-plan-step--${step.kind}`}>
+                  <div>
+                    <strong>
+                      {step.order}. {step.title}
+                    </strong>
+                    <p>{step.detail}</p>
+                  </div>
+                  <span>{step.requiresWalletApproval ? "지갑 승인 필요" : "검토만"}</span>
+                </li>
+              ))}
+            </ol>
+          </>
+        ) : null}
       </div>
 
       {executionStepLog.length > 0 ? (
@@ -1285,6 +1351,13 @@ export function OrchestratorBoard({
             </div>
           ) : null}
           {lastExecution.payload ? (
+            <div className="button-row" style={{ marginTop: 8 }}>
+              <button type="button" className="ghost-btn" onClick={() => setShowRawPayload((prev) => !prev)} aria-expanded={showRawPayload}>
+                {showRawPayload ? "원본 payload 닫기" : "원본 payload 보기"}
+              </button>
+            </div>
+          ) : null}
+          {lastExecution.payload && showRawPayload ? (
             <pre className="execution-payload-pre">{JSON.stringify(lastExecution.payload, null, 2)}</pre>
           ) : null}
         </div>
