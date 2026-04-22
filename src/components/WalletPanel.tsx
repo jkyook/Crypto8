@@ -70,9 +70,60 @@ type SwapTargetChoice = {
   decimals: number;
 };
 
-function solscanAccountUrl(address: string, network: "mainnet" | "devnet"): string {
-  const base = `https://solscan.io/account/${address}`;
-  return network === "devnet" ? `${base}?cluster=devnet` : base;
+type WalletMenuTab = "home" | "send" | "swap";
+
+function WalletHomeGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M4 11.5 12 5l8 6.5" />
+      <path d="M6.5 10.8V20h11V10.8" />
+      <path d="M9.25 20v-5.2h5.5V20" />
+    </svg>
+  );
+}
+
+function WalletSendGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M4.5 19.5 20 4" />
+      <path d="M12.5 4.5H19.5V11.5" />
+      <path d="M19.2 4.8 12.2 11.8" />
+    </svg>
+  );
+}
+
+function WalletSwapGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M7 7h11l-2.8-2.8" />
+      <path d="M18 7 15.2 9.8" />
+      <path d="M17 17H6l2.8 2.8" />
+      <path d="M6 17l2.8-2.8" />
+    </svg>
+  );
+}
+
+function WalletCircularSwapGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M7.5 8.5A7 7 0 0 1 18 8.8" />
+      <path d="M18 8.8V5.8" />
+      <path d="M18 8.8h-3" />
+      <path d="M16.5 15.5A7 7 0 0 1 6 15.2" />
+      <path d="M6 15.2v3" />
+      <path d="M6 15.2h3" />
+    </svg>
+  );
+}
+
+function WalletLogoutGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M10 6.5H6.5A1.5 1.5 0 0 0 5 8v8a1.5 1.5 0 0 0 1.5 1.5H10" />
+      <path d="M12 12h7" />
+      <path d="M15.5 8.5 19 12l-3.5 3.5" />
+    </svg>
+  );
 }
 
 function formatTokenAmount(n: number): string {
@@ -333,10 +384,15 @@ export function WalletPanel({
   const [loginChoiceOpen, setLoginChoiceOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [walletCreateOpen, setWalletCreateOpen] = useState(false);
-  const [walletActionMode, setWalletActionMode] = useState<"send" | "swap" | null>(null);
+  const [accountMenuTab, setAccountMenuTab] = useState<WalletMenuTab>("home");
+  const [walletActionsTab, setWalletActionsTab] = useState<WalletMenuTab>("home");
   const [walletActionLoading, setWalletActionLoading] = useState(false);
   const [walletActionError, setWalletActionError] = useState("");
   const [walletActionNote, setWalletActionNote] = useState("");
+  const [walletHomeLedgerOpen, setWalletHomeLedgerOpen] = useState(false);
+  const [sendTokenMenuOpen, setSendTokenMenuOpen] = useState(false);
+  const [swapFromMenuOpen, setSwapFromMenuOpen] = useState(false);
+  const [swapToMenuOpen, setSwapToMenuOpen] = useState(false);
   const [sendRecipient, setSendRecipient] = useState("");
   const [sendAmount, setSendAmount] = useState("");
   const [sendChoiceMint, setSendChoiceMint] = useState("");
@@ -356,9 +412,10 @@ export function WalletPanel({
   const [linkedWallets, setLinkedWallets] = useState<UserWallet[]>([]);
   const [accountAssets, setAccountAssets] = useState<AccountAssetBalance[]>([]);
   const [accountAssetsSnapshotLabel, setAccountAssetsSnapshotLabel] = useState("업데이트 전");
-  const [accountMenuError, setAccountMenuError] = useState("");
   const [walletRefreshTick, setWalletRefreshTick] = useState(0);
   const accountMenuRef = useRef<HTMLDivElement>(null);
+  const menuCallbacks = { onOpenWallet, onOpenActivity, onOpenPortfolio, onOpenMyOverview };
+  void menuCallbacks;
 
   useEffect(() => {
     const sync = (): void => {
@@ -386,7 +443,6 @@ export function WalletPanel({
       setLinkedWallets([]);
       setAccountAssets([]);
       setAccountAssetsSnapshotLabel("업데이트 전");
-      setAccountMenuError("");
       return;
     }
     const controller = new AbortController();
@@ -402,7 +458,6 @@ export function WalletPanel({
       setAccountAssets(cachedAssets);
       setAccountAssetsSnapshotLabel("업데이트 전");
     }
-    setAccountMenuError("");
     void Promise.allSettled([
       listAccountWallets({ signal: controller.signal }),
       listAccountAssets({ signal: controller.signal }, runtimeMode)
@@ -417,9 +472,6 @@ export function WalletPanel({
         } else if (!cachedAssets || cachedAssets.length === 0) {
           setAccountAssets([]);
           setAccountAssetsSnapshotLabel("업데이트 전");
-        }
-        if (walletsResult.status === "rejected") {
-          setAccountMenuError("연결 지갑 정보를 불러오지 못했습니다. API 서버를 새 코드로 재시작하면 복구됩니다.");
         }
     });
     return () => controller.abort();
@@ -502,18 +554,6 @@ export function WalletPanel({
   }, [positions, withdrawLedger]);
 
   const rpcCandidates = useMemo(() => getSolanaRpcCandidates(network, network !== "devnet"), [network]);
-  const copyAddress = useCallback(async () => {
-    const addr = primaryWalletAddress;
-    if (!addr) return;
-    try {
-      await navigator.clipboard.writeText(addr);
-      setCopyHint("복사됨");
-      setTimeout(() => setCopyHint(""), 2000);
-    } catch {
-      setCopyHint("복사 실패");
-      setTimeout(() => setCopyHint(""), 2000);
-    }
-  }, [primaryWalletAddress]);
 
   useEffect(() => {
     const addr = solanaAccount?.address;
@@ -671,6 +711,7 @@ export function WalletPanel({
       setLinkedWallets((prev) => [wallet, ...prev.filter((item) => item.walletAddress !== wallet.walletAddress)]);
       setWalletCreateOpen(false);
       setAccountMenuOpen(true);
+      setAccountMenuTab("home");
     } catch (error) {
       setConnectError(error instanceof Error ? error.message : "지갑 연결 저장 실패");
     } finally {
@@ -690,6 +731,18 @@ export function WalletPanel({
   };
 
   const accountAssetsTotal = accountAssets.reduce((acc, asset) => acc + asset.usdValue, 0);
+  const onChainVisibleTotal = useMemo(() => {
+    const solUsd = solOnChain !== null && Number.isFinite(solOnChain) ? solOnChain * (marketPrices.SOL ?? 0) : 0;
+    const tokenUsd = tokensOnChain.reduce((acc, token) => {
+      const symbol = normalizeAssetSymbol(token.symbol);
+      if (!symbol) return acc;
+      return acc + token.amount * (marketPrices[symbol] ?? 0);
+    }, 0);
+    const evmUsd = evmAssetsOnChain.reduce((acc, asset) => acc + asset.usdValue, 0);
+    return Number((solUsd + tokenUsd + evmUsd).toFixed(2));
+  }, [evmAssetsOnChain, marketPrices, solOnChain, tokensOnChain]);
+  const visibleTotalUsd =
+    isConnected && (solOnChain !== null || tokensOnChain.length > 0 || evmAssetsOnChain.length > 0) ? onChainVisibleTotal : accountAssetsTotal;
   const walletAssetChoices = useMemo(
     () => buildWalletAssetChoices({ solBalance: solOnChain, tokenRows: tokensOnChain }),
     [solOnChain, tokensOnChain]
@@ -705,7 +758,7 @@ export function WalletPanel({
       (["USDC", "USDT", "SOL", "MSOL"] as const).map((symbol) => ({
         symbol,
         mint: resolveSolanaTokenMint(symbol),
-        label: `${symbol} · ${resolveSolanaTokenMint(symbol).slice(0, 4)}…${resolveSolanaTokenMint(symbol).slice(-4)}`,
+        label: symbol,
         decimals: resolveSolanaTokenDecimals(symbol)
       })),
     []
@@ -717,32 +770,6 @@ export function WalletPanel({
 
   const refreshWalletViews = useCallback(() => {
     setWalletRefreshTick((tick) => tick + 1);
-  }, []);
-
-  const openWalletAction = useCallback(
-    (mode: "send" | "swap") => {
-      setWalletActionError("");
-      setWalletActionNote("");
-      if (mode === "send") {
-        setSendChoiceMint(defaultSendChoiceMint);
-        setSendAmount("");
-      } else {
-        setSwapFromMint(defaultSwapFromMint);
-        setSwapToMint(defaultSwapToMint);
-        setSwapAmount("");
-      }
-      setWalletActionMode(mode);
-    },
-    [defaultSendChoiceMint, defaultSwapFromMint, defaultSwapToMint]
-  );
-
-  const closeWalletAction = useCallback(() => {
-    setWalletActionMode(null);
-    setWalletActionError("");
-    setWalletActionNote("");
-    setSwapQuote(null);
-    setSwapQuoteLoading(false);
-    setSwapQuoteError("");
   }, []);
 
   const submitSendAction = useCallback(async () => {
@@ -863,38 +890,97 @@ export function WalletPanel({
         <span>로그인 계정</span>
         <strong>{appUsername}</strong>
       </div>
-      <div className="wallet-account-menu-section">
-        <span>연결 지갑</span>
-        {linkedWallets.length > 0 ? (
-          linkedWallets.slice(0, 3).map((wallet) => (
-            <button key={wallet.id} type="button" className="wallet-account-row" onClick={() => void onConnect()}>
-              <strong>{shortAddress(wallet.walletAddress)}</strong>
-              <em>
-                {wallet.chain} · {wallet.provider} · Phantom 연결
-              </em>
-            </button>
-          ))
-        ) : (
-          <button type="button" className="wallet-account-row" onClick={openWalletCreate}>
-            <strong>연결된 지갑 없음</strong>
-            <em>눌러서 Phantom 지갑을 생성/연결</em>
-          </button>
-        )}
+      <div className="wallet-account-menu-scroll">
+        {accountMenuTab === "home" ? (
+          <>
+            <div className="wallet-account-menu-section">
+              <span>연결 지갑</span>
+              {linkedWallets.length > 0 ? (
+                linkedWallets.slice(0, 3).map((wallet) => (
+                  <button key={wallet.id} type="button" className="wallet-account-row" onClick={() => void onConnect()}>
+                    <strong>{shortAddress(wallet.walletAddress)}</strong>
+                    <em>
+                      {wallet.chain} · {wallet.provider} · Phantom 연결
+                    </em>
+                  </button>
+                ))
+              ) : (
+                <button type="button" className="wallet-account-row" onClick={openWalletCreate}>
+                  <strong>연결된 지갑 없음</strong>
+                  <em>눌러서 Phantom 지갑을 생성/연결</em>
+                </button>
+              )}
+            </div>
+            <div className="wallet-account-menu-section">
+              <span>자산 요약</span>
+              <strong>
+                {accountAssetsSnapshotLabel} · ${accountAssetsTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              </strong>
+              <em>{accountAssets.slice(0, 4).map((asset) => `${asset.symbol} $${asset.usdValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`).join(" · ") || "조회 전"}</em>
+            </div>
+          </>
+        ) : null}
+        {accountMenuTab === "send" ? (
+          <div className="wallet-account-menu-section">
+            <span>보내기</span>
+            <strong>지갑 연결 후 전송할 수 있습니다.</strong>
+            <em>현재는 지갑 연결과 계정 확인만 먼저 하세요.</em>
+            <div className="wallet-account-actions wallet-account-actions-inline">
+              <button type="button" onClick={openWalletCreate}>
+                지갑 생성/연결
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {accountMenuTab === "swap" ? (
+          <div className="wallet-account-menu-section">
+            <span>교환</span>
+            <strong>지갑 연결 후 스왑을 사용할 수 있습니다.</strong>
+            <em>연결된 지갑이 있어야 팬텀 스왑 흐름이 활성화됩니다.</em>
+            <div className="wallet-account-actions wallet-account-actions-inline">
+              <button type="button" onClick={openWalletCreate}>
+                지갑 생성/연결
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
-      <div className="wallet-account-menu-section">
-        <span>자산 요약</span>
-        <strong>
-          {accountAssetsSnapshotLabel} · ${accountAssetsTotal.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-        </strong>
-        <em>{accountAssets.slice(0, 4).map((asset) => `${asset.symbol} $${asset.usdValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`).join(" · ") || "조회 전"}</em>
-      </div>
-      {accountMenuError ? <p className="wallet-error">{accountMenuError}</p> : null}
-      <div className="wallet-account-actions">
-        <button type="button" onClick={openWalletCreate}>
-          지갑 생성/연결
+      <div className="wallet-account-menu-footer">
+        <button
+          type="button"
+          className={`wallet-account-menu-icon-btn${accountMenuTab === "home" ? " active" : ""}`}
+          onClick={() => setAccountMenuTab("home")}
+          aria-label="홈"
+          title="홈"
+        >
+          <WalletHomeGlyph />
         </button>
-        <button type="button" className="danger" onClick={() => void onLogout()}>
-          로그아웃
+        <button
+          type="button"
+          className={`wallet-account-menu-icon-btn${accountMenuTab === "send" ? " active" : ""}`}
+          onClick={() => setAccountMenuTab("send")}
+          aria-label="보내기"
+          title="보내기"
+        >
+          <WalletSendGlyph />
+        </button>
+        <button
+          type="button"
+          className={`wallet-account-menu-icon-btn${accountMenuTab === "swap" ? " active" : ""}`}
+          onClick={() => setAccountMenuTab("swap")}
+          aria-label="교환"
+          title="교환"
+        >
+          <WalletSwapGlyph />
+        </button>
+        <button
+          type="button"
+          className="wallet-account-menu-icon-btn wallet-account-menu-icon-btn-danger"
+          onClick={() => void onLogout()}
+          aria-label="연결 해제"
+          title="연결 해제"
+        >
+          <WalletLogoutGlyph />
         </button>
       </div>
     </div>
@@ -940,23 +1026,28 @@ export function WalletPanel({
   const selectedSwapToChoice = selectedSwapToChoices.find((choice) => choice.mint === defaultSwapToMint) ?? selectedSwapToChoices[0] ?? null;
 
   const swapSelectedAssets = useCallback(() => {
-    const nextFromMint = selectedSwapToChoice?.mint || defaultSwapToMint || selectedSwapFromChoice?.mint || "";
-    const nextFromChoice = walletAssetChoiceByMint.get(nextFromMint) ?? selectedSwapFromChoice;
-    const nextTargetMint = swapTargetChoices.find((choice) => choice.mint !== nextFromChoice?.mint)?.mint ?? "";
-    setSwapFromMint(nextFromChoice?.mint ?? "");
-    setSwapToMint(nextTargetMint);
+    const currentFrom = swapFromMint || selectedSwapFromChoice?.mint || "";
+    const currentTo = swapToMint || selectedSwapToChoice?.mint || "";
+    const nextFrom = currentTo || selectedSwapToChoice?.mint || currentFrom;
+    const nextTo = currentFrom || swapTargetChoices.find((choice) => choice.mint !== nextFrom)?.mint || "";
+    setSwapFromMint(nextFrom);
+    setSwapToMint(nextTo);
+    setSwapFromMenuOpen(false);
+    setSwapToMenuOpen(false);
     setSwapQuote(null);
     setSwapQuoteError("");
   }, [
     defaultSwapToMint,
     selectedSwapFromChoice,
     selectedSwapToChoice?.mint,
+    swapFromMint,
+    swapToMint,
     swapTargetChoices,
     walletAssetChoiceByMint
   ]);
 
   useEffect(() => {
-    if (walletActionMode !== "swap") {
+    if (walletActionsTab !== "swap") {
       setSwapQuote(null);
       setSwapQuoteLoading(false);
       setSwapQuoteError("");
@@ -1014,153 +1105,31 @@ export function WalletPanel({
     swapAmount,
     swapFromMint,
     swapToMint,
-    walletActionMode,
+    walletActionsTab,
     walletAssetChoiceByMint
   ]);
 
   useEffect(() => {
-    if (walletActionMode !== "swap") return;
+    if (walletActionsTab !== "swap") return;
     if (!swapFromMint || !swapToMint || swapFromMint !== swapToMint) return;
     const nextTarget = swapTargetChoices.find((choice) => choice.mint !== swapFromMint)?.mint ?? "";
     if (nextTarget && nextTarget !== swapToMint) {
       setSwapToMint(nextTarget);
     }
-  }, [swapFromMint, swapToMint, swapTargetChoices, walletActionMode]);
+  }, [swapFromMint, swapToMint, swapTargetChoices, walletActionsTab]);
 
-  const walletActionModal =
-    walletActionMode && selectedSendChoice && selectedSwapFromChoice
-      ? createPortal(
-          <div
-            className="modal-backdrop"
-            role="dialog"
-            aria-modal="true"
-            aria-label={walletActionMode === "send" ? "보내기" : "스왑"}
-            onClick={(e) => {
-              if (e.target === e.currentTarget) {
-                closeWalletAction();
-              }
-            }}
-          >
-            <div className="modal-card wallet-action-modal">
-              <button type="button" className="modal-close-icon" aria-label="닫기" onClick={closeWalletAction}>
-                ✕
-              </button>
-              <p className="section-eyebrow">Wallet Action</p>
-              <h3>{walletActionMode === "send" ? "보내기" : "스왑"}</h3>
-              <p>
-                {walletActionMode === "send"
-                  ? "받는 주소와 토큰 수량을 입력한 뒤 전송합니다."
-                  : "바꿀 자산과 받을 자산, 수량을 입력한 뒤 스왑합니다."}
-              </p>
-              <div className="wallet-action-summary">
-                <div className="wallet-action-summary-main">
-                  <span className="wallet-action-summary-label">토큰</span>
-                  <strong>{walletActionMode === "send" ? selectedSendChoice.symbol : selectedSwapFromChoice.symbol}</strong>
-                  <em>
-                    {walletActionMode === "send"
-                      ? `${selectedSendChoice.label} · 보유 ${formatTokenAmount(selectedSendChoice.amount)}`
-                      : `${selectedSwapFromChoice.label} · 보유 ${formatTokenAmount(selectedSwapFromChoice.amount)}`}
-                  </em>
-                </div>
-                <div className="wallet-action-summary-main wallet-action-summary-main-amount">
-                  <span className="wallet-action-summary-label">수량</span>
-                  <strong>{walletActionMode === "send" ? sendAmount.trim() || "0" : swapAmount.trim() || "0"}</strong>
-                  <em>{walletActionMode === "send" ? "전송 예정 수량" : "스왑 예정 수량"}</em>
-                </div>
-              </div>
-              <div className="wallet-action-contract-row">
-                <span>계약주소</span>
-                <code title={walletActionMode === "send" ? selectedSendChoice.mint : selectedSwapFromChoice.mint}>
-                  {walletActionMode === "send" ? selectedSendChoice.mint : selectedSwapFromChoice.mint}
-                </code>
-              </div>
-              {walletActionError ? <p className="wallet-error">{walletActionError}</p> : null}
-              {walletActionNote ? <p className="wallet-action-note">{walletActionNote}</p> : null}
-              {walletActionMode === "send" ? (
-                <div className="wallet-action-form">
-                  <label>
-                    토큰
-                    <select value={sendChoiceMint || selectedSendChoice.mint} onChange={(e) => setSendChoiceMint(e.target.value)}>
-                      {walletActionChoices.map((choice) => (
-                        <option key={choice.mint} value={choice.mint}>
-                          {choice.label} · 보유 {formatTokenAmount(choice.amount)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    받는 주소
-                    <input value={sendRecipient} onChange={(e) => setSendRecipient(e.target.value)} placeholder="Solana 주소" />
-                  </label>
-                  <label>
-                    수량
-                    <input value={sendAmount} onChange={(e) => setSendAmount(e.target.value)} inputMode="decimal" placeholder="0.00" />
-                  </label>
-                </div>
-              ) : (
-                <div className="wallet-action-form">
-                  <label>
-                    보내는 토큰
-                    <select value={swapFromMint || selectedSwapFromChoice.mint} onChange={(e) => setSwapFromMint(e.target.value)}>
-                      {walletActionChoices.map((choice) => (
-                        <option key={choice.mint} value={choice.mint}>
-                          {choice.label} · 보유 {formatTokenAmount(choice.amount)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button type="button" className="wallet-swap-exchange" onClick={swapSelectedAssets} aria-label="보내는 토큰과 받는 토큰 교체">
-                    ⇄
-                  </button>
-                  <label>
-                    받을 토큰
-                    <select value={swapToMint || selectedSwapToChoice?.mint || ""} onChange={(e) => setSwapToMint(e.target.value)}>
-                      {selectedSwapToChoices.map((choice) => (
-                        <option key={choice.mint} value={choice.mint}>
-                          {choice.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    수량
-                    <input value={swapAmount} onChange={(e) => setSwapAmount(e.target.value)} inputMode="decimal" placeholder="0.00" />
-                  </label>
-                  <div className="wallet-swap-quote">
-                    <span className="wallet-swap-quote-label">예상 수령</span>
-                    <strong>
-                      {swapQuoteLoading
-                        ? "조회 중..."
-                        : swapQuote
-                          ? `${formatRawAmount(swapQuote.outAmountRaw, swapQuote.outputDecimals)} ${swapQuote.outputSymbol}`
-                          : "수량 입력 후 계산"}
-                    </strong>
-                    <em>
-                      {swapQuote
-                        ? `최소 수령 ${formatRawAmount(swapQuote.minOutAmountRaw, swapQuote.outputDecimals)} ${swapQuote.outputSymbol}`
-                        : swapQuoteError || "Jupiter 견적 기준"}
-                    </em>
-                  </div>
-                </div>
-              )}
-              <div className="exec-verify-actions">
-                <button
-                  type="button"
-                  className="auth-primary-btn"
-                  onClick={() => void (walletActionMode === "send" ? submitSendAction() : submitSwapAction())}
-                  disabled={walletActionLoading}
-                >
-                  {walletActionLoading ? "처리 중…" : walletActionMode === "send" ? "보내기" : "스왑"}
-                </button>
-                <button type="button" className="ghost-btn" onClick={closeWalletAction} disabled={walletActionLoading}>
-                  취소
-                </button>
-              </div>
-            </div>
-          </div>,
-          document.body
-        )
-      : null;
+  useEffect(() => {
+    if (walletActionsTab !== "send") {
+      setSendTokenMenuOpen(false);
+    }
+  }, [walletActionsTab]);
+
+  useEffect(() => {
+    if (walletActionsTab !== "swap") {
+      setSwapFromMenuOpen(false);
+      setSwapToMenuOpen(false);
+    }
+  }, [walletActionsTab]);
 
   const onDisconnect = async () => {
     try {
@@ -1234,49 +1203,293 @@ export function WalletPanel({
       if (opts.compact) setIsCompactDetailOpen(false);
       fn();
     };
+    const openTab = (tab: WalletMenuTab) => {
+      setWalletActionsTab(tab);
+      setWalletActionError("");
+      setWalletActionNote("");
+    };
     return (
-      <div className={opts.compact ? "wallet-action-grid wallet-action-grid-compact" : "wallet-action-grid"}>
-        {primaryWalletAddress ? (
-          <button type="button" className="wallet-action-btn" onClick={() => void copyAddress()}>
-            주소 복사
-          </button>
-        ) : null}
-        <button type="button" className="wallet-action-btn primary" onClick={() => openWalletAction("send")} disabled={!isConnected || walletAssetChoices.length === 0}>
-          보내기
-        </button>
-        <button type="button" className="wallet-action-btn primary" onClick={() => openWalletAction("swap")} disabled={!isConnected || walletAssetChoices.length < 2}>
-          스왑
-        </button>
-        {onOpenMyOverview ? (
-          <button type="button" className="wallet-action-btn primary" onClick={() => afterNav(onOpenMyOverview)}>
-            내 현황
-          </button>
-        ) : null}
-        {onOpenPortfolio ? (
-          <button type="button" className={`wallet-action-btn${onOpenMyOverview ? "" : " primary"}`} onClick={() => afterNav(onOpenPortfolio)}>
-            포트폴리오
-          </button>
-        ) : null}
-        <button type="button" className="wallet-action-btn" onClick={() => afterNav(onOpenActivity)}>
-          활동 피드
-        </button>
-        {onOpenWallet ? (
-          <button type="button" className="wallet-action-btn" onClick={() => afterNav(onOpenWallet)}>
-            지갑 상세
-          </button>
-        ) : null}
-        {solanaAccount?.address ? (
+      <div className={opts.compact ? "wallet-action-panel wallet-action-panel-compact" : "wallet-action-panel"}>
+        <div className="wallet-action-tab-body">
+          {walletActionsTab === "home" ? (
+            <div className="wallet-action-home-screen">
+              <div className="wallet-home-total-card">
+                <span className="wallet-home-label">총 자산</span>
+                <strong>${visibleTotalUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong>
+                <em>
+                  {accountAssetsSnapshotLabel} · {walletHomeLedgerOpen ? "내역 표시 중" : "내역 숨김"}
+                </em>
+                <button type="button" className="wallet-home-action wallet-home-action-ledger" onClick={() => setWalletHomeLedgerOpen((prev) => !prev)}>
+                  {walletHomeLedgerOpen ? "입출금내역 숨기기" : "입출금내역 보기"}
+                </button>
+              </div>
+              <div className="wallet-home-panels">
+                <ChainAssetsTable
+                  loading={chainLoading}
+                  error={chainError}
+                  sol={solOnChain}
+                  tokens={tokensOnChain}
+                  network={network}
+                  compact={opts.compact}
+                  prices={marketPrices}
+                  priceMeta={priceMeta}
+                />
+                <EvmAssetsTable loading={evmChainLoading} error={evmChainError} rows={evmAssetsOnChain} compact={opts.compact} priceMeta={priceMeta} />
+              </div>
+              {walletHomeLedgerOpen ? ledgerSection : null}
+            </div>
+          ) : null}
+          {walletActionsTab === "send" ? (
+            <div className="wallet-action-screen">
+              <div className="wallet-action-summary">
+                <div className="wallet-action-summary-main wallet-action-summary-main-amount">
+                  <span className="wallet-action-summary-label">전송 예정 수량</span>
+                  <input
+                    className="wallet-send-amount-input"
+                    value={sendAmount}
+                    onChange={(e) => setSendAmount(e.target.value)}
+                    inputMode="decimal"
+                    placeholder="0.00"
+                  />
+                </div>
+                <div className="wallet-action-summary-main">
+                  <span className="wallet-action-summary-label">토큰</span>
+                  <button
+                    type="button"
+                    className="wallet-send-token-button"
+                    onClick={() => setSendTokenMenuOpen((prev) => !prev)}
+                    aria-expanded={sendTokenMenuOpen}
+                  >
+                    <strong>{selectedSendChoice?.symbol ?? "—"}</strong>
+                    <em>{selectedSendChoice ? `${selectedSendChoice.label} · 보유 ${formatTokenAmount(selectedSendChoice.amount)}` : "선택된 자산 없음"}</em>
+                  </button>
+                  {sendTokenMenuOpen ? (
+                    <div className="wallet-send-token-menu" role="listbox" aria-label="보낼 토큰 선택">
+                      {walletActionChoices.map((choice) => (
+                        <button
+                          key={choice.mint}
+                          type="button"
+                          className={`wallet-send-token-menu-item${choice.mint === selectedSendChoice?.mint ? " active" : ""}`}
+                          onClick={() => {
+                            setSendChoiceMint(choice.mint);
+                            setSendTokenMenuOpen(false);
+                          }}
+                        >
+                          <strong>{choice.symbol}</strong>
+                          <em>{choice.label} · 보유 {formatTokenAmount(choice.amount)}</em>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+              <div className="wallet-action-form">
+                <label>
+                  받는 주소
+                  <input
+                    className="wallet-send-recipient-input"
+                    value={sendRecipient}
+                    onChange={(e) => setSendRecipient(e.target.value)}
+                    placeholder="Solana 주소"
+                  />
+                </label>
+              </div>
+              <div className="wallet-action-confirm-row">
+                <button
+                  type="button"
+                  className="wallet-action-confirm-btn"
+                  onClick={() => void submitSendAction()}
+                  disabled={walletActionLoading}
+                >
+                  {walletActionLoading ? "전송 확인 중…" : "전송 확인"}
+                </button>
+              </div>
+              {walletActionError ? <p className="wallet-error">{walletActionError}</p> : null}
+              {walletActionNote ? <p className="wallet-action-note">{walletActionNote}</p> : null}
+            </div>
+          ) : null}
+          {walletActionsTab === "swap" ? (
+            <div className="wallet-action-screen">
+              <div className="wallet-swap-panel">
+                <div className="wallet-swap-stack">
+                  <div className="wallet-swap-stack-card-wrap">
+                    <div className="wallet-swap-stack-card">
+                      <span className="wallet-swap-side-label">보내는 자산</span>
+                      <div className="wallet-swap-stack-card-row">
+                        <button
+                          type="button"
+                          className="wallet-swap-token-trigger"
+                          onClick={() => {
+                            setSwapFromMenuOpen((prev) => !prev);
+                            setSwapToMenuOpen(false);
+                          }}
+                          aria-expanded={swapFromMenuOpen}
+                        >
+                          <strong>{selectedSwapFromChoice?.symbol ?? "선택"}</strong>
+                          <em>{selectedSwapFromChoice ? formatTokenAmount(selectedSwapFromChoice.amount) : "보유 잔고 없음"}</em>
+                        </button>
+                        <input
+                          className="wallet-swap-stack-card-input"
+                          value={swapAmount}
+                          onChange={(e) => setSwapAmount(e.target.value)}
+                          inputMode="decimal"
+                          placeholder="0.00"
+                        />
+                      </div>
+                    </div>
+                    {swapFromMenuOpen ? (
+                      <div className="wallet-swap-token-menu" role="listbox" aria-label="보낼 토큰 선택">
+                        {walletAssetChoices.map((choice) => (
+                          <button
+                            key={choice.mint}
+                            type="button"
+                            className={`wallet-swap-token-menu-item${choice.mint === selectedSwapFromChoice?.mint ? " active" : ""}`}
+                            onClick={() => {
+                              setSwapFromMint(choice.mint);
+                              setSwapFromMenuOpen(false);
+                              setSwapToMenuOpen(false);
+                            }}
+                          >
+                            <strong>{choice.symbol}</strong>
+                            <em>{choice.label} · 보유 {formatTokenAmount(choice.amount)}</em>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  <button type="button" className="wallet-swap-exchange" onClick={swapSelectedAssets} aria-label="보내는 토큰과 받는 토큰 교체">
+                    <WalletCircularSwapGlyph />
+                  </button>
+                  <div className="wallet-swap-stack-card-wrap">
+                    <div className="wallet-swap-stack-card">
+                      <span className="wallet-swap-side-label">받는 자산</span>
+                      <div className="wallet-swap-stack-card-row">
+                        <button
+                          type="button"
+                          className="wallet-swap-token-trigger"
+                          onClick={() => {
+                            setSwapToMenuOpen((prev) => !prev);
+                            setSwapFromMenuOpen(false);
+                          }}
+                          aria-expanded={swapToMenuOpen}
+                        >
+                          <strong>{selectedSwapToChoice?.symbol ?? "선택"}</strong>
+                          <em>
+                            {swapQuoteLoading
+                              ? "견적 조회 중"
+                              : swapQuote
+                                ? `${swapQuote.outputSymbol}`
+                                : "예상 수령"}
+                          </em>
+                        </button>
+                        <input
+                          className="wallet-swap-stack-card-input"
+                          value={
+                            swapQuoteLoading
+                              ? "조회 중"
+                              : swapQuote
+                                ? formatRawAmount(swapQuote.outAmountRaw, swapQuote.outputDecimals)
+                                : ""
+                          }
+                          readOnly
+                          placeholder="예상 수령"
+                        />
+                      </div>
+                    </div>
+                    {swapToMenuOpen ? (
+                      <div className="wallet-swap-token-menu" role="listbox" aria-label="받을 토큰 선택">
+                        {selectedSwapToChoices.map((choice) => (
+                          <button
+                            key={choice.mint}
+                            type="button"
+                            className={`wallet-swap-token-menu-item${choice.mint === selectedSwapToChoice?.mint ? " active" : ""}`}
+                            onClick={() => {
+                              setSwapToMint(choice.mint);
+                              setSwapToMenuOpen(false);
+                              setSwapFromMenuOpen(false);
+                            }}
+                          >
+                            <strong>{choice.symbol}</strong>
+                            <em>{choice.label}</em>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="wallet-swap-quote">
+                  <div>
+                    <span className="wallet-swap-quote-label">예상 수령</span>
+                    <strong>
+                      {swapQuoteLoading
+                        ? "조회 중..."
+                        : swapQuote
+                          ? `${formatRawAmount(swapQuote.outAmountRaw, swapQuote.outputDecimals)} ${swapQuote.outputSymbol}`
+                          : "수량 입력 후 계산"}
+                    </strong>
+                  </div>
+                  <em>
+                    {swapQuote
+                      ? `최소 수령 ${formatRawAmount(swapQuote.minOutAmountRaw, swapQuote.outputDecimals)} ${swapQuote.outputSymbol} · 예상 슬리피지 ${swapQuote.priceImpactPct}%`
+                      : swapQuoteError || "Jupiter 견적 기준"}
+                  </em>
+                </div>
+              </div>
+              <div className="wallet-action-confirm-row">
+                <button
+                  type="button"
+                  className="wallet-action-confirm-btn"
+                  onClick={() => void submitSwapAction()}
+                  disabled={walletActionLoading}
+                >
+                  {walletActionLoading ? "교환 확인 중…" : "교환 확인"}
+                </button>
+              </div>
+              {walletActionError ? <p className="wallet-error">{walletActionError}</p> : null}
+              {walletActionNote ? <p className="wallet-action-note">{walletActionNote}</p> : null}
+            </div>
+          ) : null}
+        </div>
+        <div className="wallet-action-bottom-bar">
           <button
             type="button"
-            className="wallet-action-btn"
-            onClick={() => window.open(solscanAccountUrl(solanaAccount.address, network), "_blank", "noopener,noreferrer")}
+            className={`wallet-action-icon-btn${walletActionsTab === "home" ? " active" : ""}`}
+            onClick={() => openTab("home")}
+            aria-label="홈"
+            title="홈"
           >
-            Solscan
+            <WalletHomeGlyph />
           </button>
-        ) : null}
-        <button type="button" className="wallet-action-btn danger" onClick={onDisconnect}>
-          연결 해제
-        </button>
+          <button
+            type="button"
+            className={`wallet-action-icon-btn${walletActionsTab === "send" ? " active" : ""}`}
+            onClick={() => openTab("send")}
+            disabled={!isConnected || walletAssetChoices.length === 0}
+            aria-label="보내기"
+            title="보내기"
+          >
+            <WalletSendGlyph />
+          </button>
+          <button
+            type="button"
+            className={`wallet-action-icon-btn${walletActionsTab === "swap" ? " active" : ""}`}
+            onClick={() => openTab("swap")}
+            disabled={!isConnected || walletAssetChoices.length < 2}
+            aria-label="교환"
+            title="교환"
+          >
+            <WalletSwapGlyph />
+          </button>
+          <button
+            type="button"
+            className="wallet-action-icon-btn wallet-action-icon-btn-danger"
+            onClick={() => afterNav(onDisconnect)}
+            aria-label="연결 해제"
+            title="연결 해제"
+          >
+            <WalletLogoutGlyph />
+          </button>
+        </div>
       </div>
     );
   };
@@ -1312,20 +1525,6 @@ export function WalletPanel({
             {copyHint ? <p className="wallet-copy-hint wallet-copy-hint-compact">{copyHint}</p> : null}
             {isCompactDetailOpen ? (
               <div className="wallet-compact-detail">
-                {networkToggle({ compact: true })}
-                <NetworkStatusBlock network={network} plain />
-                <ChainAssetsTable
-                  loading={chainLoading}
-                  error={chainError}
-                  sol={solOnChain}
-                  tokens={tokensOnChain}
-                  network={network}
-                  compact
-                  prices={marketPrices}
-                  priceMeta={priceMeta}
-                />
-                <EvmAssetsTable loading={evmChainLoading} error={evmChainError} rows={evmAssetsOnChain} compact priceMeta={priceMeta} />
-                {ledgerSection}
                 {actionRow({ compact: true })}
               </div>
             ) : null}
@@ -1333,7 +1532,17 @@ export function WalletPanel({
         ) : (
           <div className="wallet-widget-head wallet-widget-head-address-only" ref={appUsername ? accountMenuRef : undefined}>
             {appUsername ? (
-              <button type="button" className="wallet-address-link" onClick={() => setAccountMenuOpen((prev) => !prev)}>
+              <button
+                type="button"
+                className="wallet-address-link"
+                onClick={() => {
+                  setAccountMenuOpen((prev) => {
+                    const next = !prev;
+                    if (next) setAccountMenuTab("home");
+                    return next;
+                  });
+                }}
+              >
                 {appUsername} {accountMenuOpen ? "▴" : "▾"}
               </button>
             ) : (
@@ -1350,7 +1559,6 @@ export function WalletPanel({
         {connectError ? <p className="wallet-error">{connectError}</p> : null}
       </section>
       {walletCreateModal}
-      {walletActionModal}
     </>
     );
   }
@@ -1377,18 +1585,6 @@ export function WalletPanel({
             <NetworkStatusBlock network={network} plain />
             {networkToggle({ compact: false })}
           </div>
-          <ChainAssetsTable
-            loading={chainLoading}
-            error={chainError}
-            sol={solOnChain}
-            tokens={tokensOnChain}
-            network={network}
-            compact={false}
-            prices={marketPrices}
-            priceMeta={priceMeta}
-          />
-          <EvmAssetsTable loading={evmChainLoading} error={evmChainError} rows={evmAssetsOnChain} compact={false} priceMeta={priceMeta} />
-          {ledgerSection}
           {actionRow({ compact: false })}
         </>
       ) : (
@@ -1402,9 +1598,6 @@ export function WalletPanel({
       {connectError ? <p className="wallet-error">{connectError}</p> : null}
     </section>
     {walletCreateModal}
-    {walletActionModal}
     </>
   );
-
-  // JSX return below uses walletActionModal too
 }
