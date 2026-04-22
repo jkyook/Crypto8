@@ -1245,8 +1245,19 @@ export async function listDepositPositions(init: Pick<RequestInit, "signal"> = {
   return data.positions ?? [];
 }
 
-export async function listOnchainPositions(init: Pick<RequestInit, "signal"> = {}): Promise<OnchainPositionPayload[]> {
-  const response = await authedFetch("/api/positions", init);
+export async function listOnchainPositions(
+  init: Pick<RequestInit, "signal"> = {},
+  opts?: { forceRefresh?: boolean; walletAddress?: string }
+): Promise<OnchainPositionPayload[]> {
+  const query = new URLSearchParams();
+  if (opts?.forceRefresh) {
+    query.set("force", "1");
+  }
+  if (opts?.walletAddress) {
+    query.set("walletAddress", opts.walletAddress);
+  }
+  const suffix = query.toString();
+  const response = await authedFetch(`/api/positions${suffix ? `?${suffix}` : ""}`, init);
   if (!response.ok) {
     throw new Error("온체인 포지션 조회 실패");
   }

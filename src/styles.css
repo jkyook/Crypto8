@@ -3713,18 +3713,17 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
 
 .protocol-detail-table th:nth-child(5),
 .protocol-detail-table td:nth-child(5) {
-  width: 10%;
+  width: 8%;
 }
 
-/* 입출금 열 — 버튼이 밀리지 않도록 6컬럼 기준으로 별도 확보 */
 .protocol-detail-table th:nth-child(6),
 .protocol-detail-table td:nth-child(6) {
-  width: 32%;
+  width: 12%;
 }
 
 .protocol-detail-table th:nth-child(7),
 .protocol-detail-table td:nth-child(7) {
-  width: 13%;
+  width: 22%;
 }
 
 .protocol-detail-table th:nth-child(8),
@@ -3928,6 +3927,44 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
   display: inline-flex;
   min-width: 54px;
   font-weight: 800;
+}
+
+.protocol-match-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 54px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.protocol-match-badge--ok {
+  background: rgba(77, 209, 164, 0.2);
+  border-color: rgba(97, 221, 178, 0.45);
+  color: #9cf5d8;
+}
+
+.protocol-match-badge--drift {
+  background: rgba(255, 165, 82, 0.2);
+  border-color: rgba(255, 183, 117, 0.45);
+  color: #ffd8ac;
+}
+
+.protocol-match-badge--missing,
+.protocol-match-badge--error {
+  background: rgba(255, 117, 117, 0.2);
+  border-color: rgba(255, 150, 150, 0.45);
+  color: #ffd0d0;
+}
+
+.protocol-match-badge--unsupported,
+.protocol-match-badge--pending {
+  background: rgba(137, 163, 208, 0.2);
+  border-color: rgba(170, 191, 229, 0.4);
+  color: #d6e1f5;
 }
 
 .consensus-card {

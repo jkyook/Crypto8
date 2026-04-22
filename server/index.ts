@@ -28,6 +28,8 @@ import { getMarketPriceSnapshot } from "./marketPricing";
 import { linkUserWallet, listUserWallets } from "./userWallets";
 import type { ProtocolExecutionReadiness } from "./adapters/types";
 import { listLiveAccountAssets } from "./liveAccountAssets";
+import { listPositionsByUser } from "./intentStore";
+import { enrichPositionsWithOnchain } from "./positionVerifier";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
@@ -705,6 +707,25 @@ app.get("/api/portfolio/positions", requireAuth(["orchestrator", "security", "vi
     ok: true,
     positions: rows.map((row) => stripUsername(row))
   });
+});
+
+app.get("/api/positions", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+  const username = res.locals.user.username as string;
+  const forceRefresh = req.query.force === "1" || req.query.force === "true";
+  const walletAddress = typeof req.query.walletAddress === "string" ? req.query.walletAddress.trim() : undefined;
+  try {
+    const rows = await listPositionsByUser(username);
+    const enriched = await enrichPositionsWithOnchain(rows, walletAddress, forceRefresh);
+    res.json({
+      ok: true,
+      positions: enriched.map((row) => stripUsername(row))
+    });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      message: error instanceof Error ? error.message : "onchain positions query failed"
+    });
+  }
 });
 
 app.get("/api/portfolio/withdrawals", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {

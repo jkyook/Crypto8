@@ -21,6 +21,7 @@ import {
   listDepositPositions,
   listExecutionEvents,
   listJobs,
+  listOnchainPositions,
   listWithdrawalLedger,
   login,
   withdrawProtocolExposureRemote,
@@ -33,6 +34,7 @@ import {
   type MarketAprSnapshot,
   type MarketPoolAprHistoryPoint,
   type MarketPoolAprHistorySeries,
+  type OnchainPositionPayload,
   type ProductNetwork,
   type ProductSubtype
 } from "./lib/api";
@@ -87,6 +89,7 @@ type ProtocolDetailRow = {
   pool: string;
   amount: number;
 };
+type ProtocolPoolMatchState = "matched" | "drift" | "missing" | "unsupported" | "error";
 type PoolLiveState = "checking" | "live" | "down";
 
 const PROTOCOL_SORT_ORDER = ["Aave", "Uniswap", "Orca"] as const;
@@ -1548,6 +1551,10 @@ function PortfolioPanel({
   const [protocolDepositDraft, setProtocolDepositDraft] = useState<ProtocolDetailRow | null>(null);
   const [protocolDepositKey, setProtocolDepositKey] = useState(0);
   const [showPositionDetails, setShowPositionDetails] = useState(false);
+  const [onchainMatchMap, setOnchainMatchMap] = useState<Record<string, { state: ProtocolPoolMatchState; detail: string }>>({});
+  const [onchainMatchSummary, setOnchainMatchSummary] = useState("");
+  const [onchainMatchLoading, setOnchainMatchLoading] = useState(false);
+  const [onchainMatchError, setOnchainMatchError] = useState("");
 
   // ── 인출 상태 ──────────────────────────────────────────────
   const [withdrawDraft, setWithdrawDraft] = useState<{ row: ProtocolDetailRow; maxUsd: number } | null>(null);
@@ -1634,6 +1641,81 @@ function PortfolioPanel({
     return a.pool.localeCompare(b.pool, "ko-KR", { sensitivity: "base" });
   });
   const annualYield = estimateAnnualYieldUsd(positions);
+  const protocolMatchCounts = useMemo(
+    () =>
+      Object.values(onchainMatchMap).reduce<Record<ProtocolPoolMatchState, number>>(
+        (acc, row) => ({ ...acc, [row.state]: acc[row.state] + 1 }),
+        { matched: 0, drift: 0, missing: 0, unsupported: 0, error: 0 }
+      ),
+    [onchainMatchMap]
+  );
+
+  const verifyProtocolPoolMatches = async () => {
+    setOnchainMatchLoading(true);
+    setOnchainMatchError("");
+    setOnchainMatchSummary("");
+    try {
+      const onchainRows = await listOnchainPositions({}, { forceRefresh: true });
+      const byProtocolChain = onchainRows.reduce<Record<string, OnchainPositionPayload[]>>((acc, row) => {
+        const key = `${row.protocol.toLowerCase()}__${row.chain.toLowerCase()}`;
+        acc[key] = [...(acc[key] ?? []), row];
+        return acc;
+      }, {});
+      const nextMap: Record<string, { state: ProtocolPoolMatchState; detail: string }> = {};
+      protocolRows.forEach((row) => {
+        const key = `${row.name.toLowerCase()}__${row.chain.toLowerCase()}`;
+        const protocolChainCandidates = byProtocolChain[key] ?? [];
+        if (protocolChainCandidates.length === 0) {
+          nextMap[row.key] = { state: "missing", detail: "실제 조회 포지션 없음" };
+          return;
+        }
+        const poolAddressHint = (() => {
+          const hex = row.pool.match(/0x[a-fA-F0-9]{40}/)?.[0];
+          if (hex) return hex.toLowerCase();
+          const base58 = row.pool.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/)?.[0];
+          return base58 ? base58.toLowerCase() : null;
+        })();
+        const poolMatchedCandidates = poolAddressHint
+          ? protocolChainCandidates.filter((item) => {
+              const poolAddress = item.poolAddress?.toLowerCase();
+              const protocolPositionId = item.protocolPositionId?.toLowerCase();
+              return poolAddress === poolAddressHint || protocolPositionId === poolAddressHint;
+            })
+          : [];
+        const candidates = poolMatchedCandidates.length > 0 ? poolMatchedCandidates : protocolChainCandidates;
+        const basisLabel = poolMatchedCandidates.length > 0 ? "풀주소 기준" : "프로토콜/체인 기준";
+        const statuses = candidates.map((item) => item.verify?.status ?? "unsupported");
+        if (statuses.every((status) => status === "unsupported")) {
+          nextMap[row.key] = { state: "unsupported", detail: `${basisLabel} · 해당 프로토콜의 온체인 검증 미지원` };
+          return;
+        }
+        if (statuses.some((status) => status === "rpc_error")) {
+          nextMap[row.key] = { state: "error", detail: `${basisLabel} · RPC 응답 불안정 (재시도 필요)` };
+          return;
+        }
+        const actualUsd = candidates.reduce((sum, item) => sum + (item.currentValueUsd ?? item.amountUsd ?? 0), 0);
+        const base = Math.max(row.amount, 0.01);
+        const driftPct = Math.abs((actualUsd - row.amount) / base) * 100;
+        if (driftPct <= 25) {
+          nextMap[row.key] = { state: "matched", detail: `${basisLabel} · 실제 $${actualUsd.toFixed(2)} · 차이 ${driftPct.toFixed(1)}%` };
+        } else {
+          nextMap[row.key] = { state: "drift", detail: `${basisLabel} · 실제 $${actualUsd.toFixed(2)} · 차이 ${driftPct.toFixed(1)}%` };
+        }
+      });
+      const counts = Object.values(nextMap).reduce<Record<ProtocolPoolMatchState, number>>(
+        (acc, row) => ({ ...acc, [row.state]: acc[row.state] + 1 }),
+        { matched: 0, drift: 0, missing: 0, unsupported: 0, error: 0 }
+      );
+      setOnchainMatchMap(nextMap);
+      setOnchainMatchSummary(
+        `매치 ${counts.matched} · 차이 ${counts.drift} · 미조회 ${counts.missing} · 미지원 ${counts.unsupported} · 오류 ${counts.error}`
+      );
+    } catch (error) {
+      setOnchainMatchError(error instanceof Error ? error.message : "실제 포지션 조회 실패");
+    } finally {
+      setOnchainMatchLoading(false);
+    }
+  };
 
   return (
     <section className="card portfolio-panel-card">
@@ -1660,6 +1742,13 @@ function PortfolioPanel({
         <ChainExposureDonut positions={positions} compact />
       </div>
       <h3>프로토콜별 예치 상세</h3>
+      <div className="button-row" style={{ marginBottom: 10 }}>
+        <button type="button" className="ghost-btn" onClick={() => void verifyProtocolPoolMatches()} disabled={onchainMatchLoading}>
+          {onchainMatchLoading ? "실제 포지션 조회 중..." : "실제 프로토콜 풀 조회 · 매치 확인"}
+        </button>
+        {onchainMatchSummary ? <span className="kpi-label">{onchainMatchSummary}</span> : null}
+      </div>
+      {onchainMatchError ? <p className="exec-verify-error">{onchainMatchError}</p> : null}
       <table className="protocol-detail-table">
         <thead>
           <tr>
@@ -1668,6 +1757,7 @@ function PortfolioPanel({
             <th>풀</th>
             <th>예치 금액 (USD)</th>
             <th>비중</th>
+            <th>실제조회 매치</th>
             <th>입출금</th>
           </tr>
         </thead>
@@ -1680,6 +1770,36 @@ function PortfolioPanel({
               <td>${row.amount.toFixed(2)}</td>
               <td>
                 <span className="protocol-weight-cell">{totalDeposited > 0 ? ((row.amount / totalDeposited) * 100).toFixed(1) : "0.0"}%</span>
+              </td>
+              <td>
+                {onchainMatchMap[row.key] ? (
+                  <span
+                    className={
+                      onchainMatchMap[row.key].state === "matched"
+                        ? "protocol-match-badge protocol-match-badge--ok"
+                        : onchainMatchMap[row.key].state === "drift"
+                          ? "protocol-match-badge protocol-match-badge--drift"
+                          : onchainMatchMap[row.key].state === "unsupported"
+                            ? "protocol-match-badge protocol-match-badge--unsupported"
+                            : onchainMatchMap[row.key].state === "error"
+                              ? "protocol-match-badge protocol-match-badge--error"
+                              : "protocol-match-badge protocol-match-badge--missing"
+                    }
+                    title={onchainMatchMap[row.key].detail}
+                  >
+                    {onchainMatchMap[row.key].state === "matched"
+                      ? "일치"
+                      : onchainMatchMap[row.key].state === "drift"
+                        ? "차이"
+                        : onchainMatchMap[row.key].state === "unsupported"
+                          ? "미지원"
+                          : onchainMatchMap[row.key].state === "error"
+                            ? "오류"
+                            : "미조회"}
+                  </span>
+                ) : (
+                  <span className="protocol-match-badge protocol-match-badge--pending">대기</span>
+                )}
               </td>
               <td>
                 <div className="protocol-inline-transfer">
@@ -1736,7 +1856,7 @@ function PortfolioPanel({
           ))}
           {protocolRows.length === 0 ? (
             <tr>
-              <td colSpan={6}>아직 예치 내역이 없습니다.</td>
+              <td colSpan={7}>아직 예치 내역이 없습니다.</td>
             </tr>
           ) : (
             <tr className="protocol-total-row">
@@ -1746,6 +1866,11 @@ function PortfolioPanel({
               <td>${totalDeposited.toFixed(2)}</td>
               <td>
                 <span className="protocol-weight-cell">{totalDeposited > 0 ? "100.0" : "0.0"}%</span>
+              </td>
+              <td>
+                <span className="kpi-label">
+                  일치 {protocolMatchCounts.matched} · 차이 {protocolMatchCounts.drift} · 미조회 {protocolMatchCounts.missing}
+                </span>
               </td>
               <td>—</td>
             </tr>

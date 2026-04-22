@@ -129,7 +129,7 @@ function mintPriceUsd(mint: string, prices: Awaited<ReturnType<typeof fetchMarke
 async function fetchSolanaWalletBalances(connection: Connection, owner: PublicKey): Promise<SolanaWalletBalances> {
   const [nativeSol, tokenAccounts] = await Promise.all([
     connection.getBalance(owner, "confirmed"),
-    connection.getParsedTokenAccountsByOwner(owner, { programId: new PublicKey("TokenkegQfeZyiNwAJNbNbGKPFXCWuBvf9Ss623VQ5DA") })
+    connection.getParsedTokenAccountsByOwner(owner, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") })
   ]);
   const tokenRawByMint = new Map<string, bigint>();
   for (const row of tokenAccounts.value) {
@@ -326,6 +326,37 @@ async function createOrcaWalletClient(
   throw new Error(lastError || "failed to initialize Solana Orca client");
 }
 
+async function resolveOrcaPoolWithRpcFallback(args: {
+  solana: ISolanaChain;
+  rpcCandidates: string[];
+  candidates: Awaited<ReturnType<typeof resolveOrcaPoolCandidatesForAction>>;
+}): Promise<{
+  live: Awaited<ReturnType<typeof createOrcaWalletClient>>;
+  pool: Awaited<ReturnType<ReturnType<typeof buildWhirlpoolClient>["getPool"]>>;
+  poolAddress: PublicKey;
+}> {
+  const errors: string[] = [];
+  for (const rpcUrl of args.rpcCandidates) {
+    try {
+      const live = await createOrcaWalletClient(args.solana, [rpcUrl]);
+      for (const candidate of args.candidates) {
+        try {
+          const poolAddress = new PublicKey(candidate.address);
+          const pool = await live.client.getPool(poolAddress);
+          return { live, pool, poolAddress };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          errors.push(`[${rpcUrl}] ${candidate.address}: ${message}`);
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`[${rpcUrl}] client init failed: ${message}`);
+    }
+  }
+  throw new Error(errors[0] ?? "no usable Orca pool candidate across RPC fallbacks");
+}
+
 export async function executeOrcaPlanWithWallet(input: {
   solana: ISolanaChain;
   depositUsd: number;
@@ -363,7 +394,6 @@ export async function executeOrcaPlanWithWallet(input: {
   }
 
   const rpcCandidates = getSolanaRpcCandidates(input.network, input.network !== "devnet");
-  const live = await createOrcaWalletClient(input.solana, rpcCandidates);
   const priceSnapshot = await fetchMarketPrices();
 
   const results: OrcaClientExecutionResult[] = [];
@@ -371,23 +401,11 @@ export async function executeOrcaPlanWithWallet(input: {
     const allocationUsd = Number((input.depositUsd * alloc.weight).toFixed(2));
     try {
       const candidates = await resolveOrcaPoolCandidatesForAction(alloc.action, input.network);
-      let pool: Awaited<ReturnType<typeof live.client.getPool>> | null = null;
-      let poolAddress: PublicKey | null = null;
-      let lastPoolError = "";
-      for (const candidate of candidates) {
-        try {
-          const candidateAddress = new PublicKey(candidate.address);
-          const candidatePool = await live.client.getPool(candidateAddress);
-          pool = candidatePool;
-          poolAddress = candidateAddress;
-          break;
-        } catch (error) {
-          lastPoolError = error instanceof Error ? error.message : String(error);
-        }
-      }
-      if (!pool || !poolAddress) {
-        throw new Error(`Unable to fetch Whirlpool for ${alloc.action}: ${lastPoolError || "no usable Orca pool candidate"}`);
-      }
+      const { live, pool } = await resolveOrcaPoolWithRpcFallback({
+        solana: input.solana,
+        rpcCandidates,
+        candidates
+      });
       const tokenAInfo = pool.getTokenAInfo();
       const tokenBInfo = pool.getTokenBInfo();
       const tokenExtensionCtx = await TokenExtensionUtil.buildTokenExtensionContextForPool(
