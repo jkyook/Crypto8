@@ -4,7 +4,7 @@
  * dry-run 은 시뮬레이션 결과만 반환하고,
  * live 는 Orca public API로 Whirlpool을 찾은 뒤 실제 on-chain open position + add liquidity 를 시도한다.
  */
-import { AnchorProvider, BN } from "@coral-xyz/anchor";
+import { AnchorProvider } from "@coral-xyz/anchor";
 import { Percentage } from "@orca-so/common-sdk";
 import {
   buildWhirlpoolClient,
@@ -14,6 +14,7 @@ import {
   increaseLiquidityQuoteByInputToken
 } from "@orca-so/whirlpools-sdk";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
+import BN from "bn.js";
 import Decimal from "decimal.js";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "./types";
 import { getMarketPriceSnapshot } from "../marketPricing";
