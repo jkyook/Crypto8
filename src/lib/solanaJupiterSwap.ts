@@ -37,6 +37,12 @@ type JupiterSwapResponse = {
   swapTransaction?: string;
 };
 
+type JupiterQuoteRoute = {
+  outAmount?: string;
+  otherAmountThreshold?: string;
+  priceImpactPct?: string;
+};
+
 type SolanaTransactionSigner = {
   publicKey: unknown;
   signTransaction(transaction: VersionedTransaction): Promise<VersionedTransaction | { serialize: () => Uint8Array }>;
@@ -55,29 +61,18 @@ export async function executeJupiterExactInSwap(input: {
     throw new Error("swap amount must be greater than zero");
   }
 
+  const quote = await quoteJupiterExactInSwap({
+    inputMint: input.inputMint,
+    outputMint: input.outputMint,
+    amountRaw: input.amountRaw,
+    slippageBps: input.slippageBps ?? 100
+  });
   const userPublicKey = normalizePublicKey(input.wallet.publicKey);
-  const quoteUrl = new URL("https://quote-api.jup.ag/v6/quote");
-  quoteUrl.searchParams.set("inputMint", input.inputMint);
-  quoteUrl.searchParams.set("outputMint", input.outputMint);
-  quoteUrl.searchParams.set("amount", input.amountRaw.toString());
-  quoteUrl.searchParams.set("swapMode", "ExactIn");
-  quoteUrl.searchParams.set("slippageBps", String(input.slippageBps ?? 100));
-
-  const quoteRes = await fetch(quoteUrl.toString(), { signal: AbortSignal.timeout(12000) });
-  if (!quoteRes.ok) {
-    throw new Error(`Jupiter quote failed: HTTP ${quoteRes.status}`);
-  }
-  const quoteJson = (await quoteRes.json()) as JupiterQuoteResponse;
-  const bestRoute = quoteJson.data?.[0];
-  if (!bestRoute) {
-    throw new Error("Jupiter quote returned no route");
-  }
-
   const swapRes = await fetch("https://quote-api.jup.ag/v6/swap", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      quoteResponse: bestRoute,
+      quoteResponse: quote.route,
       userPublicKey,
       wrapAndUnwrapSol: true,
       dynamicComputeUnitLimit: true
@@ -106,5 +101,51 @@ export async function executeJupiterExactInSwap(input: {
     outputMint: input.outputMint,
     amountRaw: input.amountRaw,
     label: input.label
+  };
+}
+
+export async function quoteJupiterExactInSwap(input: {
+  inputMint: string;
+  outputMint: string;
+  amountRaw: bigint;
+  slippageBps?: number;
+}): Promise<{
+  inputMint: string;
+  outputMint: string;
+  amountRaw: bigint;
+  outAmountRaw: bigint;
+  minOutAmountRaw: bigint;
+  priceImpactPct: string;
+  route: JupiterQuoteRoute;
+}> {
+  if (input.amountRaw <= 0n) {
+    throw new Error("swap amount must be greater than zero");
+  }
+
+  const quoteUrl = new URL("https://quote-api.jup.ag/v6/quote");
+  quoteUrl.searchParams.set("inputMint", input.inputMint);
+  quoteUrl.searchParams.set("outputMint", input.outputMint);
+  quoteUrl.searchParams.set("amount", input.amountRaw.toString());
+  quoteUrl.searchParams.set("swapMode", "ExactIn");
+  quoteUrl.searchParams.set("slippageBps", String(input.slippageBps ?? 100));
+
+  const quoteRes = await fetch(quoteUrl.toString(), { signal: AbortSignal.timeout(12000) });
+  if (!quoteRes.ok) {
+    throw new Error(`Jupiter quote failed: HTTP ${quoteRes.status}`);
+  }
+  const quoteJson = (await quoteRes.json()) as JupiterQuoteResponse;
+  const bestRoute = quoteJson.data?.[0] as JupiterQuoteRoute | undefined;
+  if (!bestRoute?.outAmount) {
+    throw new Error("Jupiter quote returned no route");
+  }
+
+  return {
+    inputMint: input.inputMint,
+    outputMint: input.outputMint,
+    amountRaw: input.amountRaw,
+    outAmountRaw: BigInt(bestRoute.outAmount),
+    minOutAmountRaw: BigInt(bestRoute.otherAmountThreshold ?? bestRoute.outAmount),
+    priceImpactPct: bestRoute.priceImpactPct ?? "0",
+    route: bestRoute
   };
 }

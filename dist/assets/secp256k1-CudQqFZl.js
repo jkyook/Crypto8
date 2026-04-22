@@ -1,1 +1,0 @@
-import{t as e}from"./index-XM8JUf1m.js";export{e as secp256k1};

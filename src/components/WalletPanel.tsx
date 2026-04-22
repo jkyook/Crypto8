@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import Decimal from "decimal.js";
 import { AddressType } from "@phantom/browser-sdk";
 import { useAccounts, useConnect, useDisconnect, usePhantom } from "@phantom/react-sdk";
 import type { ISolanaChain } from "@phantom/chain-interfaces";
@@ -8,7 +9,6 @@ import {
   AUTH_UPDATED_EVENT,
   clearSession,
   fetchMarketPrices,
-  fetchRuntimeInfo,
   getSession,
   linkAccountWallet,
   listAccountAssets,
@@ -18,7 +18,6 @@ import {
   type AccountAssetSymbol,
   type AuthSession,
   type DepositPositionPayload,
-  type RuntimeInfo,
   type UserWallet
 } from "../lib/api";
 import { loadCachedAccountAssets, saveCachedAccountAssets } from "../lib/accountAssetCache";
@@ -31,6 +30,8 @@ import {
   sendSolanaAsset,
   swapSolanaAsset,
 } from "../lib/solanaWalletActions";
+import { quoteJupiterExactInSwap } from "../lib/solanaJupiterSwap";
+import { resolveSolanaSymbolForMint, resolveSolanaTokenDecimals, resolveSolanaTokenMint } from "../lib/solanaTokenMints";
 
 export type WalletWithdrawLedgerLine = {
   id: string;
@@ -60,6 +61,13 @@ type LedgerRow = {
   amountUsd: number;
   createdAt: string;
   productName?: string;
+};
+
+type SwapTargetChoice = {
+  mint: string;
+  symbol: AccountAssetSymbol;
+  label: string;
+  decimals: number;
 };
 
 function solscanAccountUrl(address: string, network: "mainnet" | "devnet"): string {
@@ -93,6 +101,14 @@ function shortTxid(txid?: string | null): string {
   if (!txid) return "—";
   if (txid.length <= 16) return txid;
   return `${txid.slice(0, 8)}…${txid.slice(-8)}`;
+}
+
+function formatRawAmount(rawAmount: bigint | string, decimals: number): string {
+  const numeric = typeof rawAmount === "bigint" ? Number(rawAmount) : Number(rawAmount);
+  if (!Number.isFinite(numeric)) return "—";
+  return (numeric / 10 ** decimals).toLocaleString(undefined, {
+    maximumFractionDigits: decimals > 6 ? 6 : Math.max(decimals, 2)
+  });
 }
 
 function readConnectedSolanaAddress(): string | undefined {
@@ -327,6 +343,16 @@ export function WalletPanel({
   const [swapFromMint, setSwapFromMint] = useState("");
   const [swapToMint, setSwapToMint] = useState("");
   const [swapAmount, setSwapAmount] = useState("");
+  const [swapQuote, setSwapQuote] = useState<{
+    outAmountRaw: bigint;
+    minOutAmountRaw: bigint;
+    priceImpactPct: string;
+    outputDecimals: number;
+    outputSymbol: AccountAssetSymbol;
+    outputMint: string;
+  } | null>(null);
+  const [swapQuoteLoading, setSwapQuoteLoading] = useState(false);
+  const [swapQuoteError, setSwapQuoteError] = useState("");
   const [linkedWallets, setLinkedWallets] = useState<UserWallet[]>([]);
   const [accountAssets, setAccountAssets] = useState<AccountAssetBalance[]>([]);
   const [accountAssetsSnapshotLabel, setAccountAssetsSnapshotLabel] = useState("업데이트 전");
@@ -442,6 +468,7 @@ export function WalletPanel({
     return "주소 없음";
   }, [appUsername, evmAccount?.address, solanaAccount?.address]);
   const primaryWalletAddress = solanaAccount?.address ?? evmAccount?.address;
+  const runtimeMode = isConnected ? "live" : "dry-run";
 
   const connectPhantomWallet = async (): Promise<void> => {
     const hasInjected =
@@ -669,10 +696,24 @@ export function WalletPanel({
   );
   const walletAssetChoiceByMint = useMemo(() => new Map(walletAssetChoices.map((choice) => [choice.mint, choice])), [walletAssetChoices]);
   const sendAssetChoices = walletAssetChoices;
-  const swapAssetChoices = walletAssetChoices;
+  const swapAssetChoices = walletAssetChoices.filter((choice) => {
+    const symbol = resolveSolanaSymbolForMint(choice.mint);
+    return Boolean(symbol);
+  });
+  const supportedSwapTargets = useMemo<SwapTargetChoice[]>(
+    () =>
+      (["USDC", "USDT", "SOL", "MSOL"] as const).map((symbol) => ({
+        symbol,
+        mint: resolveSolanaTokenMint(symbol),
+        label: `${symbol} · ${resolveSolanaTokenMint(symbol).slice(0, 4)}…${resolveSolanaTokenMint(symbol).slice(-4)}`,
+        decimals: resolveSolanaTokenDecimals(symbol)
+      })),
+    []
+  );
+  const swapTargetChoices = supportedSwapTargets;
   const defaultSendChoiceMint = sendChoiceMint || sendAssetChoices[0]?.mint || "";
   const defaultSwapFromMint = swapFromMint || swapAssetChoices[0]?.mint || "";
-  const defaultSwapToMint = swapToMint || swapAssetChoices.find((choice) => choice.mint !== defaultSwapFromMint)?.mint || "";
+  const defaultSwapToMint = swapToMint || swapTargetChoices.find((choice) => choice.mint !== defaultSwapFromMint)?.mint || "";
 
   const refreshWalletViews = useCallback(() => {
     setWalletRefreshTick((tick) => tick + 1);
@@ -699,6 +740,9 @@ export function WalletPanel({
     setWalletActionMode(null);
     setWalletActionError("");
     setWalletActionNote("");
+    setSwapQuote(null);
+    setSwapQuoteLoading(false);
+    setSwapQuoteError("");
   }, []);
 
   const submitSendAction = useCallback(async () => {
@@ -892,8 +936,96 @@ export function WalletPanel({
   const walletActionChoices = walletAssetChoices;
   const selectedSendChoice = walletActionChoices.find((choice) => choice.mint === defaultSendChoiceMint) ?? walletActionChoices[0];
   const selectedSwapFromChoice = walletActionChoices.find((choice) => choice.mint === defaultSwapFromMint) ?? walletActionChoices[0];
-  const selectedSwapToChoices = walletActionChoices.filter((choice) => choice.mint !== selectedSwapFromChoice?.mint);
-  const selectedSwapToChoice = selectedSwapToChoices.find((choice) => choice.mint === defaultSwapToMint) ?? selectedSwapToChoices[0];
+  const selectedSwapToChoices = swapTargetChoices.filter((choice) => choice.mint !== selectedSwapFromChoice?.mint);
+  const selectedSwapToChoice = selectedSwapToChoices.find((choice) => choice.mint === defaultSwapToMint) ?? selectedSwapToChoices[0] ?? null;
+
+  const swapSelectedAssets = useCallback(() => {
+    const nextFromMint = selectedSwapToChoice?.mint || defaultSwapToMint || selectedSwapFromChoice?.mint || "";
+    const nextFromChoice = walletAssetChoiceByMint.get(nextFromMint) ?? selectedSwapFromChoice;
+    const nextTargetMint = swapTargetChoices.find((choice) => choice.mint !== nextFromChoice?.mint)?.mint ?? "";
+    setSwapFromMint(nextFromChoice?.mint ?? "");
+    setSwapToMint(nextTargetMint);
+    setSwapQuote(null);
+    setSwapQuoteError("");
+  }, [
+    defaultSwapToMint,
+    selectedSwapFromChoice,
+    selectedSwapToChoice?.mint,
+    swapTargetChoices,
+    walletAssetChoiceByMint
+  ]);
+
+  useEffect(() => {
+    if (walletActionMode !== "swap") {
+      setSwapQuote(null);
+      setSwapQuoteLoading(false);
+      setSwapQuoteError("");
+      return;
+    }
+    const fromChoice = walletAssetChoiceByMint.get(swapFromMint) ?? selectedSwapFromChoice;
+    if (!fromChoice || !swapToMint || swapToMint === fromChoice.mint || !swapAmount.trim()) {
+      setSwapQuote(null);
+      setSwapQuoteLoading(false);
+      setSwapQuoteError("");
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        setSwapQuoteLoading(true);
+        setSwapQuoteError("");
+        try {
+          const amountRaw = new Decimal(swapAmount.trim()).mul(new Decimal(10).pow(fromChoice.decimals)).floor();
+          if (!amountRaw.isFinite() || amountRaw.lte(0)) {
+            throw new Error("스왑 수량을 다시 확인해 주세요.");
+          }
+          const quote = await quoteJupiterExactInSwap({
+            inputMint: fromChoice.mint,
+            outputMint: swapToMint,
+            amountRaw: BigInt(amountRaw.toFixed(0)),
+            slippageBps: 100
+          });
+          if (cancelled) return;
+          const outputSymbol = resolveSolanaSymbolForMint(swapToMint) ?? "USDC";
+          const outputDecimals = resolveSolanaTokenDecimals(outputSymbol);
+          setSwapQuote({
+            outAmountRaw: quote.outAmountRaw,
+            minOutAmountRaw: quote.minOutAmountRaw,
+            priceImpactPct: quote.priceImpactPct,
+            outputDecimals,
+            outputSymbol,
+            outputMint: swapToMint
+          });
+        } catch (error) {
+          if (cancelled) return;
+          setSwapQuote(null);
+          setSwapQuoteError(error instanceof Error ? error.message : "예상 수량을 계산하지 못했습니다.");
+        } finally {
+          if (!cancelled) setSwapQuoteLoading(false);
+        }
+      })();
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    selectedSwapFromChoice,
+    swapAmount,
+    swapFromMint,
+    swapToMint,
+    walletActionMode,
+    walletAssetChoiceByMint
+  ]);
+
+  useEffect(() => {
+    if (walletActionMode !== "swap") return;
+    if (!swapFromMint || !swapToMint || swapFromMint !== swapToMint) return;
+    const nextTarget = swapTargetChoices.find((choice) => choice.mint !== swapFromMint)?.mint ?? "";
+    if (nextTarget && nextTarget !== swapToMint) {
+      setSwapToMint(nextTarget);
+    }
+  }, [swapFromMint, swapToMint, swapTargetChoices, walletActionMode]);
 
   const walletActionModal =
     walletActionMode && selectedSendChoice && selectedSwapFromChoice
@@ -977,6 +1109,9 @@ export function WalletPanel({
                       ))}
                     </select>
                   </label>
+                  <button type="button" className="wallet-swap-exchange" onClick={swapSelectedAssets} aria-label="보내는 토큰과 받는 토큰 교체">
+                    ⇄
+                  </button>
                   <label>
                     받을 토큰
                     <select value={swapToMint || selectedSwapToChoice?.mint || ""} onChange={(e) => setSwapToMint(e.target.value)}>
@@ -991,6 +1126,21 @@ export function WalletPanel({
                     수량
                     <input value={swapAmount} onChange={(e) => setSwapAmount(e.target.value)} inputMode="decimal" placeholder="0.00" />
                   </label>
+                  <div className="wallet-swap-quote">
+                    <span className="wallet-swap-quote-label">예상 수령</span>
+                    <strong>
+                      {swapQuoteLoading
+                        ? "조회 중..."
+                        : swapQuote
+                          ? `${formatRawAmount(swapQuote.outAmountRaw, swapQuote.outputDecimals)} ${swapQuote.outputSymbol}`
+                          : "수량 입력 후 계산"}
+                    </strong>
+                    <em>
+                      {swapQuote
+                        ? `최소 수령 ${formatRawAmount(swapQuote.minOutAmountRaw, swapQuote.outputDecimals)} ${swapQuote.outputSymbol}`
+                        : swapQuoteError || "Jupiter 견적 기준"}
+                    </em>
+                  </div>
                 </div>
               )}
               <div className="exec-verify-actions">

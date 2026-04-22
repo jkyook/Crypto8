@@ -20,6 +20,7 @@ import {
   type AccountAssetSymbol,
   type ExecuteJobResponse,
   type Job,
+  type MarketPriceSnapshot,
   type ProtocolExecutionReadiness,
   type ProductNetwork,
   type ProductSubtype,
@@ -67,6 +68,32 @@ type ExecutionStepLogEntry = {
   message?: string;
 };
 
+function buildFallbackDryRunAssets(
+  prices: MarketPriceSnapshot["prices"],
+  priceSource: string,
+  priceUpdatedAt: string
+): AccountAssetBalance[] {
+  const defaults: Array<{ symbol: AccountAssetSymbol; chain: string; amount: number }> = [
+    { symbol: "USDC", chain: "Solana", amount: 10000 },
+    { symbol: "USDT", chain: "Solana", amount: 2500 },
+    { symbol: "SOL", chain: "Solana", amount: 12.5 },
+    { symbol: "MSOL", chain: "Solana", amount: 1.8 },
+    { symbol: "ETH", chain: "Ethereum", amount: 1.2 }
+  ];
+  return defaults.map((asset) => {
+    const usdPrice = prices[asset.symbol] ?? 0;
+    return {
+      symbol: asset.symbol,
+      chain: asset.chain,
+      amount: asset.amount,
+      usdPrice,
+      usdValue: Number((asset.amount * usdPrice).toFixed(2)),
+      priceSource,
+      priceUpdatedAt
+    };
+  });
+}
+
 export function OrchestratorBoard({
   initialDepositUsd = 10000,
   initialProductName = "기본 상품",
@@ -96,6 +123,11 @@ export function OrchestratorBoard({
   const [apiMessage, setApiMessage] = useState<string>("");
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
+  const [prices, setPrices] = useState<MarketPriceSnapshot>({
+    prices: { USDC: 1, USDT: 1, ETH: 0, SOL: 0, MSOL: 0 },
+    updatedAt: new Date().toISOString(),
+    source: "fallback"
+  });
   const [accountAssets, setAccountAssets] = useState<AccountAssetBalance[]>([]);
   const [assetLoading, setAssetLoading] = useState(false);
   const [assetError, setAssetError] = useState("");
@@ -135,6 +167,19 @@ export function OrchestratorBoard({
         setRuntime(null);
       }
     })();
+  }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetchMarketPrices({ signal: controller.signal })
+      .then((snapshot) => {
+        if (!controller.signal.aborted) {
+          setPrices(snapshot);
+        }
+      })
+      .catch(() => {
+        // 가격은 보조 정보이므로 실패 시 기본값을 유지한다.
+      });
+    return () => controller.abort();
   }, []);
   const guardrail = useMemo(() => checkGuardrails(), []);
   const isRangeOut = !guardrail.maxPoolOk || !guardrail.maxChainOk;

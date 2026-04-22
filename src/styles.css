@@ -3960,6 +3960,52 @@ body[data-theme="light"] .protocol-news-digest {
   color: #c8d9ee;
 }
 
+.wallet-swap-exchange {
+  width: 42px;
+  height: 42px;
+  margin: -2px auto 0;
+  border-radius: 999px;
+  border: 1px solid rgba(122, 163, 255, 0.45);
+  background: rgba(16, 31, 51, 0.9);
+  color: #dce8f7;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.wallet-swap-exchange:hover {
+  border-color: rgba(122, 163, 255, 0.7);
+  background: rgba(25, 44, 72, 0.96);
+}
+
+.wallet-swap-quote {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(10, 21, 35, 0.92);
+  border: 1px solid rgba(96, 126, 184, 0.2);
+}
+
+.wallet-swap-quote-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #7be8c3;
+  font-weight: 800;
+}
+
+.wallet-swap-quote strong {
+  font-size: 1rem;
+  color: #f4f8ff;
+}
+
+.wallet-swap-quote em {
+  font-style: normal;
+  font-size: 0.75rem;
+  color: var(--c8-text-muted);
+}
+
 .wallet-action-form input,
 .wallet-action-form select {
   width: 100%;

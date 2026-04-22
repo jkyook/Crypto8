@@ -257,6 +257,41 @@ export type DepositPositionPayload = {
   createdAt: string;
 };
 
+export type OnchainPositionPayload = {
+  id: string;
+  executionId: string;
+  username: string;
+  protocol: string;
+  chain: string;
+  asset: string;
+  poolAddress: string | null;
+  positionToken: string | null;
+  positionRaw: string | null;
+  amountUsd: number;
+  depositTxHash: string;
+  lastSyncedAt: string | null;
+  status: "active" | "closed" | "liquidated";
+  openedAt: string;
+  closedAt: string | null;
+  onchainDataJson: string | null;
+  principalUsd: number | null;
+  currentValueUsd: number | null;
+  unrealizedPnlUsd: number | null;
+  realizedPnlUsd: number | null;
+  feesPaidUsd: number | null;
+  netApy: number | null;
+  entryPrice: number | null;
+  expectedApr: number | null;
+  protocolPositionId: string | null;
+  verify?: {
+    status: "verified" | "drift" | "closed_onchain" | "rpc_error" | "unsupported";
+    onchainAmountUsd?: number | null;
+    driftPct?: number | null;
+    verifiedAt?: string | null;
+    detail?: string | null;
+  } | null;
+};
+
 export type AccountAssetSymbol = "USDC" | "USDT" | "ETH" | "SOL" | "MSOL";
 
 export type AaveUsdcChain = "Arbitrum" | "Base";
@@ -355,6 +390,12 @@ export type RuntimeInfo = {
   solanaOrcaLiveReady: boolean;
   walletUiPolicy: string;
   serverExecutionNote: string;
+  rpcConfigured?: Partial<Record<"ethereum" | "arbitrum" | "base" | "solana", boolean>>;
+  solanaKeyConfigured?: boolean;
+  protocolReadiness?: Record<LiveProtocol, ProtocolReadiness>;
+  configuredLiveAdapterFlags?: LiveAdapterFlagMap;
+  liveAdapterFlags?: LiveAdapterFlagMap;
+  liveAdapterFlagSources?: LiveAdapterSourceMap;
 };
 
 function getProtocolNewsFallback(protocol: string): ProtocolNewsBundle {
