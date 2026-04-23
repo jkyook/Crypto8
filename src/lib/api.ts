@@ -106,6 +106,10 @@ async function fetchWithLocal8787Fallback(path: string, init: RequestInit, conte
   }
 }
 
+export async function publicApiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  return fetchWithLocal8787Fallback(path, init, "public api request");
+}
+
 /** 로컬 세션 표시만 지움(리프레시 실패 등). `App`이 이 이벤트로 UI 동기화. */
 export const AUTH_CLEARED_EVENT = "crypto8:auth-cleared";
 /** 같은 탭에서 로그인·토큰 갱신 후 세션 표시를 다시 읽도록(예: 예치 실행 모달). */

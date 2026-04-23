@@ -160,6 +160,53 @@ app.get("/", (_req, res) => {
   });
 });
 
+async function proxyJupiterJson(path: string, body: unknown): Promise<Response> {
+  return fetch(`https://quote-api.jup.ag/v6${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(12_000)
+  });
+}
+
+app.get("/api/jupiter/quote", async (req, res) => {
+  try {
+    const upstreamUrl = new URL("https://quote-api.jup.ag/v6/quote");
+    for (const [key, value] of Object.entries(req.query)) {
+      if (typeof value === "string") {
+        upstreamUrl.searchParams.set(key, value);
+      } else if (Array.isArray(value)) {
+        const first = value[0];
+        if (typeof first === "string") {
+          upstreamUrl.searchParams.set(key, first);
+        }
+      }
+    }
+    const upstream = await fetch(upstreamUrl.toString(), {
+      method: "GET",
+      signal: AbortSignal.timeout(12_000)
+    });
+    const text = await upstream.text();
+    res.status(upstream.status);
+    res.setHeader("Content-Type", upstream.headers.get("content-type") ?? "application/json");
+    res.send(text);
+  } catch (error) {
+    res.status(502).json({ ok: false, message: error instanceof Error ? error.message : "jupiter quote proxy failed" });
+  }
+});
+
+app.post("/api/jupiter/swap", async (req, res) => {
+  try {
+    const upstream = await proxyJupiterJson("/swap", req.body);
+    const text = await upstream.text();
+    res.status(upstream.status);
+    res.setHeader("Content-Type", upstream.headers.get("content-type") ?? "application/json");
+    res.send(text);
+  } catch (error) {
+    res.status(502).json({ ok: false, message: error instanceof Error ? error.message : "jupiter swap proxy failed" });
+  }
+});
+
 /**
  * CORS 화이트리스트.
  * `CORS_ALLOWED_ORIGINS` 콤마구분(예: `http://localhost:5173,https://crypto8.example.com`).

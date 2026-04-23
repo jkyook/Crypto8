@@ -192,7 +192,7 @@ async function waitForConnectedSolanaAddress(fallback?: string): Promise<string 
 }
 
 function NetworkStatusBlock({ network, plain }: { network: "mainnet" | "devnet"; plain?: boolean }) {
-  const clusterLabel = network === "mainnet" ? "Solana 메인넷" : "Solana 개발망(데브넷)";
+  const clusterLabel = network === "mainnet" ? "Solana mainnet_live" : "Solana 개발망(데브넷)";
   const inner = (
     <div className="wallet-network-primary">
       <span className="wallet-network-dot" aria-hidden />
@@ -200,7 +200,7 @@ function NetworkStatusBlock({ network, plain }: { network: "mainnet" | "devnet";
         <p className="wallet-network-title">네트워크</p>
         <p className="wallet-network-cluster">
           <strong>{clusterLabel}</strong>
-          <span className="wallet-network-pill">{network === "mainnet" ? "메인넷" : "데브넷"}</span>
+          <span className="wallet-network-pill">{network === "mainnet" ? "mainnet_live" : "devnet"}</span>
         </p>
       </div>
     </div>
@@ -1374,13 +1374,6 @@ export function WalletPanel({
                           aria-expanded={swapToMenuOpen}
                         >
                           <strong>{selectedSwapToChoice?.symbol ?? "선택"}</strong>
-                          <em>
-                            {swapQuoteLoading
-                              ? "견적 조회 중"
-                              : swapQuote
-                                ? `${swapQuote.outputSymbol}`
-                                : "예상 수령"}
-                          </em>
                         </button>
                         <input
                           className="wallet-swap-stack-card-input"
@@ -1417,23 +1410,6 @@ export function WalletPanel({
                     ) : null}
                   </div>
                 </div>
-                <div className="wallet-swap-quote">
-                  <div>
-                    <span className="wallet-swap-quote-label">예상 수령</span>
-                    <strong>
-                      {swapQuoteLoading
-                        ? "조회 중..."
-                        : swapQuote
-                          ? `${formatRawAmount(swapQuote.outAmountRaw, swapQuote.outputDecimals)} ${swapQuote.outputSymbol}`
-                          : "수량 입력 후 계산"}
-                    </strong>
-                  </div>
-                  <em>
-                    {swapQuote
-                      ? `최소 수령 ${formatRawAmount(swapQuote.minOutAmountRaw, swapQuote.outputDecimals)} ${swapQuote.outputSymbol} · 예상 슬리피지 ${swapQuote.priceImpactPct}%`
-                      : swapQuoteError || "Jupiter 견적 기준"}
-                  </em>
-                </div>
               </div>
               <div className="wallet-action-confirm-row">
                 <button
@@ -1447,6 +1423,7 @@ export function WalletPanel({
               </div>
               {walletActionError ? <p className="wallet-error">{walletActionError}</p> : null}
               {walletActionNote ? <p className="wallet-action-note">{walletActionNote}</p> : null}
+              {swapQuoteError ? <p className="wallet-error">{swapQuoteError}</p> : null}
             </div>
           ) : null}
         </div>
@@ -1503,10 +1480,10 @@ export function WalletPanel({
       }
     >
       <button type="button" className={network === "mainnet" ? "active" : ""} onClick={() => setNetwork("mainnet")}>
-        메인넷
+        mainnet_live
       </button>
       <button type="button" className={network === "devnet" ? "active" : ""} onClick={() => setNetwork("devnet")}>
-        데브넷
+        devnet
       </button>
     </div>
   );
