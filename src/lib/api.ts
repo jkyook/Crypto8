@@ -329,7 +329,7 @@ export type OnchainPositionPayload = {
 
 export type AccountAssetSymbol = "USDC" | "USDT" | "ETH" | "SOL" | "MSOL";
 
-export type AaveUsdcChain = "Arbitrum" | "Base";
+export type AaveUsdcChain = "Arbitrum" | "Base" | "Ethereum";
 
 export type AaveTxRequest = {
   kind: "approve" | "supply" | "withdraw";

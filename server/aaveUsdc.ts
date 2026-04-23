@@ -6,7 +6,7 @@
  * - receipt 확인 후 Position 확정
  * - getUserReserveData: aToken balance, APY, collateral 상태
  *
- * 지원 체인: Arbitrum, Base
+ * 지원 체인: Arbitrum, Base, Ethereum
  */
 import {
   createPublicClient,
@@ -19,7 +19,7 @@ import {
   type Address,
   type Chain
 } from "viem";
-import { arbitrum, base } from "viem/chains";
+import { arbitrum, base, mainnet } from "viem/chains";
 import { getDb } from "./db";
 import { createDepositPosition } from "./positions";
 import {
@@ -31,7 +31,7 @@ import {
 } from "./intentStore";
 import { createJob } from "./store";
 
-export type AaveUsdcChain = "Arbitrum" | "Base";
+export type AaveUsdcChain = "Arbitrum" | "Base" | "Ethereum";
 
 type AaveUsdcConfig = {
   chain: Chain;
@@ -62,6 +62,15 @@ const AAVE_USDC: Record<AaveUsdcChain, AaveUsdcConfig> = {
     eModeCategory: 1,
     envKeys: ["BASE_RPC_URL"],
     fallbackRpcUrls: ["https://base-rpc.publicnode.com", "https://rpc.ankr.com/base"]
+  },
+  Ethereum: {
+    chain: mainnet,
+    chainId: 1,
+    pool: "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+    usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    eModeCategory: 1,
+    envKeys: ["ETHEREUM_RPC_URL"],
+    fallbackRpcUrls: ["https://ethereum-rpc.publicnode.com", "https://rpc.ankr.com/eth"]
   }
 };
 
@@ -204,7 +213,7 @@ export type AaveUserReserveData = {
 // ──────────────────────────────────────────────────────────────────────────────
 
 function assertChain(chain: unknown): AaveUsdcChain {
-  if (chain === "Arbitrum" || chain === "Base") return chain;
+  if (chain === "Arbitrum" || chain === "Base" || chain === "Ethereum") return chain;
   throw new Error(`unsupported Aave USDC chain: ${String(chain)}`);
 }
 

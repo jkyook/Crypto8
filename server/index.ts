@@ -823,6 +823,52 @@ function buildPublicAaveRow(snapshot: AaveUserReserveData) {
   };
 }
 
+function buildPublicOrcaErrorRow(walletAddress: string, error: unknown) {
+  const now = new Date().toISOString();
+  const detail = error instanceof Error ? error.message : String(error);
+  return {
+    id: `public_orca_error_${walletAddress}`,
+    executionId: `public_orca_error_${walletAddress}`,
+    username: "guest",
+    protocol: "Orca",
+    chain: "Solana",
+    asset: "Whirlpool",
+    poolAddress: null,
+    positionToken: null,
+    positionRaw: null,
+    amountUsd: 0,
+    depositTxHash: `public:${walletAddress}:Solana`,
+    lastSyncedAt: now,
+    status: "active" as const,
+    openedAt: now,
+    closedAt: null,
+    onchainDataJson: JSON.stringify({
+      source: "public-orca",
+      walletAddress,
+      chain: "Solana",
+      queryStatus: "rpc_error",
+      queryError: detail
+    }),
+    principalUsd: 0,
+    currentValueUsd: 0,
+    unrealizedPnlUsd: 0,
+    realizedPnlUsd: null,
+    feesPaidUsd: null,
+    netApy: null,
+    entryPrice: null,
+    expectedApr: null,
+    protocolPositionId: null,
+    verify: {
+      status: "rpc_error" as const,
+      onchainAmountUsd: null,
+      onchainRaw: null,
+      driftPct: null,
+      verifiedAt: now,
+      detail
+    }
+  };
+}
+
 function buildProtocolMixFromExecutionPayload(
   payload: Awaited<ReturnType<typeof executeJob>>["payload"],
   depositUsd: number
@@ -962,8 +1008,12 @@ app.get("/api/public/positions", async (req, res) => {
       }
     }
     if (solanaWalletAddress) {
-      const orcaRows = await listOrcaWalletPositions("guest", solanaWalletAddress);
-      rows.push(...orcaRows);
+      try {
+        const orcaRows = await listOrcaWalletPositions("guest", solanaWalletAddress);
+        rows.push(...orcaRows);
+      } catch (error) {
+        rows.push(buildPublicOrcaErrorRow(solanaWalletAddress, error));
+      }
     }
     res.json({ ok: true, positions: rows });
   } catch (error) {

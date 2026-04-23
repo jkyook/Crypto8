@@ -3855,6 +3855,30 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
   max-width: 100%;
 }
 
+.onchain-query-result-panel {
+  margin: 12px 0 18px;
+  padding: 14px;
+  border: 1px solid rgba(96, 132, 170, 0.32);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(13, 28, 48, 0.64), rgba(8, 18, 34, 0.74));
+}
+
+.onchain-query-result-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.onchain-query-result-head h3 {
+  margin: 0 0 4px;
+}
+
+.onchain-query-result-panel .portfolio-onchain-table {
+  margin-top: 0;
+}
+
 .portfolio-position-address-cell {
   display: flex;
   flex-direction: column;
@@ -5633,6 +5657,7 @@ body[data-theme="light"] .pending-jobs-panel {
 
 body[data-theme="light"] .product-action-row,
 body[data-theme="light"] .selected-product-ticket,
+body[data-theme="light"] .onchain-query-result-panel,
 body[data-theme="light"] .deposit-risk-check,
 body[data-theme="light"] .deposit-asset-summary,
 body[data-theme="light"] .deposit-swap-route-row,

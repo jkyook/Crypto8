@@ -1596,14 +1596,6 @@ function getProtocolSortRank(protocolName: string): number {
   return rank === -1 ? PROTOCOL_SORT_ORDER.length : rank;
 }
 
-function inferOrcaActionFromPoolLabel(poolLabel: string): string | null {
-  const normalized = poolLabel.toLowerCase();
-  if (normalized.includes("usdc-usdt")) return "USDC-USDT Whirlpool (0.01%)";
-  if (normalized.includes("sol-usdc")) return "SOL-USDC Whirlpool";
-  if (normalized.includes("msol-sol") || normalized.includes("m-sol")) return "mSOL-SOL Whirlpool";
-  return null;
-}
-
 function isPoolDepositPossible(protocolName: string, chain: string): boolean {
   const protocol = protocolName.toLowerCase();
   const lcChain = chain.toLowerCase();
@@ -1660,6 +1652,29 @@ function getPoolQueryReason(protocolName: string): string {
   return "해당 프로토콜의 포지션 조회 기준을 현재 정의하지 않았습니다.";
 }
 
+function shortPositionId(value?: string | null): string {
+  if (!value) return "—";
+  return value.length <= 14 ? value : `${value.slice(0, 6)}…${value.slice(-6)}`;
+}
+
+function onchainVerifyLabel(status?: NonNullable<OnchainPositionPayload["verify"]>["status"]): string {
+  if (status === "verified") return "조회완료";
+  if (status === "drift") return "차이";
+  if (status === "closed_onchain") return "잔고없음";
+  if (status === "rpc_error") return "오류";
+  if (status === "unsupported") return "미지원";
+  return "미확인";
+}
+
+function onchainVerifyBadgeClass(status?: NonNullable<OnchainPositionPayload["verify"]>["status"]): string {
+  if (status === "verified") return "protocol-match-badge protocol-match-badge--ok";
+  if (status === "drift") return "protocol-match-badge protocol-match-badge--drift";
+  if (status === "closed_onchain") return "protocol-match-badge protocol-match-badge--missing";
+  if (status === "rpc_error") return "protocol-match-badge protocol-match-badge--error";
+  if (status === "unsupported") return "protocol-match-badge protocol-match-badge--unsupported";
+  return "protocol-match-badge protocol-match-badge--pending";
+}
+
 type PoolCatalogRow = {
   key: string;
   productNames: string[];
@@ -1699,6 +1714,7 @@ function PortfolioPanel({
   const [protocolDepositKey, setProtocolDepositKey] = useState(0);
   const [showPositionDetails, setShowPositionDetails] = useState(false);
   const [onchainMatchMap, setOnchainMatchMap] = useState<Record<string, { state: ProtocolPoolMatchState; detail: string }>>({});
+  const [onchainQueriedRows, setOnchainQueriedRows] = useState<OnchainPositionPayload[]>([]);
   const [onchainMatchSummary, setOnchainMatchSummary] = useState("");
   const [onchainMatchLoading, setOnchainMatchLoading] = useState(false);
   const [onchainMatchError, setOnchainMatchError] = useState("");
@@ -1853,6 +1869,7 @@ function PortfolioPanel({
     setOnchainMatchLoading(true);
     setOnchainMatchError("");
     setOnchainMatchSummary("");
+    setOnchainQueriedRows([]);
     try {
       const evmWalletAddress = evmAccount?.address;
       const solanaWalletAddress = solanaAccount?.address;
@@ -1860,8 +1877,8 @@ function PortfolioPanel({
         throw new Error("연결된 지갑 주소가 없습니다. Solana 또는 EVM 지갑을 연결한 뒤 다시 시도해 주세요.");
       }
       const combinedRows = await listPublicOnchainPositions({}, { evmWalletAddress, solanaWalletAddress });
+      setOnchainQueriedRows(combinedRows);
       const nextMap: Record<string, { state: ProtocolPoolMatchState; detail: string }> = {};
-      const orcaCandidateCache = new Map<string, { address: string; label: string } | null>();
       const byProtocolChain = combinedRows.reduce<Record<string, OnchainPositionPayload[]>>((acc, row) => {
         const key = `${row.protocol.toLowerCase()}__${row.chain.toLowerCase()}`;
         acc[key] = [...(acc[key] ?? []), row];
@@ -1871,26 +1888,6 @@ function PortfolioPanel({
         const key = `${row.name.toLowerCase()}__${row.chain.toLowerCase()}`;
         const protocolChainCandidates = byProtocolChain[key] ?? [];
         if (protocolChainCandidates.length === 0) {
-          const orcaAction = row.name === "Orca" ? inferOrcaActionFromPoolLabel(row.pool) : null;
-          if (orcaAction) {
-            let candidate = orcaCandidateCache.get(orcaAction) ?? null;
-            if (candidate === undefined) {
-              try {
-                const candidates = await resolveOrcaPoolCandidatesForAction(orcaAction, "mainnet");
-                candidate = candidates[0] ? { address: candidates[0].address, label: orcaAction } : null;
-              } catch {
-                candidate = null;
-              }
-              orcaCandidateCache.set(orcaAction, candidate);
-            }
-            if (candidate) {
-              nextMap[row.key] = {
-                state: "available",
-                detail: `Orca 풀 후보 확인 · ${candidate.label} · ${candidate.address}`
-              };
-              continue;
-            }
-          }
           nextMap[row.key] = { state: "missing", detail: "실제 조회 포지션 없음" };
           continue;
         }
@@ -2034,6 +2031,59 @@ function PortfolioPanel({
       </div>
       {onchainMatchError ? <p className="exec-verify-error">{onchainMatchError}</p> : null}
       {ledgerResetError ? <p className="exec-verify-error">{ledgerResetError}</p> : null}
+      {onchainQueriedRows.length > 0 ? (
+        <div className="onchain-query-result-panel">
+          <div className="onchain-query-result-head">
+            <div>
+              <h3>실제 조회 결과</h3>
+              <p className="kpi-label">연결된 지갑에서 실제로 조회된 프로토콜 포지션 원본 결과입니다.</p>
+            </div>
+            <span className="protocol-match-badge protocol-match-badge--pending">{onchainQueriedRows.length}건</span>
+          </div>
+          <table className="protocol-detail-table portfolio-onchain-table">
+            <thead>
+              <tr>
+                <th>프로토콜</th>
+                <th>체인</th>
+                <th>자산</th>
+                <th>온체인 금액</th>
+                <th>현재가치</th>
+                <th>상태</th>
+                <th>풀/포지션</th>
+                <th>조회 시각</th>
+                <th>메모</th>
+              </tr>
+            </thead>
+            <tbody>
+              {onchainQueriedRows.map((position) => {
+                const verify = position.verify ?? undefined;
+                const verifyStatus = verify?.status;
+                const amountUsd = verify?.onchainAmountUsd ?? position.currentValueUsd ?? position.amountUsd;
+                const positionId = position.protocolPositionId ?? position.positionToken ?? position.poolAddress;
+                return (
+                  <tr key={`${position.id}-${position.chain}-${position.protocol}`}>
+                    <td data-label="프로토콜">{position.protocol}</td>
+                    <td data-label="체인">{position.chain}</td>
+                    <td data-label="자산">{position.asset}</td>
+                    <td data-label="온체인 금액">{amountUsd == null ? "—" : `$${amountUsd.toFixed(2)}`}</td>
+                    <td data-label="현재가치">{position.currentValueUsd == null ? "—" : `$${position.currentValueUsd.toFixed(2)}`}</td>
+                    <td data-label="상태">
+                      <span className={onchainVerifyBadgeClass(verifyStatus)} title={verify?.detail ?? undefined}>
+                        {onchainVerifyLabel(verifyStatus)}
+                      </span>
+                    </td>
+                    <td data-label="풀/포지션" className="product-pool-pool-label" title={positionId ?? undefined}>
+                      {shortPositionId(positionId)}
+                    </td>
+                    <td data-label="조회 시각">{verify?.verifiedAt ? new Date(verify.verifiedAt).toLocaleString() : "—"}</td>
+                    <td data-label="메모">{verify?.detail ?? "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
       <table className="protocol-detail-table">
         <thead>
           <tr>
