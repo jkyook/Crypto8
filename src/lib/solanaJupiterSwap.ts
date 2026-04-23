@@ -1,6 +1,9 @@
 import { Connection, VersionedTransaction } from "@solana/web3.js";
 import { fetchMarketPrices, publicApiFetch } from "./api";
 
+const JUPITER_QUOTE_URL = "https://api.jup.ag/swap/v1/quote";
+const JUPITER_ORDER_URL = "https://api.jup.ag/swap/v2/order";
+
 function decodeBase64ToUint8Array(base64: string): Uint8Array {
   if (typeof atob === "function") {
     const binary = atob(base64);
@@ -79,6 +82,38 @@ type SolanaTransactionSigner = {
   signTransaction(transaction: VersionedTransaction): Promise<VersionedTransaction | { serialize: () => Uint8Array }>;
 };
 
+async function fetchJupiterWithFallback(localPath: string, directUrl: string, context: string): Promise<Response> {
+  try {
+    const primary = await publicApiFetch(localPath, {
+      signal: AbortSignal.timeout(12000)
+    });
+    if (primary.ok) {
+      return primary;
+    }
+    try {
+      const direct = await fetch(directUrl, {
+        signal: AbortSignal.timeout(12000)
+      });
+      if (direct.ok) {
+        return direct;
+      }
+      return direct;
+    } catch {
+      return primary;
+    }
+  } catch (error) {
+    try {
+      return await fetch(directUrl, {
+        signal: AbortSignal.timeout(12000)
+      });
+    } catch (fallbackError) {
+      const primaryMsg = error instanceof Error ? error.message : String(error);
+      const fallbackMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+      throw new Error(`${context}: ${fallbackMsg || primaryMsg || "요청 실패"}`);
+    }
+  }
+}
+
 export async function executeJupiterExactInSwap(input: {
   connection: Connection;
   wallet: SolanaTransactionSigner;
@@ -99,16 +134,18 @@ export async function executeJupiterExactInSwap(input: {
     slippageBps: input.slippageBps ?? 100
   });
   const userPublicKey = normalizePublicKey(input.wallet.publicKey);
-  const orderUrl = new URL("/api/jupiter/order", window.location.origin);
+  const orderUrl = new URL(JUPITER_ORDER_URL);
   orderUrl.searchParams.set("inputMint", input.inputMint);
   orderUrl.searchParams.set("outputMint", input.outputMint);
   orderUrl.searchParams.set("amount", input.amountRaw.toString());
   orderUrl.searchParams.set("slippageBps", String(input.slippageBps ?? 100));
   orderUrl.searchParams.set("taker", userPublicKey);
 
-  const orderRes = await publicApiFetch(`${orderUrl.pathname}${orderUrl.search}`, {
-    signal: AbortSignal.timeout(12000)
-  });
+  const orderRes = await fetchJupiterWithFallback(
+    `/api/jupiter/order?${orderUrl.searchParams.toString()}`,
+    orderUrl.toString(),
+    "Jupiter swap order"
+  );
   if (!orderRes.ok) {
     const orderRaw = (await orderRes.json().catch(() => ({}))) as JupiterOrderResponse;
     const reason = orderRaw.errorMessage || orderRaw.error || `HTTP ${orderRes.status}`;
@@ -152,7 +189,7 @@ export async function quoteJupiterExactInSwap(input: {
     throw new Error("swap amount must be greater than zero");
   }
 
-  const quoteUrl = new URL("/api/jupiter/quote", window.location.origin);
+  const quoteUrl = new URL(JUPITER_QUOTE_URL);
   quoteUrl.searchParams.set("inputMint", input.inputMint);
   quoteUrl.searchParams.set("outputMint", input.outputMint);
   quoteUrl.searchParams.set("amount", input.amountRaw.toString());
@@ -160,9 +197,11 @@ export async function quoteJupiterExactInSwap(input: {
   quoteUrl.searchParams.set("slippageBps", String(input.slippageBps ?? 100));
 
   try {
-    const quoteRes = await publicApiFetch(`${quoteUrl.pathname}${quoteUrl.search}`, {
-      signal: AbortSignal.timeout(12000)
-    });
+    const quoteRes = await fetchJupiterWithFallback(
+      `/api/jupiter/quote?${quoteUrl.searchParams.toString()}`,
+      quoteUrl.toString(),
+      "Jupiter quote"
+    );
     if (!quoteRes.ok) {
       throw new Error(`Jupiter quote failed: HTTP ${quoteRes.status}`);
     }
