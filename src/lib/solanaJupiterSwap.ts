@@ -67,8 +67,8 @@ type JupiterQuoteResult = {
   source: "jupiter" | "estimate";
 };
 
-type JupiterOrderResponse = {
-  transaction?: string;
+type JupiterSwapResponse = {
+  swapTransaction?: string;
   errorCode?: number;
   errorMessage?: string;
   error?: string;
@@ -83,7 +83,7 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-async function fetchJupiterProxy(localPath: string, context: string): Promise<Response> {
+async function fetchJupiterProxy(localPath: string, context: string, init: RequestInit = {}): Promise<Response> {
   const attempts = [
     { timeoutMs: 30000, retryDelayMs: 1500 },
     { timeoutMs: 30000, retryDelayMs: 0 }
@@ -93,6 +93,7 @@ async function fetchJupiterProxy(localPath: string, context: string): Promise<Re
   for (const [index, attempt] of attempts.entries()) {
     try {
       const response = await publicApiFetch(localPath, {
+        ...init,
         signal: AbortSignal.timeout(attempt.timeoutMs)
       });
       return response;
@@ -127,29 +128,33 @@ export async function executeJupiterExactInSwap(input: {
     amountRaw: input.amountRaw,
     slippageBps: input.slippageBps ?? 100
   });
-  const userPublicKey = normalizePublicKey(input.wallet.publicKey);
-  const orderUrl = new URL("/api/jupiter/order", window.location.origin);
-  orderUrl.searchParams.set("inputMint", input.inputMint);
-  orderUrl.searchParams.set("outputMint", input.outputMint);
-  orderUrl.searchParams.set("amount", input.amountRaw.toString());
-  orderUrl.searchParams.set("slippageBps", String(input.slippageBps ?? 100));
-  orderUrl.searchParams.set("taker", userPublicKey);
-
-  const orderRes = await fetchJupiterProxy(`/api/jupiter/order?${orderUrl.searchParams.toString()}`, "Jupiter swap order");
-  if (!orderRes.ok) {
-    const orderRaw = (await orderRes.json().catch(() => ({}))) as JupiterOrderResponse;
-    const reason = orderRaw.errorMessage || orderRaw.error || `HTTP ${orderRes.status}`;
-    throw new Error(
-      quote.source === "estimate"
-        ? `Jupiter swap order failed after fallback quote: ${reason}`
-        : `Jupiter swap order failed: ${reason}`
-    );
+  if (quote.source !== "jupiter") {
+    throw new Error("Jupiter quote를 받지 못해 실제 스왑을 만들 수 없습니다. 잠시 후 다시 시도해 주세요.");
   }
-  const orderJson = (await orderRes.json()) as JupiterOrderResponse;
-  const swapTx = orderJson.transaction;
+  const userPublicKey = normalizePublicKey(input.wallet.publicKey);
+  const swapRes = await fetchJupiterProxy(
+    "/api/jupiter/swap",
+    "Jupiter swap order",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userPublicKey,
+        quoteResponse: quote.quoteResponse,
+        dynamicComputeUnitLimit: true
+      })
+    }
+  );
+  if (!swapRes.ok) {
+    const swapRaw = (await swapRes.json().catch(() => ({}))) as JupiterSwapResponse;
+    const reason = swapRaw.errorMessage || swapRaw.error || `HTTP ${swapRes.status}`;
+    throw new Error(`Jupiter swap failed: ${reason}`);
+  }
+  const orderJson = (await swapRes.json()) as JupiterSwapResponse;
+  const swapTx = orderJson.swapTransaction;
   if (!swapTx) {
     const reason = orderJson.errorMessage || orderJson.error || "transaction missing";
-    throw new Error(`Jupiter swap order returned no transaction: ${reason}`);
+    throw new Error(`Jupiter swap returned no transaction: ${reason}`);
   }
 
   const txBytes = decodeBase64ToUint8Array(swapTx);

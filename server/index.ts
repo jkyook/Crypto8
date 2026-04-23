@@ -160,13 +160,21 @@ app.get("/", (_req, res) => {
   });
 });
 
+function resolveJupiterSwapBaseUrl(): { baseUrl: string; apiKey?: string } {
+  const apiKey = process.env.JUPITER_API_KEY?.trim();
+  return {
+    baseUrl: apiKey ? "https://api.jup.ag/swap/v1" : "https://lite-api.jup.ag/swap/v1",
+    apiKey: apiKey || undefined
+  };
+}
+
 async function proxyJupiterJson(path: string, body: unknown): Promise<Response> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  const apiKey = process.env.JUPITER_API_KEY?.trim();
+  const { baseUrl, apiKey } = resolveJupiterSwapBaseUrl();
   if (apiKey) {
     headers["x-api-key"] = apiKey;
   }
-  return fetch(`https://api.jup.ag/swap/v1${path}`, {
+  return fetch(`${baseUrl}${path}`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
@@ -189,7 +197,8 @@ async function proxyJupiterGet(path: string, query: URLSearchParams): Promise<Re
 
 app.get("/api/jupiter/quote", async (req, res) => {
   try {
-    const upstreamUrl = new URL("https://api.jup.ag/swap/v1/quote");
+    const { baseUrl, apiKey } = resolveJupiterSwapBaseUrl();
+    const upstreamUrl = new URL(`${baseUrl}/quote`);
     for (const [key, value] of Object.entries(req.query)) {
       if (typeof value === "string") {
         upstreamUrl.searchParams.set(key, value);
@@ -201,7 +210,6 @@ app.get("/api/jupiter/quote", async (req, res) => {
       }
     }
     const headers: Record<string, string> = {};
-    const apiKey = process.env.JUPITER_API_KEY?.trim();
     if (apiKey) {
       headers["x-api-key"] = apiKey;
     }
@@ -219,7 +227,7 @@ app.get("/api/jupiter/quote", async (req, res) => {
   }
 });
 
-app.post("/api/jupiter/swap", async (req, res) => {
+app.post("/api/jupiter/swap", express.json({ limit: "256kb" }), async (req, res) => {
   try {
     const upstream = await proxyJupiterJson("/swap", req.body);
     const text = await upstream.text();
