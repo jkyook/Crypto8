@@ -23,7 +23,7 @@ function resolveApiBase(): string {
     }
     return candidate;
   }
-  if (import.meta.env.DEV) {
+  if (typeof window !== "undefined" && isLoopbackHostname(window.location.hostname)) {
     return "";
   }
   return "https://crypto8-api.onrender.com";
