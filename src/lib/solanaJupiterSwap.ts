@@ -79,15 +79,33 @@ type SolanaTransactionSigner = {
   signTransaction(transaction: VersionedTransaction): Promise<VersionedTransaction | { serialize: () => Uint8Array }>;
 };
 
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 async function fetchJupiterProxy(localPath: string, context: string): Promise<Response> {
-  try {
-    return await publicApiFetch(localPath, {
-      signal: AbortSignal.timeout(12000)
-    });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    throw new Error(`${context}: ${msg || "요청 실패"}`);
+  const attempts = [
+    { timeoutMs: 30000, retryDelayMs: 1500 },
+    { timeoutMs: 30000, retryDelayMs: 0 }
+  ];
+  let lastError: unknown;
+
+  for (const [index, attempt] of attempts.entries()) {
+    try {
+      const response = await publicApiFetch(localPath, {
+        signal: AbortSignal.timeout(attempt.timeoutMs)
+      });
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (attempt.retryDelayMs > 0 && index < attempts.length - 1) {
+        await sleep(attempt.retryDelayMs);
+      }
+    }
   }
+
+  const msg = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(`${context}: ${msg || "요청 실패"}`);
 }
 
 export async function executeJupiterExactInSwap(input: {
