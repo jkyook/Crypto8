@@ -42,17 +42,36 @@ function normalizePublicKey(value: unknown): string {
 }
 
 type JupiterQuoteResponse = {
-  data?: Array<Record<string, unknown>>;
+  inputMint: string;
+  inAmount: string;
+  outputMint: string;
+  outAmount: string;
+  otherAmountThreshold: string;
+  swapMode: "ExactIn" | "ExactOut";
+  slippageBps: number;
+  priceImpactPct: string;
+  routePlan: Array<Record<string, unknown>>;
+  platformFee?: { amount: string; feeBps: number } | null;
+  contextSlot?: number;
+  timeTaken?: number;
 };
 
-type JupiterSwapResponse = {
-  swapTransaction?: string;
+type JupiterQuoteResult = {
+  inputMint: string;
+  outputMint: string;
+  amountRaw: bigint;
+  outAmountRaw: bigint;
+  minOutAmountRaw: bigint;
+  priceImpactPct: string;
+  quoteResponse: JupiterQuoteResponse;
+  source: "jupiter" | "estimate";
 };
 
-type JupiterQuoteRoute = {
-  outAmount?: string;
-  otherAmountThreshold?: string;
-  priceImpactPct?: string;
+type JupiterOrderResponse = {
+  transaction?: string;
+  errorCode?: number;
+  errorMessage?: string;
+  error?: string;
 };
 
 type SolanaTransactionSigner = {
@@ -80,26 +99,33 @@ export async function executeJupiterExactInSwap(input: {
     slippageBps: input.slippageBps ?? 100
   });
   const userPublicKey = normalizePublicKey(input.wallet.publicKey);
-  const swapRes = await publicApiFetch("/api/jupiter/swap", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      quoteResponse: quote.route,
-      userPublicKey,
-      wrapAndUnwrapSol: true,
-      dynamicComputeUnitLimit: true
-    }),
+  const orderUrl = new URL("/api/jupiter/order", window.location.origin);
+  orderUrl.searchParams.set("inputMint", input.inputMint);
+  orderUrl.searchParams.set("outputMint", input.outputMint);
+  orderUrl.searchParams.set("amount", input.amountRaw.toString());
+  orderUrl.searchParams.set("slippageBps", String(input.slippageBps ?? 100));
+  orderUrl.searchParams.set("taker", userPublicKey);
+
+  const orderRes = await publicApiFetch(`${orderUrl.pathname}${orderUrl.search}`, {
     signal: AbortSignal.timeout(12000)
   });
-  if (!swapRes.ok) {
-    throw new Error(`Jupiter swap build failed: HTTP ${swapRes.status}`);
+  if (!orderRes.ok) {
+    const orderRaw = (await orderRes.json().catch(() => ({}))) as JupiterOrderResponse;
+    const reason = orderRaw.errorMessage || orderRaw.error || `HTTP ${orderRes.status}`;
+    throw new Error(
+      quote.source === "estimate"
+        ? `Jupiter swap order failed after fallback quote: ${reason}`
+        : `Jupiter swap order failed: ${reason}`
+    );
   }
-  const swapJson = (await swapRes.json()) as JupiterSwapResponse;
-  if (!swapJson.swapTransaction) {
-    throw new Error("Jupiter swap build returned no transaction");
+  const orderJson = (await orderRes.json()) as JupiterOrderResponse;
+  const swapTx = orderJson.transaction;
+  if (!swapTx) {
+    const reason = orderJson.errorMessage || orderJson.error || "transaction missing";
+    throw new Error(`Jupiter swap order returned no transaction: ${reason}`);
   }
 
-  const txBytes = decodeBase64ToUint8Array(swapJson.swapTransaction);
+  const txBytes = decodeBase64ToUint8Array(swapTx);
   const tx = VersionedTransaction.deserialize(txBytes);
   const signedTx = (await input.wallet.signTransaction(tx)) as VersionedTransaction;
   const signature = await input.connection.sendRawTransaction(signedTx.serialize(), {
@@ -121,15 +147,7 @@ export async function quoteJupiterExactInSwap(input: {
   outputMint: string;
   amountRaw: bigint;
   slippageBps?: number;
-}): Promise<{
-  inputMint: string;
-  outputMint: string;
-  amountRaw: bigint;
-  outAmountRaw: bigint;
-  minOutAmountRaw: bigint;
-  priceImpactPct: string;
-  route: JupiterQuoteRoute;
-}> {
+}): Promise<JupiterQuoteResult> {
   if (input.amountRaw <= 0n) {
     throw new Error("swap amount must be greater than zero");
   }
@@ -149,8 +167,7 @@ export async function quoteJupiterExactInSwap(input: {
       throw new Error(`Jupiter quote failed: HTTP ${quoteRes.status}`);
     }
     const quoteJson = (await quoteRes.json()) as JupiterQuoteResponse;
-    const bestRoute = quoteJson.data?.[0] as JupiterQuoteRoute | undefined;
-    if (!bestRoute?.outAmount) {
+    if (!quoteJson?.outAmount) {
       throw new Error("Jupiter quote returned no route");
     }
 
@@ -158,10 +175,11 @@ export async function quoteJupiterExactInSwap(input: {
       inputMint: input.inputMint,
       outputMint: input.outputMint,
       amountRaw: input.amountRaw,
-      outAmountRaw: BigInt(bestRoute.outAmount),
-      minOutAmountRaw: BigInt(bestRoute.otherAmountThreshold ?? bestRoute.outAmount),
-      priceImpactPct: bestRoute.priceImpactPct ?? "0",
-      route: bestRoute
+      outAmountRaw: BigInt(quoteJson.outAmount),
+      minOutAmountRaw: BigInt(quoteJson.otherAmountThreshold ?? quoteJson.outAmount),
+      priceImpactPct: quoteJson.priceImpactPct ?? "0",
+      quoteResponse: quoteJson,
+      source: "jupiter"
     };
   } catch {
     const market = await fetchMarketPrices();
@@ -180,11 +198,21 @@ export async function quoteJupiterExactInSwap(input: {
       outAmountRaw,
       minOutAmountRaw,
       priceImpactPct: "0.5",
-      route: {
+      quoteResponse: {
+        inputMint: input.inputMint,
+        inAmount: input.amountRaw.toString(),
+        outputMint: input.outputMint,
         outAmount: outAmountRaw.toString(),
         otherAmountThreshold: minOutAmountRaw.toString(),
-        priceImpactPct: "0.5"
-      }
+        swapMode: "ExactIn",
+        slippageBps: input.slippageBps ?? 100,
+        priceImpactPct: "0.5",
+        routePlan: [],
+        platformFee: null,
+        contextSlot: undefined,
+        timeTaken: undefined
+      },
+      source: "estimate"
     };
   }
 }

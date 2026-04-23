@@ -161,17 +161,35 @@ app.get("/", (_req, res) => {
 });
 
 async function proxyJupiterJson(path: string, body: unknown): Promise<Response> {
-  return fetch(`https://quote-api.jup.ag/v6${path}`, {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const apiKey = process.env.JUPITER_API_KEY?.trim();
+  if (apiKey) {
+    headers["x-api-key"] = apiKey;
+  }
+  return fetch(`https://api.jup.ag/swap/v1${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(12_000)
+  });
+}
+
+async function proxyJupiterGet(path: string, query: URLSearchParams): Promise<Response> {
+  const headers: Record<string, string> = {};
+  const apiKey = process.env.JUPITER_API_KEY?.trim();
+  if (apiKey) {
+    headers["x-api-key"] = apiKey;
+  }
+  return fetch(`https://api.jup.ag/swap/v2${path}?${query.toString()}`, {
+    method: "GET",
+    headers,
     signal: AbortSignal.timeout(12_000)
   });
 }
 
 app.get("/api/jupiter/quote", async (req, res) => {
   try {
-    const upstreamUrl = new URL("https://quote-api.jup.ag/v6/quote");
+    const upstreamUrl = new URL("https://api.jup.ag/swap/v1/quote");
     for (const [key, value] of Object.entries(req.query)) {
       if (typeof value === "string") {
         upstreamUrl.searchParams.set(key, value);
@@ -182,8 +200,14 @@ app.get("/api/jupiter/quote", async (req, res) => {
         }
       }
     }
+    const headers: Record<string, string> = {};
+    const apiKey = process.env.JUPITER_API_KEY?.trim();
+    if (apiKey) {
+      headers["x-api-key"] = apiKey;
+    }
     const upstream = await fetch(upstreamUrl.toString(), {
       method: "GET",
+      headers,
       signal: AbortSignal.timeout(12_000)
     });
     const text = await upstream.text();
@@ -204,6 +228,29 @@ app.post("/api/jupiter/swap", async (req, res) => {
     res.send(text);
   } catch (error) {
     res.status(502).json({ ok: false, message: error instanceof Error ? error.message : "jupiter swap proxy failed" });
+  }
+});
+
+app.get("/api/jupiter/order", async (req, res) => {
+  try {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(req.query)) {
+      if (typeof value === "string") {
+        query.set(key, value);
+      } else if (Array.isArray(value)) {
+        const first = value[0];
+        if (typeof first === "string") {
+          query.set(key, first);
+        }
+      }
+    }
+    const upstream = await proxyJupiterGet("/order", query);
+    const text = await upstream.text();
+    res.status(upstream.status);
+    res.setHeader("Content-Type", upstream.headers.get("content-type") ?? "application/json");
+    res.send(text);
+  } catch (error) {
+    res.status(502).json({ ok: false, message: error instanceof Error ? error.message : "jupiter order proxy failed" });
   }
 });
 

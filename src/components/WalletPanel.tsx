@@ -772,6 +772,27 @@ export function WalletPanel({
     setWalletRefreshTick((tick) => tick + 1);
   }, []);
 
+  useEffect(() => {
+    if (!isConnected) return;
+    const refreshNow = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      refreshWalletViews();
+    };
+    const intervalId = window.setInterval(refreshNow, 15_000);
+    const handleVisibility = () => refreshNow();
+    const handleFocus = () => refreshNow();
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("focus", handleFocus);
+    refreshNow();
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, [isConnected, refreshWalletViews]);
+
   const submitSendAction = useCallback(async () => {
     const choice = walletAssetChoiceByMint.get(sendChoiceMint);
     if (!choice) {
@@ -806,7 +827,7 @@ export function WalletPanel({
         choice,
         amount: sendAmount.trim()
       });
-      setWalletActionNote(`전송 완료 · tx ${shortTxid(result.signature)}`);
+      setWalletActionNote(`tx ${shortTxid(result.signature)}`);
       refreshWalletViews();
     } catch (error) {
       setWalletActionError(error instanceof Error ? error.message : "전송 실패");
@@ -853,7 +874,7 @@ export function WalletPanel({
         toMint: swapToMint,
         amount: swapAmount.trim()
       });
-      setWalletActionNote(`스왑 완료 · tx ${shortTxid(result.signature)}`);
+      setWalletActionNote(`tx ${shortTxid(result.signature)}`);
       refreshWalletViews();
     } catch (error) {
       setWalletActionError(error instanceof Error ? error.message : "스왑 실패");
