@@ -266,6 +266,7 @@ const CORS_ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS ?? "")
 
 const isLocalhostOrigin = (origin: string): boolean => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
 const isGithubPagesOrigin = (origin: string): boolean => /^https:\/\/[a-zA-Z0-9-]+\.github\.io$/.test(origin);
+const isRenderOrigin = (origin: string): boolean => /^https:\/\/[a-zA-Z0-9-]+\.onrender\.com$/.test(origin);
 const DEFAULT_ALLOWED_ORIGINS = new Set(["https://jkyook.github.io", "https://crypto8-web.onrender.com"]);
 
 function isAllowedCorsOrigin(origin: string): boolean {
@@ -273,7 +274,8 @@ function isAllowedCorsOrigin(origin: string): boolean {
     CORS_ALLOWED_ORIGINS.includes(origin) ||
     DEFAULT_ALLOWED_ORIGINS.has(origin) ||
     isLocalhostOrigin(origin) ||
-    isGithubPagesOrigin(origin)
+    isGithubPagesOrigin(origin) ||
+    isRenderOrigin(origin)
   );
 }
 
