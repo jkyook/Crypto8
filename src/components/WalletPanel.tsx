@@ -1527,8 +1527,8 @@ export function WalletPanel({
       <>
       <section className="wallet-widget">
         {isConnected ? (
-          <>
-            <div className="wallet-widget-head wallet-widget-head-address-only" ref={compactDetailRef}>
+          <div ref={compactDetailRef}>
+            <div className="wallet-widget-head wallet-widget-head-address-only">
               <button type="button" className="wallet-address-link" onClick={() => setIsCompactDetailOpen((prev) => !prev)}>
                 {walletAddressLabel} {isCompactDetailOpen ? "▴" : "▾"}
               </button>
@@ -1539,7 +1539,7 @@ export function WalletPanel({
                 {actionRow({ compact: true })}
               </div>
             ) : null}
-          </>
+          </div>
         ) : (
           <div className="wallet-widget-head wallet-widget-head-address-only" ref={appUsername ? accountMenuRef : undefined}>
             {appUsername ? (
