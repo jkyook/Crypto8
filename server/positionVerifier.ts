@@ -36,6 +36,34 @@ import { getMarketPriceSnapshot } from "./marketPricing";
 import { listUserWallets } from "./userWallets";
 
 // ──────────────────────────────────────────────────────────────────────────────
+//  Solana 토큰 민트 주소 → 심볼 폴백 테이블
+//  Orca SDK가 symbol을 반환하지 못할 때 사용.
+// ──────────────────────────────────────────────────────────────────────────────
+const SOLANA_MINT_SYMBOL: Record<string, string> = {
+  // Stablecoins
+  EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: "USDC",
+  Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: "USDT",
+  // Native / Wrapped SOL
+  So11111111111111111111111111111111111111112: "wSOL",
+  // LSTs
+  mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So: "mSOL",
+  "7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj": "stSOL",
+  J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn: "jitoSOL",
+  bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1: "bSOL",
+  // Major tokens
+  DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263: "BONK",
+  orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE: "ORCA",
+  JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN: "JUP",
+  rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4EkHBof: "RNDR",
+  WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk: "WEN",
+};
+
+function resolveTokenSymbol(mint: string, sdkSymbol?: string | null): string {
+  if (sdkSymbol && sdkSymbol !== "tokenA" && sdkSymbol !== "tokenB") return sdkSymbol;
+  return SOLANA_MINT_SYMBOL[mint] ?? mint.slice(0, 4) + "…";
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 //  Types
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -346,8 +374,8 @@ export async function scanOrcaWalletPositions(walletAddress: string): Promise<Or
         tickUpperIndex: entry.position.tickUpperIndex,
         tokenMintA: tokenAInfo.mint.toBase58(),
         tokenMintB: tokenBInfo.mint.toBase58(),
-        tokenSymbolA: tokenAInfo.symbol ?? "tokenA",
-        tokenSymbolB: tokenBInfo.symbol ?? "tokenB",
+        tokenSymbolA: resolveTokenSymbol(tokenAInfo.mint.toBase58(), tokenAInfo.symbol),
+        tokenSymbolB: resolveTokenSymbol(tokenBInfo.mint.toBase58(), tokenBInfo.symbol),
         tokenDecimalsA: tokenAInfo.decimals,
         tokenDecimalsB: tokenBInfo.decimals,
         amountUsd
@@ -558,6 +586,46 @@ async function verifyOrcaPosition(
       driftPct: null
     };
   }
+}
+
+/**
+ * 이미 스캔된 스냅샷으로부터 verify 결과를 직접 빌드.
+ * scanOrcaWalletPositions를 재호출하지 않으므로 RPC 이중 호출 없음.
+ */
+function verifyOrcaPositionFromSnapshot(
+  position: PositionRow,
+  snapshot: OrcaWalletPositionSnapshot
+): Omit<PositionVerifyResult, "positionId" | "protocol" | "chain" | "dbAmountUsd" | "verifiedAt" | "walletAddress"> {
+  const onchainAmountUsd = snapshot.amountUsd;
+  const driftPct = calcDriftPct(position.amountUsd, onchainAmountUsd);
+
+  if (onchainAmountUsd === 0 && position.amountUsd > 0.01) {
+    return {
+      onchainAmountUsd,
+      onchainRaw: snapshot.liquidity,
+      status: "closed_onchain",
+      detail: `온체인 Orca 포지션 잔고 0 — DB에는 $${position.amountUsd.toFixed(2)} 기록. 외부에서 출금됐을 수 있습니다.`,
+      driftPct: 100
+    };
+  }
+
+  if (driftPct > 5) {
+    return {
+      onchainAmountUsd,
+      onchainRaw: snapshot.liquidity,
+      status: "drift",
+      detail: `DB $${position.amountUsd.toFixed(2)} vs 온체인 $${onchainAmountUsd.toFixed(2)} (${driftPct.toFixed(1)}% 차이). Orca 포지션이 일부 이동됐을 수 있습니다.`,
+      driftPct
+    };
+  }
+
+  return {
+    onchainAmountUsd,
+    onchainRaw: snapshot.liquidity,
+    status: "verified",
+    detail: `Orca 지갑 스캔 확인 완료: position ${snapshot.positionMint} / whirlpool ${snapshot.whirlpool}`,
+    driftPct
+  };
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -818,7 +886,17 @@ export async function listOnchainPositionsForUser(
         continue;
       }
       const synthetic = buildSyntheticOrcaPositionRow(username, snapshot);
-      const verify = await verifyOrcaPosition(synthetic, walletAddress);
+      // 이미 스캔한 스냅샷을 그대로 활용 — 재스캔(RPC 이중 호출) 없음
+      const verifyPartial = verifyOrcaPositionFromSnapshot(synthetic, snapshot);
+      const verify: PositionVerifyResult = {
+        positionId: synthetic.id,
+        protocol: synthetic.protocol,
+        chain: synthetic.chain,
+        dbAmountUsd: synthetic.amountUsd,
+        verifiedAt: new Date().toISOString(),
+        walletAddress,
+        ...verifyPartial
+      };
       rows.push({
         ...attachSource(synthetic, "wallet_scan"),
         verify
@@ -844,7 +922,17 @@ export async function listOrcaWalletPositions(
     const rows: Array<PositionRow & { verify: PositionVerifyResult | null; source: "wallet_scan" }> = [];
     for (const snapshot of snapshots) {
       const synthetic = buildSyntheticOrcaPositionRow(username, snapshot);
-      const verify = await verifyOrcaPosition(synthetic, walletAddress);
+      // 이미 스캔한 스냅샷을 그대로 활용 — 재스캔(RPC 이중 호출) 없음
+      const verifyPartial = verifyOrcaPositionFromSnapshot(synthetic, snapshot);
+      const verify: PositionVerifyResult = {
+        positionId: synthetic.id,
+        protocol: synthetic.protocol,
+        chain: synthetic.chain,
+        dbAmountUsd: synthetic.amountUsd,
+        verifiedAt: new Date().toISOString(),
+        walletAddress,
+        ...verifyPartial
+      };
       rows.push({
         ...attachSource(synthetic, "wallet_scan"),
         verify
