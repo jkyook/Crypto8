@@ -7406,6 +7406,16 @@ body[data-theme="light"] .section-eyebrow {
   padding: 6px 10px;
 }
 
+.exec-wallet-required-hint {
+  margin: 0 0 10px 0;
+  font-size: 0.82rem;
+  color: #f5a623;
+  background: rgba(245, 166, 35, 0.1);
+  border: 1px solid rgba(245, 166, 35, 0.3);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
 .exec-verify-actions {
   display: flex;
   gap: 8px;

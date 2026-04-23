@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { AddressType } from "@phantom/browser-sdk";
-import { useAccounts } from "@phantom/react-sdk";
+import { useAccounts, usePhantom } from "@phantom/react-sdk";
 import { ApprovalsDashboard } from "./components/ApprovalsDashboard";
 import { AuthPanel } from "./components/AuthPanel";
 import { SignupRegistrationsPanel } from "./components/SignupRegistrationsPanel";
@@ -736,6 +736,7 @@ function ProductsPanel({
   positions,
   hasSession,
   canPersistToServer,
+  isWalletConnected,
   onWithdraw,
   onWithdrawProduct,
   onActionNotice,
@@ -745,6 +746,7 @@ function ProductsPanel({
   positions: DepositPosition[];
   hasSession: boolean;
   canPersistToServer: boolean;
+  isWalletConnected?: boolean;
   onWithdraw: (amountUsd: number) => void | Promise<void>;
   onWithdrawProduct?: (amountUsd: number, productName: string) => void | Promise<void>;
   onActionNotice?: (notice: { variant: "error" | "info"; text: string }) => void;
@@ -1076,9 +1078,9 @@ function ProductsPanel({
     <section className="card">
       {!hasSession ? (
         <p className="product-session-hint">로그인하면 예치 내역이 서버에 저장되어 새로고침 후에도 포트폴리오에 유지됩니다.</p>
-      ) : !canPersistToServer ? (
+      ) : !isWalletConnected ? (
         <p className="product-session-hint">
-          서버에 예치·인출을 남기려면 <strong>로그인</strong>하세요. 비로그인 시에는 이 기기에서만 임시로 반영됩니다.
+          <strong>지갑 연결</strong> 후 입금·인출이 가능합니다. 조회는 현재 로그인 상태로 이용할 수 있습니다.
         </p>
       ) : null}
       <div className="products-header-row">
@@ -1618,6 +1620,7 @@ function PortfolioPanel({
   onWithdraw,
   onWithdrawTarget,
   canPersistToServer,
+  hasSession,
   onResetLedger,
   hasLedgerEntries
 }: {
@@ -1626,6 +1629,8 @@ function PortfolioPanel({
   onWithdraw?: (amountUsd: number) => Promise<void>;
   onWithdrawTarget?: (amountUsd: number, target: Pick<ProtocolDetailRow, "name" | "chain" | "pool">) => Promise<void>;
   canPersistToServer?: boolean;
+  /** 세션 존재 여부(로그인 방식 무관) — 지갑 없이 로그인한 경우 안내 표시용 */
+  hasSession?: boolean;
   onResetLedger?: () => Promise<void>;
   hasLedgerEntries?: boolean;
 }) {
@@ -1962,7 +1967,7 @@ function PortfolioPanel({
           disabled={ledgerResetLoading || !canPersistToServer || (!positions.length && !hasLedgerEntries)}
           title={
             !canPersistToServer
-              ? "로그인 후 사용할 수 있습니다."
+              ? hasSession ? "지갑 연결 후 사용할 수 있습니다." : "로그인 후 사용할 수 있습니다."
               : "예치 장부와 출금 장부를 비우고 실제 온체인 포지션은 유지합니다."
           }
         >
@@ -2068,7 +2073,7 @@ function PortfolioPanel({
                     type="button"
                     className="protocol-withdraw-action"
                     onClick={() => onOpenWithdraw(row)}
-                    title="이 프로토콜에서 인출합니다."
+                    title={!canPersistToServer ? (hasSession ? "지갑 연결 후 인출이 가능합니다." : "로그인 후 인출이 가능합니다.") : "이 프로토콜에서 인출합니다."}
                     disabled={!canPersistToServer || row.amount <= 0}
                   >
                     인출
@@ -2420,6 +2425,7 @@ function PositionsPage({
   onWithdraw,
   onWithdrawTarget,
   canPersistToServer,
+  hasSession,
   onResetLedger,
   hasLedgerEntries
 }: {
@@ -2429,6 +2435,7 @@ function PositionsPage({
   onWithdraw?: (amountUsd: number) => Promise<void>;
   onWithdrawTarget?: (amountUsd: number, target: Pick<ProtocolDetailRow, "name" | "chain" | "pool">) => Promise<void>;
   canPersistToServer?: boolean;
+  hasSession?: boolean;
   onResetLedger?: () => Promise<void>;
   hasLedgerEntries?: boolean;
 }) {
@@ -2453,6 +2460,7 @@ function PositionsPage({
         onWithdraw={onWithdraw}
         onWithdrawTarget={onWithdrawTarget}
         canPersistToServer={canPersistToServer}
+        hasSession={hasSession}
         onResetLedger={onResetLedger}
         hasLedgerEntries={hasLedgerEntries}
       />
@@ -2519,7 +2527,17 @@ export default function App() {
   const [portfolioNotice, setPortfolioNotice] = useState<{ variant: "error" | "info"; text: string } | null>(null);
   const role = session?.role;
 
-  const canPersistPortfolio = Boolean(session);
+  /** 지갑 연결 여부 — 지갑이 연결된 경우에만 입금·인출·실행 권한 부여 */
+  const { isConnected: isWalletConnected } = usePhantom();
+
+  /**
+   * canPersistPortfolio: 서버에 쓰기 작업(입금·인출·Job생성·실행)을 할 수 있는지 여부.
+   * - 지갑 연결(isWalletConnected) + 로그인 세션(session) 둘 다 필요.
+   * - 아이디/비밀번호만으로 로그인한 경우 읽기 조회는 가능하지만 자산 변동은 불가.
+   */
+  const canPersistPortfolio = Boolean(session) && isWalletConnected;
+  /** hasSession: 세션 존재 여부(로그인 방식 무관) — 읽기 조회용 */
+  const hasSession = Boolean(session);
   const portfolioTotalUsd = useMemo(() => positions.reduce((acc, p) => acc + p.amountUsd, 0), [positions]);
 
   const refreshWithdrawLedgerFromServer = async () => {
@@ -2804,6 +2822,7 @@ export default function App() {
               positions={positions}
               hasSession={Boolean(session)}
               canPersistToServer={canPersistPortfolio}
+              isWalletConnected={isWalletConnected}
               onWithdraw={handleWithdrawPosition}
               onWithdrawProduct={handleWithdrawProductDeposit}
               onActionNotice={setPortfolioNotice}
@@ -2830,6 +2849,7 @@ export default function App() {
             onWithdraw={handleWithdrawPosition}
             onWithdrawTarget={handleWithdrawProtocolExposure}
             canPersistToServer={canPersistPortfolio}
+            hasSession={hasSession}
             onResetLedger={handleResetPortfolioLedger}
             hasLedgerEntries={withdrawLedger.length > 0}
             onExecutionComplete={async () => {

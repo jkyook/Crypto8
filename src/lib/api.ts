@@ -119,6 +119,7 @@ const LEGACY_TOKEN_KEY = "crypto8_access_token";
 const LEGACY_REFRESH_TOKEN_KEY = "crypto8_refresh_token";
 const ROLE_KEY = "crypto8_role";
 const USERNAME_KEY = "crypto8_username";
+const LOGIN_TYPE_KEY = "crypto8_login_type";
 const CSRF_COOKIE_NAME = "csrf_token";
 
 export type ProductNetwork = "Ethereum" | "Arbitrum" | "Base" | "Solana" | "Multi";
@@ -173,6 +174,8 @@ export type AuthRole = "orchestrator" | "security" | "viewer";
 export type AuthSession = {
   role: AuthRole;
   username: string;
+  /** 로그인 방식: 지갑 서명 로그인이면 "wallet", 아이디/비밀번호 로그인이면 "password" */
+  loginType: "wallet" | "password";
 };
 
 export type ApprovalLog = {
@@ -585,7 +588,8 @@ export function getSession(): AuthSession | null {
   if (!role || !username) {
     return null;
   }
-  return { role, username };
+  const loginType = (localStorage.getItem(LOGIN_TYPE_KEY) as "wallet" | "password" | null) ?? "password";
+  return { role, username, loginType };
 }
 
 /** `useSyncExternalStore`용: HttpOnly 쿠키 대신 로컬 세션 마커만 구독합니다. */
@@ -628,6 +632,7 @@ function clearAuthStorageSync(): void {
   localStorage.removeItem(LEGACY_REFRESH_TOKEN_KEY);
   localStorage.removeItem(ROLE_KEY);
   localStorage.removeItem(USERNAME_KEY);
+  localStorage.removeItem(LOGIN_TYPE_KEY);
   clearStoredCsrfToken();
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(AUTH_CLEARED_EVENT));
@@ -711,13 +716,15 @@ export async function login(username: string, password: string): Promise<AuthSes
   }
   const session: AuthSession = {
     role: data.role,
-    username: data.username ?? username
+    username: data.username ?? username,
+    loginType: "password"
   };
   localStorage.removeItem(LEGACY_TOKEN_KEY);
   localStorage.removeItem(LEGACY_REFRESH_TOKEN_KEY);
   storeCsrfTokenFromResponse(response, data);
   localStorage.setItem(ROLE_KEY, session.role);
   localStorage.setItem(USERNAME_KEY, session.username);
+  localStorage.setItem(LOGIN_TYPE_KEY, "password");
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(AUTH_UPDATED_EVENT));
   }
@@ -785,12 +792,13 @@ export async function loginWithWallet(walletAddress: string): Promise<AuthSessio
   if (!response.ok || !data.role || !data.username) {
     throw new Error(typeof data.message === "string" ? data.message : "지갑 로그인 실패");
   }
-  const session: AuthSession = { role: data.role, username: data.username };
+  const session: AuthSession = { role: data.role, username: data.username, loginType: "wallet" };
   localStorage.removeItem(LEGACY_TOKEN_KEY);
   localStorage.removeItem(LEGACY_REFRESH_TOKEN_KEY);
   storeCsrfTokenFromResponse(response, data);
   localStorage.setItem(ROLE_KEY, session.role);
   localStorage.setItem(USERNAME_KEY, session.username);
+  localStorage.setItem(LOGIN_TYPE_KEY, "wallet");
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(AUTH_UPDATED_EVENT));
   }
@@ -843,13 +851,15 @@ export async function register(username: string, password: string): Promise<Auth
   }
   const session: AuthSession = {
     role: data.role,
-    username: data.username ?? trimmed
+    username: data.username ?? trimmed,
+    loginType: "password"
   };
   localStorage.removeItem(LEGACY_TOKEN_KEY);
   localStorage.removeItem(LEGACY_REFRESH_TOKEN_KEY);
   storeCsrfTokenFromResponse(response, data);
   localStorage.setItem(ROLE_KEY, session.role);
   localStorage.setItem(USERNAME_KEY, session.username);
+  localStorage.setItem(LOGIN_TYPE_KEY, "password");
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(AUTH_UPDATED_EVENT));
   }
@@ -1017,7 +1027,8 @@ async function refreshAccessTokenOrThrow(): Promise<AuthSession> {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(AUTH_UPDATED_EVENT));
   }
-  return { role: data.role, username: data.username };
+  const storedLoginType = (localStorage.getItem(LOGIN_TYPE_KEY) as "wallet" | "password" | null) ?? "password";
+  return { role: data.role, username: data.username, loginType: storedLoginType };
 }
 
 async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {

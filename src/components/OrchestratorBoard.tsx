@@ -215,7 +215,12 @@ export function OrchestratorBoard({
   const riskClass = `badge badge-${risk.toLowerCase()}`;
   const hasWallet = Boolean(isConnected && (solanaAccount?.address || evmAccount?.address));
   const jwtAccess = useSyncExternalStore(subscribeLocalAuth, readAccessTokenSnapshot, () => "");
-  const canUseServerJobs = jwtAccess.length > 0 && allowJobExecutionProp !== false;
+  /**
+   * canUseServerJobs: 서버 Job 생성·실행 가능 여부.
+   * - JWT 세션 + 지갑 연결 둘 다 필요.
+   * - 아이디/비밀번호만 로그인한 경우(hasWallet=false)에는 비활성.
+   */
+  const canUseServerJobs = jwtAccess.length > 0 && hasWallet && allowJobExecutionProp !== false;
   const canLoadLiveAssets = executionModeIntent === "live" ? hasWallet : canUseServerJobs;
   const sessionUsername = getSession()?.username ?? "";
   useEffect(() => {
@@ -550,7 +555,7 @@ export function OrchestratorBoard({
     () => buildDepositExecutionPlan(assetReadiness.swapRows, isLiveExecution ? liveExecutableQuoteRows : quoteRows),
     [assetReadiness.swapRows, isLiveExecution, liveExecutableQuoteRows, quoteRows]
   );
-  const canCreateJob = assetReadiness.isSufficient && (canUseServerJobs || hasWallet);
+  const canCreateJob = assetReadiness.isSufficient && canUseServerJobs;
   useEffect(() => {
     if (!canUseServerJobs || quoteRows.length === 0 || isResultQuote) {
       setFeeEstimate(null);
@@ -576,7 +581,7 @@ export function OrchestratorBoard({
     return () => controller.abort();
   }, [canUseServerJobs, isResultQuote, quoteRows]);
   const canFundDeposit = !canUseServerJobs || assetReadiness.isSufficient;
-  const canExecute = Boolean(job) && isExecutionConfirmed && canFundDeposit && (!isLiveExecution || protocolReadyCount > 0) && (canUseServerJobs || hasWallet);
+  const canExecute = Boolean(job) && isExecutionConfirmed && canFundDeposit && (!isLiveExecution || protocolReadyCount > 0) && canUseServerJobs;
   const walletApprovalStepCount = executionPlan.filter((step) => step.requiresWalletApproval).length;
   const quoteTitle = lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0)
     ? "실행 결과 배분"
@@ -1524,6 +1529,12 @@ export function OrchestratorBoard({
             </div>
           </div>
         </div>
+      ) : null}
+
+      {jwtAccess.length > 0 && !hasWallet ? (
+        <p className="exec-wallet-required-hint">
+          ⚠️ <strong>지갑 연결</strong>이 필요합니다. 지갑을 연결하면 Job 생성·실행·입금이 활성화됩니다.
+        </p>
       ) : null}
 
       <div className="orchestrator-flow-steps" aria-label="예치 실행 절차">
