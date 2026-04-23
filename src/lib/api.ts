@@ -12,17 +12,14 @@ function resolveApiBase(): string {
     try {
       const parsed = new URL(candidate);
       if (parsed.hostname === "0.0.0.0") {
-        return import.meta.env.DEV ? "" : "http://localhost:8787";
+        return "";
       }
     } catch {
       // 절대 URL이 아니면 아래 로직으로 진행
     }
     return candidate;
   }
-  if (import.meta.env.DEV) {
-    return "";
-  }
-  return "http://localhost:8787";
+  return "";
 }
 
 const API_BASE = resolveApiBase();
