@@ -960,11 +960,6 @@ app.get("/api/public/positions", async (req, res) => {
       for (const chain of ["Arbitrum", "Base", "Ethereum"] as const) {
         try {
           const snapshot = await getAaveUsdcPosition(chain, evmWalletAddress);
-          // 잔고 0 이면 표시할 포지션 없음 — 조회 실패(rpc_error)만 오류 행으로 포함
-          const hasSupply = snapshot.queryStatus === "ok" && snapshot.suppliedUsdc > 0;
-          if (!hasSupply && snapshot.queryStatus !== "rpc_error") {
-            continue; // 잔고 없는 체인은 결과 제외
-          }
           rows.push(buildPublicAaveRow(snapshot));
         } catch (error) {
           // RPC 자체가 실패한 경우만 오류 행 포함
