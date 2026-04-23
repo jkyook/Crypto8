@@ -57,6 +57,7 @@ export function PortfolioPanel({
   const [onchainMatchSummary, setOnchainMatchSummary] = useState("");
   const [onchainMatchLoading, setOnchainMatchLoading] = useState(false);
   const [onchainMatchError, setOnchainMatchError] = useState("");
+  const [hideOnchainResult, setHideOnchainResult] = useState(false);
   const [showQueryablePools, setShowQueryablePools] = useState(false);
   const [ledgerResetLoading, setLedgerResetLoading] = useState(false);
   const [ledgerResetError, setLedgerResetError] = useState("");
@@ -209,6 +210,7 @@ export function PortfolioPanel({
     setOnchainMatchError("");
     setOnchainMatchSummary("");
     setOnchainQueriedRows([]);
+    setHideOnchainResult(false);
     try {
       const evmWalletAddress = evmAccount?.address;
       const solanaWalletAddress = solanaAccount?.address;
@@ -370,14 +372,24 @@ export function PortfolioPanel({
       </div>
       {onchainMatchError ? <p className="exec-verify-error">{onchainMatchError}</p> : null}
       {ledgerResetError ? <p className="exec-verify-error">{ledgerResetError}</p> : null}
-      {onchainQueriedRows.length > 0 ? (
+      {onchainQueriedRows.length > 0 && !hideOnchainResult ? (
         <div className="onchain-query-result-panel">
           <div className="onchain-query-result-head">
             <div>
               <h3>실제 조회 결과</h3>
-              <p className="kpi-label">연결된 지갑에서 실제로 조회된 프로토콜 포지션 원본 결과입니다.</p>
+              <p className="kpi-label">연결된 지갑에서 조회된 프로토콜 포지션입니다.</p>
             </div>
-            <span className="protocol-match-badge protocol-match-badge--pending">{onchainQueriedRows.length}건</span>
+            <div className="onchain-query-result-head-right">
+              <span className="protocol-match-badge protocol-match-badge--pending">{onchainQueriedRows.length}건</span>
+              <button
+                type="button"
+                className="ghost-btn onchain-result-close-btn"
+                onClick={() => setHideOnchainResult(true)}
+                title="조회 결과 닫기"
+              >
+                ✕ 닫기
+              </button>
+            </div>
           </div>
           <table className="protocol-detail-table portfolio-onchain-table">
             <thead>
@@ -385,12 +397,9 @@ export function PortfolioPanel({
                 <th>프로토콜</th>
                 <th>체인</th>
                 <th>자산</th>
-                <th>온체인 금액</th>
-                <th>현재가치</th>
+                <th>금액(USD)</th>
                 <th>상태</th>
                 <th>풀/포지션</th>
-                <th>조회 시각</th>
-                <th>메모</th>
               </tr>
             </thead>
             <tbody>
@@ -399,23 +408,26 @@ export function PortfolioPanel({
                 const verifyStatus = verify?.status;
                 const amountUsd = verify?.onchainAmountUsd ?? position.currentValueUsd ?? position.amountUsd;
                 const positionId = position.protocolPositionId ?? position.positionToken ?? position.poolAddress;
+                const verifiedAtLabel = verify?.verifiedAt
+                  ? new Date(verify.verifiedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                  : undefined;
                 return (
                   <tr key={`${position.id}-${position.chain}-${position.protocol}`}>
                     <td data-label="프로토콜">{position.protocol}</td>
                     <td data-label="체인">{position.chain}</td>
                     <td data-label="자산">{position.asset}</td>
-                    <td data-label="온체인 금액">{amountUsd == null ? "—" : `$${amountUsd.toFixed(2)}`}</td>
-                    <td data-label="현재가치">{position.currentValueUsd == null ? "—" : `$${position.currentValueUsd.toFixed(2)}`}</td>
+                    <td data-label="금액(USD)">{amountUsd == null ? "—" : `$${amountUsd.toFixed(2)}`}</td>
                     <td data-label="상태">
-                      <span className={onchainVerifyBadgeClass(verifyStatus)} title={verify?.detail ?? undefined}>
+                      <span
+                        className={onchainVerifyBadgeClass(verifyStatus)}
+                        title={[verify?.detail, verifiedAtLabel].filter(Boolean).join(" · ") || undefined}
+                      >
                         {onchainVerifyLabel(verifyStatus)}
                       </span>
                     </td>
                     <td data-label="풀/포지션" className="product-pool-pool-label" title={positionId ?? undefined}>
                       {shortPositionId(positionId)}
                     </td>
-                    <td data-label="조회 시각">{verify?.verifiedAt ? new Date(verify.verifiedAt).toLocaleString() : "—"}</td>
-                    <td data-label="메모">{verify?.detail ?? "—"}</td>
                   </tr>
                 );
               })}

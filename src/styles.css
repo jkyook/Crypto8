@@ -3856,27 +3856,57 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
 }
 
 .onchain-query-result-panel {
-  margin: 12px 0 18px;
-  padding: 14px;
+  margin: 10px 0 14px;
+  padding: 10px 12px;
   border: 1px solid rgba(96, 132, 170, 0.32);
-  border-radius: 16px;
+  border-radius: 12px;
   background: linear-gradient(180deg, rgba(13, 28, 48, 0.64), rgba(8, 18, 34, 0.74));
 }
 
 .onchain-query-result-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
+  gap: 10px;
+  margin-bottom: 8px;
 }
 
 .onchain-query-result-head h3 {
-  margin: 0 0 4px;
+  margin: 0 0 2px;
+  font-size: 0.85rem;
+}
+
+.onchain-query-result-head .kpi-label {
+  font-size: 0.72rem;
+  margin: 0;
+}
+
+.onchain-query-result-head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.onchain-result-close-btn {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  height: auto;
+  line-height: 1.6;
+  opacity: 0.75;
+}
+.onchain-result-close-btn:hover {
+  opacity: 1;
 }
 
 .onchain-query-result-panel .portfolio-onchain-table {
   margin-top: 0;
+  font-size: 0.78rem;
+}
+
+.onchain-query-result-panel .portfolio-onchain-table th,
+.onchain-query-result-panel .portfolio-onchain-table td {
+  padding: 5px 8px;
 }
 
 .portfolio-position-address-cell {
@@ -7097,12 +7127,12 @@ body[data-theme="light"] .ops-status-rail button {
     flex: 0 0 96px;
   }
 
-  .portfolio-onchain-table td:nth-child(9) {
+  .portfolio-onchain-table td:nth-child(6) {
     color: var(--c8-text);
     padding-right: 0;
   }
 
-  .portfolio-onchain-table td:nth-child(9)::before {
+  .portfolio-onchain-table td:nth-child(6)::before {
     flex-basis: 72px;
   }
 }
