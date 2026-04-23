@@ -6,6 +6,8 @@ import { AddressType, type AuthProviderType } from "@phantom/browser-sdk";
 import { PhantomProvider } from "@phantom/react-sdk";
 import App from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
+import { PortfolioProvider } from "./contexts/PortfolioContext";
+import { SessionProvider } from "./contexts/SessionContext";
 import "./styles.css";
 
 const appId = import.meta.env.VITE_PHANTOM_APP_ID ?? "";
@@ -25,9 +27,13 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         }
       }}
     >
-      <AppErrorBoundary>
-        <App />
-      </AppErrorBoundary>
+      <SessionProvider>
+        <PortfolioProvider>
+          <AppErrorBoundary>
+            <App />
+          </AppErrorBoundary>
+        </PortfolioProvider>
+      </SessionProvider>
     </PhantomProvider>
   </React.StrictMode>
 );
