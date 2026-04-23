@@ -150,6 +150,46 @@ function verifyCsrfToken(req: express.Request): boolean {
   return safeTokenEqual(cookieToken, headerToken);
 }
 
+/**
+ * CORS 화이트리스트.
+ * `CORS_ALLOWED_ORIGINS` 콤마구분(예: `http://localhost:5173,https://crypto8.example.com`).
+ * 미설정이면 개발 편의를 위해 localhost/127.0.0.1 (모든 포트) 허용. 프로덕션에서는 명시 권장.
+ */
+const CORS_ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter((s) => s.length > 0);
+
+const isLocalhostOrigin = (origin: string): boolean => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+const isGithubPagesOrigin = (origin: string): boolean => /^https:\/\/[a-zA-Z0-9-]+\.github\.io$/.test(origin);
+const isRenderOrigin = (origin: string): boolean => /^https:\/\/[a-zA-Z0-9-]+\.onrender\.com$/.test(origin);
+const DEFAULT_ALLOWED_ORIGINS = new Set(["https://jkyook.github.io", "https://crypto8-web.onrender.com"]);
+
+function isAllowedCorsOrigin(origin: string): boolean {
+  return (
+    CORS_ALLOWED_ORIGINS.includes(origin) ||
+    DEFAULT_ALLOWED_ORIGINS.has(origin) ||
+    isLocalhostOrigin(origin) ||
+    isGithubPagesOrigin(origin) ||
+    isRenderOrigin(origin)
+  );
+}
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // same-origin / curl / 서버사이드 호출은 origin이 비어 있음 -> 허용
+      if (!origin) return callback(null, true);
+      if (isAllowedCorsOrigin(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error(`origin not allowed: ${origin}`));
+    },
+    credentials: true,
+    exposedHeaders: ["X-Request-Id", "X-CSRF-Token"]
+  })
+);
+
 app.get("/", (_req, res) => {
   res.json({
     ok: true,
@@ -262,45 +302,6 @@ app.get("/api/jupiter/order", async (req, res) => {
   }
 });
 
-/**
- * CORS 화이트리스트.
- * `CORS_ALLOWED_ORIGINS` 콤마구분(예: `http://localhost:5173,https://crypto8.example.com`).
- * 미설정이면 개발 편의를 위해 localhost/127.0.0.1 (모든 포트) 허용. 프로덕션에서는 명시 권장.
- */
-const CORS_ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS ?? "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter((s) => s.length > 0);
-
-const isLocalhostOrigin = (origin: string): boolean => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
-const isGithubPagesOrigin = (origin: string): boolean => /^https:\/\/[a-zA-Z0-9-]+\.github\.io$/.test(origin);
-const isRenderOrigin = (origin: string): boolean => /^https:\/\/[a-zA-Z0-9-]+\.onrender\.com$/.test(origin);
-const DEFAULT_ALLOWED_ORIGINS = new Set(["https://jkyook.github.io", "https://crypto8-web.onrender.com"]);
-
-function isAllowedCorsOrigin(origin: string): boolean {
-  return (
-    CORS_ALLOWED_ORIGINS.includes(origin) ||
-    DEFAULT_ALLOWED_ORIGINS.has(origin) ||
-    isLocalhostOrigin(origin) ||
-    isGithubPagesOrigin(origin) ||
-    isRenderOrigin(origin)
-  );
-}
-
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // same-origin / curl / 서버사이드 호출은 origin이 비어 있음 → 허용
-      if (!origin) return callback(null, true);
-      if (isAllowedCorsOrigin(origin)) {
-        return callback(null, true);
-      }
-      return callback(new Error(`origin not allowed: ${origin}`));
-    },
-    credentials: true,
-    exposedHeaders: ["X-Request-Id", "X-CSRF-Token"]
-  })
-);
 // JSON 본문 크기 제한: 기본 100kb는 LP 데이터 등에는 충분. 한도 명시로 메모리 폭주 방지.
 app.use(express.json({ limit: "256kb" }));
 
