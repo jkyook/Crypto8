@@ -4,6 +4,10 @@ function stripTrailingSlash(s: string): string {
   return s.replace(/\/+$/, "");
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
 /** 개발 시 기본값은 빈 문자열 → `http://localhost:5173/api/...`로 요청되어 Vite 프록시가 8787로 넘김(로그인·갱신·입금이 같은 백엔드를 씀). */
 function resolveApiBase(): string {
   const raw = import.meta.env.VITE_API_BASE_URL as string | undefined;
@@ -11,7 +15,7 @@ function resolveApiBase(): string {
     const candidate = stripTrailingSlash(raw.trim());
     try {
       const parsed = new URL(candidate);
-      if (parsed.hostname === "0.0.0.0") {
+      if (parsed.hostname === "0.0.0.0" || isLoopbackHostname(parsed.hostname)) {
         return "";
       }
     } catch {
