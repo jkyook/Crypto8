@@ -109,6 +109,11 @@ export function aprDecimalToSimpleWeekYieldPercentPoints(annualAprDecimal: numbe
   return annualAprDecimal * (7 / APR_DAYS_PER_YEAR) * 100;
 }
 
+/** 상품 이름 표시용 축약 (너무 길면 서브타입 제거). */
+export function displayProductName(name: string): string {
+  return name.replace(/\s+\d+(\.\d+)?%$/, "").trim();
+}
+
 export const DEFAULT_PRODUCTS: YieldProduct[] = [
   {
     id: "p-multi-stable-8",
