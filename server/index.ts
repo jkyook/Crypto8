@@ -10,6 +10,7 @@ import {
   createDepositPosition,
   listDepositPositions,
   listWithdrawalLedger,
+  resetPortfolioLedger,
   withdrawProtocolExposureAmount,
   withdrawProductDepositAmount,
   withdrawDepositAmount
@@ -26,8 +27,16 @@ import { listAccountAssets } from "./accountAssets";
 import { estimateProtocolFees, type FeeEstimateInputRow } from "./feeEstimator";
 import { getMarketPriceSnapshot } from "./marketPricing";
 import { linkUserWallet, listUserWallets } from "./userWallets";
+import { listOnchainPositionsForUser } from "./positionVerifier";
 import type { ProtocolExecutionReadiness } from "./adapters/types";
 import { listLiveAccountAssets } from "./liveAccountAssets";
+import {
+  getConfiguredLiveAdapterFlags,
+  getConfiguredSolanaRpcUrl,
+  getEffectiveLiveAdapterFlags,
+  getProtocolReadiness,
+  getRuntimeLiveFlagSources
+} from "./runtimeMode";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
@@ -633,6 +642,10 @@ app.get("/api/runtime/info", (_req, res) => {
   const requested = process.env.EXECUTION_MODE === "live" ? "live" : "dry-run";
   const liveConfirmed = process.env.LIVE_EXECUTION_CONFIRM === "YES";
   const executionMode = requested === "live" && liveConfirmed ? "live" : "dry-run";
+  const protocolReadiness = getProtocolReadiness();
+  const configuredLiveAdapterFlags = getConfiguredLiveAdapterFlags();
+  const liveAdapterFlags = getEffectiveLiveAdapterFlags();
+  const liveAdapterFlagSources = getRuntimeLiveFlagSources();
   const solanaOrcaLiveReady = Boolean(
     process.env.SOLANA_EXECUTOR_PRIVATE_KEY_FILE?.trim() ||
       (process.env.SOLANA_EXECUTOR_PRIVATE_KEY?.trim() &&
@@ -644,6 +657,17 @@ app.get("/api/runtime/info", (_req, res) => {
     executionModeRequested: requested,
     liveExecutionConfirmed: liveConfirmed,
     solanaOrcaLiveReady,
+    rpcConfigured: {
+      ethereum: Boolean(process.env.ETHEREUM_RPC_URL?.trim() || process.env.MAINNET_RPC_URL?.trim()),
+      arbitrum: Boolean(process.env.ARBITRUM_RPC_URL?.trim()),
+      base: Boolean(process.env.BASE_RPC_URL?.trim()),
+      solana: Boolean(getConfiguredSolanaRpcUrl())
+    },
+    solanaKeyConfigured: solanaOrcaLiveReady,
+    protocolReadiness,
+    configuredLiveAdapterFlags,
+    liveAdapterFlags,
+    liveAdapterFlagSources,
     walletUiPolicy: "phantom-solana",
     serverExecutionNote:
       "현재 MVP는 로그인한 사용자가 본인 Job을 직접 실행 요청하는 구조입니다. Phantom signMessage는 실행 의사 확인용이며, Solana Orca live는 연결된 Phantom Solana 지갑이 직접 서명·전송합니다."
@@ -707,10 +731,35 @@ app.get("/api/portfolio/positions", requireAuth(["orchestrator", "security", "vi
   });
 });
 
+app.get("/api/positions", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {
+  const username = res.locals.user.username as string;
+  const rows = await listOnchainPositionsForUser(username);
+  res.json({
+    ok: true,
+    positions: rows.map((row) => stripUsername(row))
+  });
+});
+
 app.get("/api/portfolio/withdrawals", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {
   const username = res.locals.user.username as string;
   const withdrawals = await listWithdrawalLedger(username);
   res.json({ ok: true, withdrawals });
+});
+
+app.post("/api/portfolio/reset-ledger", requireAuth(["orchestrator", "security", "viewer"]), async (_req, res) => {
+  const username = res.locals.user.username as string;
+  try {
+    const deleted = await resetPortfolioLedger(username);
+    res.json({
+      ok: true,
+      ...deleted
+    });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      message: error instanceof Error ? error.message : "ledger reset failed"
+    });
+  }
 });
 
 app.post("/api/portfolio/positions", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {

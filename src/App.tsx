@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { AddressType } from "@phantom/browser-sdk";
+import { useAccounts } from "@phantom/react-sdk";
 import { ApprovalsDashboard } from "./components/ApprovalsDashboard";
 import { AuthPanel } from "./components/AuthPanel";
 import { SignupRegistrationsPanel } from "./components/SignupRegistrationsPanel";
@@ -21,8 +23,11 @@ import {
   listDepositPositions,
   listExecutionEvents,
   listJobs,
+  listOnchainPositions,
   listWithdrawalLedger,
   login,
+  loginWithWallet,
+  resetPortfolioLedgerRemote,
   withdrawProtocolExposureRemote,
   withdrawProductDepositRemote,
   withdrawDepositRemote,
@@ -33,6 +38,7 @@ import {
   type MarketAprSnapshot,
   type MarketPoolAprHistoryPoint,
   type MarketPoolAprHistorySeries,
+  type OnchainPositionPayload,
   type ProductNetwork,
   type ProductSubtype
 } from "./lib/api";
@@ -84,6 +90,7 @@ type ProtocolDetailRow = {
   pool: string;
   amount: number;
 };
+type ProtocolPoolMatchState = "matched" | "drift" | "missing" | "unsupported" | "error";
 
 const PROTOCOL_SORT_ORDER = ["Aave", "Uniswap", "Orca"] as const;
 
@@ -725,6 +732,7 @@ const DEFAULT_PRODUCTS: YieldProduct[] = [
 function ProductsPanel({
   positions,
   hasSession,
+  walletConnected,
   canPersistToServer,
   onWithdraw,
   onWithdrawProduct,
@@ -734,6 +742,7 @@ function ProductsPanel({
 }: {
   positions: DepositPosition[];
   hasSession: boolean;
+  walletConnected: boolean;
   canPersistToServer: boolean;
   onWithdraw: (amountUsd: number) => void | Promise<void>;
   onWithdrawProduct?: (amountUsd: number, productName: string) => void | Promise<void>;
@@ -962,7 +971,11 @@ function ProductsPanel({
   return (
     <section className="card">
       {!hasSession ? (
-        <p className="product-session-hint">로그인하면 예치 내역이 서버에 저장되어 새로고침 후에도 포트폴리오에 유지됩니다.</p>
+        <p className="product-session-hint">
+          {walletConnected
+            ? "지갑이 연결되어 있으면 입금·교환·전송 실행이 가능합니다. 아이디 로그인은 서버 저장과 조회 이력을 연결할 때 사용합니다."
+            : "로그인하면 예치 내역이 서버에 저장되어 새로고침 후에도 포트폴리오에 유지됩니다."}
+        </p>
       ) : !canPersistToServer ? (
         <p className="product-session-hint">
           서버에 예치·인출을 남기려면 <strong>로그인</strong>하세요. 비로그인 시에는 이 기기에서만 임시로 반영됩니다.
@@ -1248,7 +1261,7 @@ function ProductsPanel({
               initialEstFeeUsd={estFee}
               initialProductNetwork={networkGroupToProductNetwork(selected.networkGroup)}
               initialProductSubtype={selected.subtype}
-              allowJobExecution={canPersistToServer}
+              allowJobExecution={canPersistToServer || walletConnected}
               previewRowsOverride={productPreviewRows}
               onActionNotice={onActionNotice}
               onOpenOperationsWithJob={onOpenOperationsWithJob}
@@ -1408,18 +1421,29 @@ function PortfolioPanel({
   onExecutionComplete,
   onWithdraw,
   onWithdrawTarget,
-  canPersistToServer
+  canPersistToServer,
+  walletAddress,
+  walletConnected
 }: {
   positions: DepositPosition[];
   onExecutionComplete?: () => void | Promise<void>;
   onWithdraw?: (amountUsd: number) => Promise<void>;
   onWithdrawTarget?: (amountUsd: number, target: Pick<ProtocolDetailRow, "name" | "chain" | "pool">) => Promise<void>;
   canPersistToServer?: boolean;
+  walletAddress?: string;
+  walletConnected?: boolean;
 }) {
   const [protocolAmounts, setProtocolAmounts] = useState<Record<string, number>>({});
   const [protocolDepositDraft, setProtocolDepositDraft] = useState<ProtocolDetailRow | null>(null);
   const [protocolDepositKey, setProtocolDepositKey] = useState(0);
   const [showPositionDetails, setShowPositionDetails] = useState(false);
+  const [showAvailablePools, setShowAvailablePools] = useState(false);
+  const [onchainMatchRows, setOnchainMatchRows] = useState<OnchainPositionPayload[]>([]);
+  const [onchainMatchSummary, setOnchainMatchSummary] = useState("");
+  const [onchainMatchLoading, setOnchainMatchLoading] = useState(false);
+  const [onchainMatchError, setOnchainMatchError] = useState("");
+  const [ledgerResetLoading, setLedgerResetLoading] = useState(false);
+  const [ledgerResetError, setLedgerResetError] = useState("");
 
   // ── 인출 상태 ──────────────────────────────────────────────
   const [withdrawDraft, setWithdrawDraft] = useState<{ row: ProtocolDetailRow; maxUsd: number } | null>(null);
@@ -1506,6 +1530,73 @@ function PortfolioPanel({
     return a.pool.localeCompare(b.pool, "ko-KR", { sensitivity: "base" });
   });
   const annualYield = estimateAnnualYieldUsd(positions);
+  const canUseOnchainTools = Boolean(canPersistToServer || walletAddress || walletConnected);
+
+  const summarizeOnchainRows = (rows: OnchainPositionPayload[]) => {
+    const counts = rows.reduce(
+      (acc: Record<ProtocolPoolMatchState, number>, position) => {
+        const status = position.verify?.status ?? "rpc_error";
+        if (status === "verified") acc.matched += 1;
+        else if (status === "drift") acc.drift += 1;
+        else if (status === "closed_onchain") acc.missing += 1;
+        else if (status === "unsupported") acc.unsupported += 1;
+        else acc.error += 1;
+        return acc;
+      },
+      { matched: 0, drift: 0, missing: 0, unsupported: 0, error: 0 } as Record<ProtocolPoolMatchState, number>
+    );
+    return `매치 ${counts.matched} · 차이 ${counts.drift} · 미조회 ${counts.missing} · 미지원 ${counts.unsupported} · 오류 ${counts.error}`;
+  };
+
+  const ensureWalletSession = async () => {
+    if (getSession()) return;
+    if (!walletAddress) {
+      throw new Error("지갑 연결 또는 아이디 로그인이 필요합니다.");
+    }
+    await loginWithWallet(walletAddress);
+  };
+
+  const verifyProtocolPoolMatches = async () => {
+    if (!canUseOnchainTools || onchainMatchLoading) return;
+    setOnchainMatchLoading(true);
+    setOnchainMatchError("");
+    try {
+      await ensureWalletSession();
+      const rows = await listOnchainPositions();
+      setOnchainMatchRows(rows);
+      setOnchainMatchSummary(summarizeOnchainRows(rows));
+      setShowAvailablePools(true);
+    } catch (error) {
+      setOnchainMatchError(error instanceof Error ? error.message : "실제 포지션 조회 실패");
+      setOnchainMatchSummary("");
+    } finally {
+      setOnchainMatchLoading(false);
+    }
+  };
+
+  const resetLedger = async () => {
+    if (!canUseOnchainTools || ledgerResetLoading) return;
+    const confirmed = window.confirm(
+      "장부를 초기화하면 예치 장부와 출금 장부가 모두 삭제됩니다. 실제 온체인 포지션은 유지됩니다. 계속할까요?"
+    );
+    if (!confirmed) return;
+    setLedgerResetLoading(true);
+    setLedgerResetError("");
+    setOnchainMatchError("");
+    setOnchainMatchSummary("");
+    setOnchainMatchRows([]);
+    try {
+      await ensureWalletSession();
+      const deleted = await resetPortfolioLedgerRemote();
+      await onExecutionComplete?.();
+      setOnchainMatchSummary(`장부 리셋 완료 · 예치 ${deleted.deletedPositions}건 · 인출 ${deleted.deletedWithdrawals}건`);
+      setShowAvailablePools(false);
+    } catch (error) {
+      setLedgerResetError(error instanceof Error ? error.message : "장부 리셋에 실패했습니다.");
+    } finally {
+      setLedgerResetLoading(false);
+    }
+  };
 
   return (
     <section className="card portfolio-panel-card">
@@ -1531,6 +1622,84 @@ function PortfolioPanel({
         </div>
         <ChainExposureDonut positions={positions} compact />
       </div>
+      <div className="button-row portfolio-pool-actions">
+        <button
+          type="button"
+          className="ghost-btn"
+          onClick={() => void verifyProtocolPoolMatches()}
+          disabled={onchainMatchLoading || !canUseOnchainTools}
+          title={!canUseOnchainTools ? "지갑 연결 또는 로그인 후 사용할 수 있습니다." : "실제 지갑 기준으로 프로토콜 풀 매치를 다시 확인합니다."}
+        >
+          {onchainMatchLoading ? "실제 포지션 조회 중..." : "실제 프로토콜 풀 조회 · 매치 확인"}
+        </button>
+        <button
+          type="button"
+          className={showAvailablePools ? "ghost-btn active" : "ghost-btn"}
+          onClick={() => setShowAvailablePools((prev) => !prev)}
+          title="현재 조회된 온체인 풀 목록을 펼치거나 접습니다."
+          disabled={onchainMatchRows.length === 0}
+        >
+          조회가능풀
+        </button>
+        <button
+          type="button"
+          className="ghost-btn danger-btn"
+          onClick={() => void resetLedger()}
+          disabled={ledgerResetLoading || !canUseOnchainTools || positions.length === 0}
+          title={
+            !canUseOnchainTools
+              ? "지갑 연결 또는 로그인 후 사용할 수 있습니다."
+              : "예치 장부와 출금 장부를 비우고 실제 온체인 포지션은 유지합니다."
+          }
+        >
+          {ledgerResetLoading ? "장부 초기화 중..." : "장부 리셋"}
+        </button>
+        {onchainMatchSummary ? <span className="kpi-label">{onchainMatchSummary}</span> : null}
+      </div>
+      {onchainMatchError ? <p className="exec-verify-error">{onchainMatchError}</p> : null}
+      {ledgerResetError ? <p className="exec-verify-error">{ledgerResetError}</p> : null}
+      {showAvailablePools ? (
+        <div className="available-pool-panel">
+          <div className="available-pool-panel-head">
+            <div>
+              <p className="section-eyebrow">조회가능풀</p>
+              <h3>실제 온체인 풀 조회 결과</h3>
+            </div>
+            <p>지갑 스캔 또는 DB 검증으로 잡힌 포지션만 O로 표시합니다.</p>
+          </div>
+          <table className="protocol-detail-table available-pool-table">
+            <thead>
+              <tr>
+                <th>프로토콜</th>
+                <th>체인</th>
+                <th>풀</th>
+                <th>조회가능</th>
+              </tr>
+            </thead>
+            <tbody>
+              {onchainMatchRows.map((row) => {
+                const status = row.verify?.status ?? "rpc_error";
+                const queryable = status === "verified" || status === "drift" || status === "closed_onchain";
+                return (
+                  <tr key={row.id}>
+                    <td>{row.protocol}</td>
+                    <td>{row.chain}</td>
+                    <td className="product-pool-pool-label">{row.poolAddress ?? row.positionToken ?? row.protocolPositionId ?? "—"}</td>
+                    <td>
+                      <span className={queryable ? "badge badge-low" : "badge badge-critical"}>{queryable ? "O" : "X"}</span>
+                    </td>
+                  </tr>
+                );
+              })}
+              {onchainMatchRows.length === 0 ? (
+                <tr>
+                  <td colSpan={4}>아직 조회된 온체인 풀이 없습니다.</td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
       <h3>프로토콜별 예치 상세</h3>
       <table className="protocol-detail-table">
         <thead>
@@ -1890,7 +2059,9 @@ function PositionsPage({
   onExecutionComplete,
   onWithdraw,
   onWithdrawTarget,
-  canPersistToServer
+  canPersistToServer,
+  walletAddress,
+  walletConnected
 }: {
   positions: DepositPosition[];
   onGo: (menu: MenuKey) => void;
@@ -1898,6 +2069,8 @@ function PositionsPage({
   onWithdraw?: (amountUsd: number) => Promise<void>;
   onWithdrawTarget?: (amountUsd: number, target: Pick<ProtocolDetailRow, "name" | "chain" | "pool">) => Promise<void>;
   canPersistToServer?: boolean;
+  walletAddress?: string;
+  walletConnected?: boolean;
 }) {
   return (
     <div className="page-shell positions-page-shell">
@@ -1914,19 +2087,22 @@ function PositionsPage({
           <button className="ghost-btn" onClick={() => onGo("execution")}>리밸런싱 실행</button>
         </div>
       </section>
-      <PortfolioPanel
-        positions={positions}
-        onExecutionComplete={onExecutionComplete}
-        onWithdraw={onWithdraw}
-        onWithdrawTarget={onWithdrawTarget}
-        canPersistToServer={canPersistToServer}
-      />
+          <PortfolioPanel
+            positions={positions}
+            onExecutionComplete={onExecutionComplete}
+            onWithdraw={onWithdraw}
+            onWithdrawTarget={onWithdrawTarget}
+            canPersistToServer={canPersistToServer}
+            walletAddress={walletAddress}
+            walletConnected={walletConnected}
+          />
     </div>
   );
 }
 
 function ExecutionPage({
   hasSession,
+  walletConnected,
   recentJobs,
   recentEvents,
   focusJobId,
@@ -1935,6 +2111,7 @@ function ExecutionPage({
   onExecutionComplete
 }: {
   hasSession: boolean;
+  walletConnected: boolean;
   recentJobs: Job[];
   recentEvents: ExecutionEvent[];
   focusJobId?: string;
@@ -1949,12 +2126,12 @@ function ExecutionPage({
           <p className="section-eyebrow">Execution</p>
           <h1>내 입금 실행, 서명, dry-run, 감사 로그를 한 흐름으로 추적합니다</h1>
           <p>
-            실행은 계획, 본인 확인, 서명, 제출, 확인, 기록으로 나뉩니다. 실패와 재실행은 운영 이력에서 추적합니다.
+            실행은 계획, 본인 확인, 서명, 제출, 확인, 기록으로 나뉩니다. 지갑이 연결되어 있으면 실행 메뉴가 활성화되고, 아이디 로그인은 조회·기록 연결에 사용합니다.
           </p>
         </div>
       </section>
       <div className="page-grid-two page-grid-two--execution execution-primary-grid">
-        <OrchestratorBoard allowJobExecution={hasSession} onExecutionComplete={onExecutionComplete} />
+        <OrchestratorBoard allowJobExecution={hasSession || walletConnected} onExecutionComplete={onExecutionComplete} />
       </div>
       <OperationsHistoryPanel
         focusJobId={focusJobId}
@@ -1968,6 +2145,11 @@ function ExecutionPage({
 }
 
 export default function App() {
+  const accounts = useAccounts();
+  const solanaAccount = accounts?.find((account) => account.addressType === AddressType.solana);
+  const walletConnected = Boolean(
+    accounts?.some((account) => account.addressType === AddressType.solana || account.addressType === AddressType.ethereum)
+  );
   const [session, setSession] = useState<AuthSession | null>(getSession());
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [activeMenu, setActiveMenu] = useState<MenuKey>("my");
@@ -1984,6 +2166,7 @@ export default function App() {
   const role = session?.role;
 
   const canPersistPortfolio = Boolean(session);
+  const walletAddress = solanaAccount?.address;
   const portfolioTotalUsd = useMemo(() => positions.reduce((acc, p) => acc + p.amountUsd, 0), [positions]);
 
   const refreshWithdrawLedgerFromServer = async () => {
@@ -2144,15 +2327,12 @@ export default function App() {
     }
   };
 
-  /** 비로그인(GitHub Pages 등)에서도 예치·트레이드·포트폴리오 등 뷰어 권한 메뉴를 노출 (API는 로그인 후) */
-  const availableMenus = useMemo(
-    () =>
-      MENU_ITEMS.filter((item) => {
-        if (role) return item.roles.includes(role);
-        return item.roles.includes("viewer");
-      }),
-    [role]
-  );
+  /** 지갑이 연결되면 전체 메뉴를 열고, 아니면 로그인 역할/뷰어 권한으로 노출 */
+  const availableMenus = useMemo(() => {
+    if (walletConnected) return MENU_ITEMS;
+    if (role) return MENU_ITEMS.filter((item) => item.roles.includes(role));
+    return MENU_ITEMS.filter((item) => item.roles.includes("viewer"));
+  }, [role, walletConnected]);
 
   useEffect(() => {
     document.body.setAttribute("data-theme", theme);
@@ -2211,9 +2391,9 @@ export default function App() {
   useEffect(() => {
     const allowed = availableMenus.some((item) => item.key === activeMenu);
     if (!allowed) {
-      setActiveMenu(role ? "my" : "products");
+      setActiveMenu(walletConnected ? "my" : role ? "my" : "products");
     }
-  }, [role, activeMenu, availableMenus]);
+  }, [activeMenu, availableMenus, role, walletConnected]);
 
   const renderContent = () => {
       switch (activeMenu) {
@@ -2238,13 +2418,14 @@ export default function App() {
       case "products":
         return (
           <StrategiesPage onOpenTrade={() => onSelectMenu("trade")} onOpenPortfolio={() => onSelectMenu("portfolio")}>
-            <ProductsPanel
-              positions={positions}
-              hasSession={Boolean(session)}
-              canPersistToServer={canPersistPortfolio}
-              onWithdraw={handleWithdrawPosition}
-              onWithdrawProduct={handleWithdrawProductDeposit}
-              onActionNotice={setPortfolioNotice}
+          <ProductsPanel
+            positions={positions}
+            hasSession={Boolean(session)}
+            walletConnected={walletConnected}
+            canPersistToServer={canPersistPortfolio}
+            onWithdraw={handleWithdrawPosition}
+            onWithdrawProduct={handleWithdrawProductDeposit}
+            onActionNotice={setPortfolioNotice}
               onOpenOperationsWithJob={(jobId) => {
                 setFocusJobId(jobId);
                 setActiveMenu("execution");
@@ -2268,6 +2449,7 @@ export default function App() {
             onWithdraw={handleWithdrawPosition}
             onWithdrawTarget={handleWithdrawProtocolExposure}
             canPersistToServer={canPersistPortfolio}
+            walletAddress={walletAddress}
             onExecutionComplete={async () => {
               await refreshPositions();
               await refreshWithdrawLedgerFromServer();
@@ -2291,6 +2473,7 @@ export default function App() {
         return (
           <ExecutionPage
             hasSession={Boolean(session)}
+            walletConnected={walletConnected}
             recentJobs={recentJobs}
             recentEvents={recentEvents}
             focusJobId={focusJobId}

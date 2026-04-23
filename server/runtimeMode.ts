@@ -28,7 +28,12 @@ function runtimeLiveFlagKey(protocol: LiveProtocol): string {
 }
 
 export function getConfiguredSolanaRpcUrl(): string | null {
-  const raw = process.env.SOLANA_RPC_URL?.trim() || process.env.VITE_SOLANA_RPC_URL?.trim() || "";
+  const raw =
+    process.env.SOLANA_RPC_URL?.trim() ||
+    process.env.VITE_SOLANA_RPC_URL?.trim() ||
+    process.env.SOLANA_MAINNET_RPC_URL?.trim() ||
+    process.env.SOLANA_LIVE_RPC_URL?.trim() ||
+    "";
   return raw.length > 0 ? raw : null;
 }
 

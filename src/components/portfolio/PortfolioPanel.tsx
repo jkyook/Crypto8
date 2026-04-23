@@ -164,7 +164,7 @@ export function PortfolioPanel() {
       <div className="portfolio-section-head">
         <div>
           <h3>온체인 검증 포지션</h3>
-          <p>새 positions 테이블 기준으로 DB 금액과 온체인 잔고를 함께 보여줍니다.</p>
+          <p>DB 저장분과 지갑 스캔분을 함께 보여줍니다. Orca는 지갑 스캔으로도 직접 확인합니다.</p>
         </div>
         <div className="portfolio-overview-metrics">
           <div>
@@ -186,6 +186,7 @@ export function PortfolioPanel() {
           <tr>
             <th>프로토콜</th>
             <th>체인</th>
+            <th>포지션 주소</th>
             <th>상태</th>
             <th>DB 금액</th>
             <th>온체인 금액</th>
@@ -198,10 +199,17 @@ export function PortfolioPanel() {
           {onchainPositions.map((position) => {
             const verify = position.verify ?? undefined;
             const status = verify?.status ?? position.status;
+            const positionAddress = position.positionToken ?? position.protocolPositionId ?? "—";
             return (
               <tr key={position.id}>
                 <td data-label="프로토콜">{position.protocol}</td>
                 <td data-label="체인">{position.chain}</td>
+                <td data-label="포지션 주소">
+                  <div className="portfolio-position-address-cell">
+                    <code>{positionAddress}</code>
+                    {position.source === "wallet_scan" ? <span className="badge badge-medium">지갑 스캔</span> : <span className="badge badge-low">DB</span>}
+                  </div>
+                </td>
                 <td data-label="상태">
                   <span className={positionStatusBadge(status)}>
                     {positionStatusLabel(status)}
@@ -217,7 +225,7 @@ export function PortfolioPanel() {
           })}
           {onchainPositions.length === 0 ? (
             <tr>
-              <td colSpan={8}>아직 온체인 검증 포지션이 없습니다.</td>
+              <td colSpan={9}>아직 온체인 검증 포지션이 없습니다.</td>
             </tr>
           ) : null}
         </tbody>

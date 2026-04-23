@@ -94,6 +94,14 @@ function buildFallbackDryRunAssets(
   });
 }
 
+function runtimeProtocolKey(protocol: string): keyof NonNullable<RuntimeInfo["protocolReadiness"]> | null {
+  const normalized = protocol.toLowerCase();
+  if (normalized === "aave" || normalized === "uniswap" || normalized === "orca" || normalized === "aerodrome" || normalized === "raydium" || normalized === "curve") {
+    return normalized;
+  }
+  return null;
+}
+
 export function OrchestratorBoard({
   initialDepositUsd = 10000,
   initialProductName = "기본 상품",
@@ -203,6 +211,7 @@ export function OrchestratorBoard({
   const jwtAccess = useSyncExternalStore(subscribeLocalAuth, readAccessTokenSnapshot, () => "");
   const canUseServerJobs = jwtAccess.length > 0 && allowJobExecutionProp !== false;
   const canLoadLiveAssets = executionModeIntent === "live" ? hasWallet : canUseServerJobs;
+  const hasExecutionAccess = canUseServerJobs || hasWallet;
   const sessionUsername = getSession()?.username ?? "";
   useEffect(() => {
     const sync = () => setSolanaNetworkPreference(getSolanaNetworkPreference());
@@ -460,8 +469,12 @@ export function OrchestratorBoard({
         const requiresSolanaWallet = row.chain === "Solana" || row.protocol === "Orca";
         const requiresEvmWallet = !requiresSolanaWallet && ["Ethereum", "Arbitrum", "Base"].includes(row.chain);
         const hasRequiredWallet = requiresSolanaWallet ? Boolean(solanaAccount?.address) : requiresEvmWallet ? Boolean(evmAccount?.address) : true;
+        const protocolKey = runtimeProtocolKey(row.protocol);
+        const runtimeReadiness = protocolKey ? runtime?.protocolReadiness?.[protocolKey] : undefined;
+        const runtimeReady = runtimeReadiness?.ready ?? true;
+        const runtimeReason = runtimeReadiness && !runtimeReadiness.ready ? runtimeReadiness.blockers.join(" · ") || "서버 live 준비 미완료" : "";
         const orcaLiveSupported = !isLiveExecution || row.protocol !== "Orca" || Boolean(solanaAccount?.address);
-        const ready = implemented && hasRequiredWallet && orcaLiveSupported;
+        const ready = implemented && hasRequiredWallet && orcaLiveSupported && runtimeReady;
         return {
           protocol: row.protocol,
           chain: row.chain,
@@ -475,12 +488,14 @@ export function OrchestratorBoard({
               ? requiresSolanaWallet
               ? "Solana 키 필요"
               : "EVM 키 필요"
+              : runtimeReadiness && !runtimeReadiness.ready
+                ? runtimeReason
               : isLiveExecution && row.protocol === "Orca" && !solanaAccount?.address
                 ? "Phantom Solana 지갑 필요"
               : "실행 가능"
         };
       }),
-    [evmAccount?.address, isLiveExecution, quoteRows, solanaAccount?.address]
+    [evmAccount?.address, isLiveExecution, quoteRows, runtime?.protocolReadiness, solanaAccount?.address]
   );
   const protocolReadyCount = protocolReadiness.filter((row) => row.ready).length;
   const protocolFlagOnlyCount = protocolReadiness.filter((row) => row.flagOn && !row.ready).length;
@@ -680,7 +695,7 @@ export function OrchestratorBoard({
       const connectedAddress = (solanaAccount?.address ?? "").toLowerCase();
       const isLinkedWallet =
         connectedAddress.length > 0 &&
-        linkedWallets.some((w) => w.walletAddress.toLowerCase() === connectedAddress);
+        (linkedWallets.length === 0 || linkedWallets.some((w) => w.walletAddress.toLowerCase() === connectedAddress));
 
       if (isLinkedWallet && canSignWithPhantom) {
         if (isLiveExecution) {
@@ -869,16 +884,16 @@ export function OrchestratorBoard({
   return (
     <section className="card orchestrator-card">
       <h2>입금 처리</h2>
-      {runtime?.serverExecutionNote || !canUseServerJobs ? (
+      {runtime?.serverExecutionNote || !hasExecutionAccess ? (
         <div className="runtime-scope-notice" role="note">
           {runtime?.serverExecutionNote ? <p className="runtime-scope-sub">{runtime.serverExecutionNote}</p> : null}
-          {!canUseServerJobs ? (
+          {!hasExecutionAccess ? (
             <p className="runtime-scope-sub" role="status">
-          1~3단계는 <strong>로그인 · 계정</strong> 메뉴에서 아이디·비밀번호(JWT)로 로그인(또는 이용자 가입)한 뒤에 사용할 수 있습니다. dry-run은 Phantom 서명 없이도 내 실행 기록을 남길 수 있습니다.
+              1~3단계는 <strong>로그인 · 계정</strong> 메뉴에서 아이디·비밀번호(JWT)로 로그인하거나, Phantom 지갑을 연결한 뒤에 사용할 수 있습니다. dry-run은 Phantom 서명 없이도 내 실행 기록을 남길 수 있습니다.
             </p>
           ) : (
             <p className="runtime-scope-sub" role="status">
-              입금 작업·리스크 검토·처리 이력은 현재 로그인한 이용자 계정에만 연결됩니다.
+              지갑이 연결되면 전송·교환·예치 메뉴가 활성화되고, 아이디 로그인은 조회와 계정별 기록 연결에 사용됩니다.
             </p>
           )}
         </div>
@@ -898,7 +913,7 @@ export function OrchestratorBoard({
             <p>입금액이 선택 자산의 가용액보다 작아야 하며, 각 풀에 필요한 자산으로 스왑·브릿지한 뒤 예치합니다.</p>
             <p className="deposit-asset-network-line">
               연결 지갑 네트워크: <strong>{connectedWalletNetwork ?? "미연결"}</strong>
-              {executionModeIntent === "live" ? ` · 실잔고 네트워크: ${liveSolanaNetwork === "mainnet" ? "메인넷" : "데브넷"}` : ""}
+              {executionModeIntent === "live" ? ` · 실잔고 네트워크: ${liveSolanaNetwork === "mainnet" ? "mainnet_live" : "devnet"}` : ""}
               {assetReadiness.selectedAsset ? ` · 계정 자산 보관 체인: ${assetReadiness.selectedAsset.chain}` : ""}
               · 표시 기준: <strong>{assetSnapshotLabel}</strong>
               · 잔고 기준: <strong>{assetSourceLabel}</strong>
@@ -1063,10 +1078,13 @@ export function OrchestratorBoard({
           </div>
         </div>
         <div className="quote-readiness-summary" aria-label="프로토콜 준비 상태">
-          <span className="quote-readiness-pill quote-readiness-pill--ready">실행 가능 {protocolReadyCount}</span>
+          <span className="quote-readiness-pill quote-readiness-pill--ready">카탈로그/런타임 준비 {protocolReadyCount}</span>
           <span className="quote-readiness-pill quote-readiness-pill--flag">플래그만 ON {protocolFlagOnlyCount}</span>
           <span className="quote-readiness-pill quote-readiness-pill--blocked">미구현 {protocolUnsupportedCount}</span>
         </div>
+        <p className="quote-card-footnote">
+          이 표시는 상품 카탈로그와 서버 런타임 준비 상태 기준입니다. 실제 온체인 포지션은 포트폴리오의 온체인 검증 표에서 확인합니다.
+        </p>
         {quoteRows.length > 0 ? (
           <div className="quote-card-grid">
             {quoteRows.map((row, idx) => (

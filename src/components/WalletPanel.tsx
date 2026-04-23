@@ -192,7 +192,7 @@ async function waitForConnectedSolanaAddress(fallback?: string): Promise<string 
 }
 
 function NetworkStatusBlock({ network, plain }: { network: "mainnet" | "devnet"; plain?: boolean }) {
-  const clusterLabel = network === "mainnet" ? "Solana 메인넷" : "Solana 개발망(데브넷)";
+  const clusterLabel = network === "mainnet" ? "Solana mainnet_live" : "Solana devnet";
   const inner = (
     <div className="wallet-network-primary">
       <span className="wallet-network-dot" aria-hidden />
@@ -200,7 +200,7 @@ function NetworkStatusBlock({ network, plain }: { network: "mainnet" | "devnet";
         <p className="wallet-network-title">네트워크</p>
         <p className="wallet-network-cluster">
           <strong>{clusterLabel}</strong>
-          <span className="wallet-network-pill">{network === "mainnet" ? "메인넷" : "데브넷"}</span>
+          <span className="wallet-network-pill">{network === "mainnet" ? "mainnet_live" : "devnet"}</span>
         </p>
       </div>
     </div>
@@ -406,6 +406,7 @@ export function WalletPanel({
     outputDecimals: number;
     outputSymbol: AccountAssetSymbol;
     outputMint: string;
+    source: "jupiter" | "estimate";
   } | null>(null);
   const [swapQuoteLoading, setSwapQuoteLoading] = useState(false);
   const [swapQuoteError, setSwapQuoteError] = useState("");
@@ -829,6 +830,10 @@ export function WalletPanel({
       setWalletActionError("스왑 수량을 입력하세요.");
       return;
     }
+    if (swapQuote && swapQuote.source !== "jupiter") {
+      setWalletActionError("현재는 Jupiter 견적을 불러오지 못해 예상 수량만 표시됩니다. 실제 교환은 잠시 후 다시 시도해 주세요.");
+      return;
+    }
     if (!solanaAccount?.address) {
       setWalletActionError("Solana 지갑이 연결되어 있지 않습니다.");
       return;
@@ -1085,7 +1090,8 @@ export function WalletPanel({
             priceImpactPct: quote.priceImpactPct,
             outputDecimals,
             outputSymbol,
-            outputMint: swapToMint
+            outputMint: swapToMint,
+            source: quote.source
           });
         } catch (error) {
           if (cancelled) return;
@@ -1430,7 +1436,7 @@ export function WalletPanel({
                   </div>
                   <em>
                     {swapQuote
-                      ? `최소 수령 ${formatRawAmount(swapQuote.minOutAmountRaw, swapQuote.outputDecimals)} ${swapQuote.outputSymbol} · 예상 슬리피지 ${swapQuote.priceImpactPct}%`
+                      ? `${swapQuote.source === "jupiter" ? "Jupiter 견적 기준" : "시장 가격 기준 예상"} · 최소 수령 ${formatRawAmount(swapQuote.minOutAmountRaw, swapQuote.outputDecimals)} ${swapQuote.outputSymbol} · 예상 슬리피지 ${swapQuote.priceImpactPct}%`
                       : swapQuoteError || "Jupiter 견적 기준"}
                   </em>
                 </div>
@@ -1440,7 +1446,7 @@ export function WalletPanel({
                   type="button"
                   className="wallet-action-confirm-btn"
                   onClick={() => void submitSwapAction()}
-                  disabled={walletActionLoading}
+                  disabled={walletActionLoading || Boolean(swapQuote && swapQuote.source !== "jupiter")}
                 >
                   {walletActionLoading ? "교환 확인 중…" : "교환 확인"}
                 </button>
@@ -1495,18 +1501,12 @@ export function WalletPanel({
   };
 
   const networkToggle = (opts: { compact: boolean }) => (
-    <div
-      className={
-        opts.compact
-          ? "wallet-network-toggle"
-          : "wallet-network-toggle wallet-network-toggle-inline wallet-network-toggle-below-status"
-      }
-    >
+    <div className={opts.compact ? "wallet-network-toggle wallet-network-toggle-compact" : "wallet-network-toggle wallet-network-toggle-inline wallet-network-toggle-below-status"}>
       <button type="button" className={network === "mainnet" ? "active" : ""} onClick={() => setNetwork("mainnet")}>
-        메인넷
+        mainnet_live
       </button>
       <button type="button" className={network === "devnet" ? "active" : ""} onClick={() => setNetwork("devnet")}>
-        데브넷
+        devnet
       </button>
     </div>
   );
@@ -1522,6 +1522,7 @@ export function WalletPanel({
                 {walletAddressLabel} {isCompactDetailOpen ? "▴" : "▾"}
               </button>
             </div>
+            {networkToggle({ compact: true })}
             {copyHint ? <p className="wallet-copy-hint wallet-copy-hint-compact">{copyHint}</p> : null}
             {isCompactDetailOpen ? (
               <div className="wallet-compact-detail">
