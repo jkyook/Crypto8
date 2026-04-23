@@ -619,6 +619,10 @@ function mixItemAnnualAprDecimal(name: string, snapshot: MarketAprSnapshot): num
   return snapshot.orca;
 }
 
+function displayProductName(name: string): string {
+  return name.replace(/\s+\d+(?:\.\d+)?%$/, "");
+}
+
 /** 연 APR(소수) → 단순 선형 근사 7일 수익률(퍼센트 포인트, 예 0.12 → 0.12%) */
 function aprDecimalToSimpleWeekYieldPercentPoints(annualAprDecimal: number): number {
   return annualAprDecimal * (7 / APR_DAYS_PER_YEAR) * 100;
@@ -773,6 +777,7 @@ function ProductsPanel({
   const [aprError, setAprError] = useState("");
   const [poolLiveMap, setPoolLiveMap] = useState<Record<string, PoolLiveState>>({});
   const [productLiveMap, setProductLiveMap] = useState<Record<string, boolean>>({});
+  const [visiblePoolAprByLabel, setVisiblePoolAprByLabel] = useState<Record<string, number>>({});
   const [showStandardL2Allocation, setShowStandardL2Allocation] = useState(false);
   const [marketHistoryPoints, setMarketHistoryPoints] = useState<MarketPoolAprHistoryPoint[]>([]);
   const [marketHistorySeries, setMarketHistorySeries] = useState<MarketPoolAprHistorySeries[]>([]);
@@ -842,6 +847,13 @@ function ProductsPanel({
     });
     return out;
   }, [marketHistoryPoints, marketHistorySeries]);
+  const selectedHistoryBlendAnnualAprDecimal = useMemo(() => {
+    const latest = marketHistoryPoints[marketHistoryPoints.length - 1];
+    if (!latest) return null;
+    const activeSeries = marketHistorySeries.filter((series) => (selectedPoolWeights[series.key] ?? 0) > 0);
+    if (activeSeries.length === 0) return null;
+    return activeSeries.reduce((acc, series) => acc + ((latest.pools[series.key] ?? 0) * (selectedPoolWeights[series.key] ?? 0)), 0);
+  }, [marketHistoryPoints, marketHistorySeries, selectedPoolWeights]);
   const selectedMixAprDecimals = useMemo(
     () =>
       selected.protocolMix.map((item, idx) => {
@@ -858,6 +870,9 @@ function ProductsPanel({
   const estYield = depositAmount * selected.targetApr;
   const estFee = (depositAmount * selected.estFeeBps) / 10_000;
   const blendedAnnualAprDecimal = useMemo(() => {
+    if (selectedHistoryBlendAnnualAprDecimal != null) {
+      return selectedHistoryBlendAnnualAprDecimal;
+    }
     let weighted = 0;
     let hasAny = false;
     selected.protocolMix.forEach((item, idx) => {
@@ -867,7 +882,7 @@ function ProductsPanel({
       weighted += aprDec * item.weight;
     });
     return hasAny ? weighted : null;
-  }, [selected.protocolMix, selectedMixAprDecimals]);
+  }, [selected.protocolMix, selectedHistoryBlendAnnualAprDecimal, selectedMixAprDecimals]);
   const dailyRate = (blendedAnnualAprDecimal ?? selected.targetApr) / 365;
   const periodYield = depositAmount * dailyRate * simulationDays;
 
@@ -875,6 +890,27 @@ function ProductsPanel({
     blendedAnnualAprDecimal != null ? aprDecimalToSimpleWeekYieldPercentPoints(blendedAnnualAprDecimal) : null;
   const blendedWeekUsdEstimate =
     blendedWeekYieldPercentPoints != null ? (depositAmount * blendedWeekYieldPercentPoints) / 100 : null;
+  const resolveCurrentAnnualAprDecimal = (product: YieldProduct): number | null => {
+    if (product.id === selected.id && blendedAnnualAprDecimal != null) {
+      return blendedAnnualAprDecimal;
+    }
+    let weighted = 0;
+    let hasAny = false;
+    product.protocolMix.forEach((item) => {
+      const poolLabel = resolvePoolLabel(item.name, item.pool);
+      const poolApr = visiblePoolAprByLabel[poolLabel];
+      if (typeof poolApr === "number" && Number.isFinite(poolApr) && poolApr > 0) {
+        weighted += poolApr * item.weight;
+        hasAny = true;
+        return;
+      }
+      if (marketApr) {
+        weighted += mixItemAnnualAprDecimal(item.name, marketApr) * item.weight;
+        hasAny = true;
+      }
+    });
+    return hasAny ? weighted : null;
+  };
 
   useEffect(() => {
     if (visibleProducts.length === 0) return;
@@ -922,6 +958,7 @@ function ProductsPanel({
     if (visibleProducts.length === 0) {
       setPoolLiveMap({});
       setProductLiveMap({});
+      setVisiblePoolAprByLabel({});
       return;
     }
     const productPools = visibleProducts.map((product) => ({
@@ -938,8 +975,19 @@ function ProductsPanel({
     let cancelled = false;
     const checkPoolLiveness = async () => {
       const liveByLabel: Record<string, boolean> = {};
+      let nextPoolAprByLabel: Record<string, number> = {};
       try {
         const poolSnapshot = await fetchPoolApyHistoryFromCsv({ days: 14, pools: uniqueLabels });
+        const latestPoint = poolSnapshot.points[poolSnapshot.points.length - 1];
+        if (latestPoint) {
+          nextPoolAprByLabel = poolSnapshot.series.reduce<Record<string, number>>((acc, series) => {
+            const value = latestPoint.pools[series.key];
+            if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+              acc[series.poolLabel] = value;
+            }
+            return acc;
+          }, {});
+        }
         const matchedByLabel = new Map(poolSnapshot.series.map((series) => [series.poolLabel, Boolean(series.matchedLabel)]));
         uniqueLabels.forEach((label) => {
           liveByLabel[label] = matchedByLabel.get(label) ?? false;
@@ -965,6 +1013,7 @@ function ProductsPanel({
       );
 
       if (cancelled) return;
+      setVisiblePoolAprByLabel(nextPoolAprByLabel);
       setPoolLiveMap(
         uniqueLabels.reduce<Record<string, PoolLiveState>>(
           (acc, label) => ({ ...acc, [label]: liveByLabel[label] ? "live" : "down" }),
@@ -1158,7 +1207,9 @@ function ProductsPanel({
         })}
       </div>
       <div className="kpi-grid product-list-grid">
-        {visibleProducts.map((product) => (
+        {visibleProducts.map((product) => {
+          const currentAnnualAprDecimal = resolveCurrentAnnualAprDecimal(product);
+          return (
           <div
             key={product.id}
             className={selectedId === product.id ? "kpi-item product-card product-card--selected" : "kpi-item product-card"}
@@ -1203,8 +1254,13 @@ function ProductsPanel({
                 </span>
                 {productLiveMap[product.id] ? <span className="product-live-badge">LIVE</span> : null}
               </div>
-              <p className="kpi-label">{product.name}</p>
-              <p className="kpi-value">목표 연수익 {(product.targetApr * 100).toFixed(1)}%</p>
+              <p className="kpi-label">{displayProductName(product.name)}</p>
+              <p className="kpi-value">
+                목표 연수익 {(product.targetApr * 100).toFixed(1)}%
+                <span className="product-current-apr">
+                  현재 연수익 {currentAnnualAprDecimal != null ? `${(currentAnnualAprDecimal * 100).toFixed(2)}%` : "조회 중"}
+                </span>
+              </p>
               <p className="product-inline-metrics">
                 수수료 {(product.estFeeBps / 100).toFixed(2)}% · 만기 {product.lockDays}일 · 프로토콜 {product.protocolMix.length}개
               </p>
@@ -1215,7 +1271,8 @@ function ProductsPanel({
               </div>
             ) : null}
           </div>
-        ))}
+          );
+        })}
       </div>
       <div className="product-actions">
         <div className="selected-product-ticket">

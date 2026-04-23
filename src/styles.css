@@ -2272,6 +2272,21 @@ th {
   text-shadow: 0 0 20px rgba(100, 175, 255, 0.28);
 }
 
+.product-current-apr {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(123, 232, 195, 0.24);
+  background: rgba(123, 232, 195, 0.1);
+  color: #9ef0cf;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-shadow: none;
+  vertical-align: middle;
+}
+
 .kpi-item.product-card .product-inline-metrics {
   margin-top: 2px;
   font-size: 0.81rem;
@@ -5573,6 +5588,12 @@ body[data-theme="light"] .kpi-item.product-card .kpi-label {
 body[data-theme="light"] .kpi-item.product-card .kpi-value {
   color: #0d5a9e;
   text-shadow: none;
+}
+
+body[data-theme="light"] .product-current-apr {
+  border-color: rgba(20, 155, 118, 0.22);
+  background: rgba(20, 155, 118, 0.1);
+  color: #08795e;
 }
 
 body[data-theme="light"] .kpi-item.product-card .product-inline-metrics {

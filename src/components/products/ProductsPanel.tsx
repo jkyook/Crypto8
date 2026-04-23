@@ -16,13 +16,17 @@ import {
 } from "../../lib/productCatalog";
 import { inferProtocolChain } from "../../lib/protocolChain";
 import { useMarketApr } from "../../hooks/useMarketApr";
-import { getSession, login } from "../../lib/api";
+import { fetchPoolApyHistoryFromCsv, getSession, login } from "../../lib/api";
 import { usePortfolioContext } from "../../contexts/PortfolioContext";
 import { useSessionContext } from "../../contexts/SessionContext";
 
 type ProductsPanelProps = {
   onOpenOperationsWithJob?: (jobId: string) => void;
 };
+
+function displayProductName(name: string): string {
+  return name.replace(/\s+\d+(?:\.\d+)?%$/, "");
+}
 
 export function ProductsPanel({ onOpenOperationsWithJob }: ProductsPanelProps) {
   const { session } = useSessionContext();
@@ -51,6 +55,7 @@ export function ProductsPanel({ onOpenOperationsWithJob }: ProductsPanelProps) {
   const userDepositedUsd = positions.reduce((acc, p) => acc + p.amountUsd, 0);
   const [simulationDays, setSimulationDays] = useState(30);
   const [showStandardL2Allocation, setShowStandardL2Allocation] = useState(false);
+  const [visiblePoolAprByLabel, setVisiblePoolAprByLabel] = useState<Record<string, number>>({});
   const hasSession = Boolean(session);
   const resolvePoolLabel = (name: string, pool?: string) => {
     if (pool && pool.trim().length > 0) return pool;
@@ -108,16 +113,48 @@ export function ProductsPanel({ onOpenOperationsWithJob }: ProductsPanelProps) {
     : selected.targetApr / 365;
   const periodYield = depositAmount * dailyRate * simulationDays;
 
+  const selectedHistoryBlendAnnualAprDecimal = useMemo(() => {
+    const latest = marketHistoryPoints[marketHistoryPoints.length - 1];
+    if (!latest) return null;
+    const activeSeries = marketHistorySeries.filter((series) => (selectedPoolWeights[series.key] ?? 0) > 0);
+    if (activeSeries.length === 0) return null;
+    return activeSeries.reduce((acc, series) => acc + ((latest.pools[series.key] ?? 0) * (selectedPoolWeights[series.key] ?? 0)), 0);
+  }, [marketHistoryPoints, marketHistorySeries, selectedPoolWeights]);
+
   const blendedAnnualAprDecimal = useMemo(() => {
+    if (selectedHistoryBlendAnnualAprDecimal != null) {
+      return selectedHistoryBlendAnnualAprDecimal;
+    }
     if (!marketApr) return null;
     const sel = products.find((item) => item.id === selectedId) ?? products[0];
     return sel.protocolMix.reduce((acc, item) => acc + mixItemAnnualAprDecimal(item.name, marketApr) * item.weight, 0);
-  }, [marketApr, products, selectedId]);
+  }, [marketApr, products, selectedHistoryBlendAnnualAprDecimal, selectedId]);
 
   const blendedWeekYieldPercentPoints =
     blendedAnnualAprDecimal != null ? aprDecimalToSimpleWeekYieldPercentPoints(blendedAnnualAprDecimal) : null;
   const blendedWeekUsdEstimate =
     blendedWeekYieldPercentPoints != null ? (depositAmount * blendedWeekYieldPercentPoints) / 100 : null;
+  const resolveCurrentAnnualAprDecimal = (product: YieldProduct): number | null => {
+    if (product.id === selected.id && blendedAnnualAprDecimal != null) {
+      return blendedAnnualAprDecimal;
+    }
+    let weighted = 0;
+    let hasAny = false;
+    product.protocolMix.forEach((item) => {
+      const poolLabel = resolvePoolLabel(item.name, item.pool);
+      const poolApr = visiblePoolAprByLabel[poolLabel];
+      if (typeof poolApr === "number" && Number.isFinite(poolApr) && poolApr > 0) {
+        weighted += poolApr * item.weight;
+        hasAny = true;
+        return;
+      }
+      if (marketApr) {
+        weighted += mixItemAnnualAprDecimal(item.name, marketApr) * item.weight;
+        hasAny = true;
+      }
+    });
+    return hasAny ? weighted : null;
+  };
 
   useEffect(() => {
     if (visibleProducts.length === 0) return;
@@ -126,6 +163,43 @@ export function ProductsPanel({ onOpenOperationsWithJob }: ProductsPanelProps) {
       setIsExecutionOpen(false);
     }
   }, [selectedId, visibleProducts]);
+
+  useEffect(() => {
+    const uniqueLabels = [
+      ...new Set(visibleProducts.flatMap((product) => product.protocolMix.map((item) => resolvePoolLabel(item.name, item.pool))))
+    ];
+    if (uniqueLabels.length === 0) {
+      setVisiblePoolAprByLabel({});
+      return;
+    }
+    let cancelled = false;
+    const loadVisiblePoolAprs = async () => {
+      try {
+        const snapshot = await fetchPoolApyHistoryFromCsv({ days: 14, pools: uniqueLabels });
+        if (cancelled) return;
+        const latestPoint = snapshot.points[snapshot.points.length - 1];
+        if (!latestPoint) {
+          setVisiblePoolAprByLabel({});
+          return;
+        }
+        setVisiblePoolAprByLabel(
+          snapshot.series.reduce<Record<string, number>>((acc, series) => {
+            const value = latestPoint.pools[series.key];
+            if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+              acc[series.poolLabel] = value;
+            }
+            return acc;
+          }, {})
+        );
+      } catch {
+        if (!cancelled) setVisiblePoolAprByLabel({});
+      }
+    };
+    void loadVisiblePoolAprs();
+    return () => {
+      cancelled = true;
+    };
+  }, [visibleProducts]);
 
   const openProductDepositFlow = (product: YieldProduct, amountUsd = depositAmount) => {
     setSelectedId(product.id);
@@ -298,7 +372,9 @@ export function ProductsPanel({ onOpenOperationsWithJob }: ProductsPanelProps) {
         })}
       </div>
       <div className="kpi-grid product-list-grid">
-        {visibleProducts.map((product) => (
+        {visibleProducts.map((product) => {
+          const currentAnnualAprDecimal = resolveCurrentAnnualAprDecimal(product);
+          return (
           <div
             key={product.id}
             className={selectedId === product.id ? "kpi-item product-card product-card--selected" : "kpi-item product-card"}
@@ -340,8 +416,13 @@ export function ProductsPanel({ onOpenOperationsWithJob }: ProductsPanelProps) {
               <span className={`product-network-badge product-network-badge--${product.networkGroup}`}>
                 {PRODUCT_NETWORK_LABELS[product.networkGroup]}
               </span>
-              <p className="kpi-label">{product.name}</p>
-              <p className="kpi-value">목표 연수익 {(product.targetApr * 100).toFixed(1)}%</p>
+              <p className="kpi-label">{displayProductName(product.name)}</p>
+              <p className="kpi-value">
+                목표 연수익 {(product.targetApr * 100).toFixed(1)}%
+                <span className="product-current-apr">
+                  현재 연수익 {currentAnnualAprDecimal != null ? `${(currentAnnualAprDecimal * 100).toFixed(2)}%` : "조회 중"}
+                </span>
+              </p>
               <p className="product-inline-metrics">
                 수수료 {(product.estFeeBps / 100).toFixed(2)}% · 만기 {product.lockDays}일 · 프로토콜 {product.protocolMix.length}개
               </p>
@@ -352,7 +433,8 @@ export function ProductsPanel({ onOpenOperationsWithJob }: ProductsPanelProps) {
               </div>
             ) : null}
           </div>
-        ))}
+          );
+        })}
       </div>
       <div className="product-actions">
         <div className="selected-product-ticket">

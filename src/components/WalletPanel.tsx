@@ -414,6 +414,7 @@ export function WalletPanel({
   const [accountAssetsSnapshotLabel, setAccountAssetsSnapshotLabel] = useState("업데이트 전");
   const [walletRefreshTick, setWalletRefreshTick] = useState(0);
   const accountMenuRef = useRef<HTMLDivElement>(null);
+  const compactDetailRef = useRef<HTMLDivElement>(null);
   const menuCallbacks = { onOpenWallet, onOpenActivity, onOpenPortfolio, onOpenMyOverview };
   void menuCallbacks;
 
@@ -505,6 +506,18 @@ export function WalletPanel({
     document.addEventListener("mousedown", handleOutside);
     return () => document.removeEventListener("mousedown", handleOutside);
   }, [accountMenuOpen]);
+
+  // 연결된 지갑의 펼침 메뉴도 화면의 다른 곳을 누르면 닫히게 한다.
+  useEffect(() => {
+    if (!isCompactDetailOpen) return;
+    const handleOutside = (e: MouseEvent) => {
+      if (compactDetailRef.current && !compactDetailRef.current.contains(e.target as Node)) {
+        setIsCompactDetailOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [isCompactDetailOpen]);
 
   const walletAddressLabel = useMemo(() => {
     const chain = solanaAccount?.address ?? evmAccount?.address;
@@ -1515,7 +1528,7 @@ export function WalletPanel({
       <section className="wallet-widget">
         {isConnected ? (
           <>
-            <div className="wallet-widget-head wallet-widget-head-address-only">
+            <div className="wallet-widget-head wallet-widget-head-address-only" ref={compactDetailRef}>
               <button type="button" className="wallet-address-link" onClick={() => setIsCompactDetailOpen((prev) => !prev)}>
                 {walletAddressLabel} {isCompactDetailOpen ? "▴" : "▾"}
               </button>
