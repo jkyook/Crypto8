@@ -830,3 +830,29 @@ export async function listOnchainPositionsForUser(
 
   return rows.sort((left, right) => new Date(right.openedAt).getTime() - new Date(left.openedAt).getTime());
 }
+
+export async function listOrcaWalletPositions(
+  username: string,
+  walletAddress: string
+): Promise<Array<PositionRow & { verify: PositionVerifyResult | null; source: "db" | "wallet_scan" }>> {
+  if (!walletAddress) {
+    return [];
+  }
+
+  if (username === "guest") {
+    const snapshots = await scanOrcaWalletPositions(walletAddress);
+    const rows: Array<PositionRow & { verify: PositionVerifyResult | null; source: "wallet_scan" }> = [];
+    for (const snapshot of snapshots) {
+      const synthetic = buildSyntheticOrcaPositionRow(username, snapshot);
+      const verify = await verifyOrcaPosition(synthetic, walletAddress);
+      rows.push({
+        ...attachSource(synthetic, "wallet_scan"),
+        verify
+      });
+    }
+    return rows.sort((left, right) => new Date(right.openedAt).getTime() - new Date(left.openedAt).getTime());
+  }
+
+  const rows = await listOnchainPositionsForUser(username);
+  return rows.filter((row) => row.protocol === "Orca");
+}
