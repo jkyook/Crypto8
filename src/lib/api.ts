@@ -19,7 +19,10 @@ function resolveApiBase(): string {
     }
     return candidate;
   }
-  return "";
+  if (import.meta.env.DEV) {
+    return "";
+  }
+  return "https://crypto8-api.onrender.com";
 }
 
 const API_BASE = resolveApiBase();
