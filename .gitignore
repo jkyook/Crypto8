@@ -3,6 +3,9 @@ node_modules
 **/.DS_Store
 *.tsbuildinfo
 
+# Vite 빌드 산출물 — Render에서 자체 빌드하므로 git 불필요
+dist/
+
 # SQLite — 로컬/CI에서 생성. 저장소에 포함 시 Render에서 prisma migrate P3005 발생
 server/data/*.db
 prisma/server/data/
