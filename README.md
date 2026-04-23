@@ -43,11 +43,12 @@ npm run prisma:seed
 - `LIVE_EXECUTION_CONFIRM`: live 모드 활성화 시 `YES` 필요
 - `ARBITRUM_RPC_URL`: Uniswap live 경로용 Arbitrum RPC URL
 - `ARBITRUM_EXECUTOR_PRIVATE_KEY`: Uniswap live 경로용 실행 지갑 키
-- `SOLANA_LIVE_RPC_URL` / `SOLANA_MAINNET_RPC_URL`: Orca live 경로용 Solana mainnet RPC URL
+- `SOLANA_LIVE_RPC_URL` / `SOLANA_MAINNET_RPC_URL`: 서버 live 실행과 Orca용 Solana mainnet RPC URL
 - `SOLANA_EXECUTOR_PRIVATE_KEY_FILE`: Orca live 경로용 Solana executor keypair 파일 경로
 - `SOLANA_EXECUTOR_PRIVATE_KEY`: Orca live 경로용 실행 지갑 키(개발/테스트 전용, `ALLOW_INSECURE_ENV_PRIVATE_KEY=true` 필요)
 - `SOLANA_RPC_URL`: Solana 잔고/Orca 경로용 RPC URL
 - `VITE_SOLANA_RPC_URL`: 프런트에서 Solana 잔고를 바로 읽을 때 사용하는 RPC URL
+- `VITE_SOLANA_MAINNET_RPC_URL`: 프런트에서 mainnet Solana 잔고를 읽을 때 사용하는 RPC URL
 - `UNISWAP_SLIPPAGE_BPS`: Uniswap mint 최소수량 계산용 슬리피지 bps (기본 50 = 0.5%)
 - `UNISWAP_USDC_USDT_FEE_TIER`: USDC-USDT 풀 fee tier (기본 100 = 0.01%)
 - `UNISWAP_USDC_USDT_POOL_ADDRESS`: USDC-USDT 풀 주소 (Arbitrum)

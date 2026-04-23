@@ -7,9 +7,6 @@ const base = (process.env.VITE_BASE_PATH ?? "/").replace(/\/?$/, "/");
 export default defineConfig({
   base,
   plugins: [react()],
-  build: {
-    chunkSizeWarningLimit: 2000
-  },
   server: {
     proxy: {
       "/api": {

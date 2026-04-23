@@ -26,21 +26,14 @@ import {
   type Chain
 } from "viem";
 import { arbitrum, base, mainnet } from "viem/chains";
-import { AnchorProvider } from "@coral-xyz/anchor";
-import {
-  buildWhirlpoolClient,
-  PoolUtil,
-  PriceMath,
-  WhirlpoolContext,
-  getAllPositionAccountsByOwner,
-  type PositionData
-} from "@orca-so/whirlpools-sdk";
-import { Connection, Keypair, PublicKey } from "@solana/web3.js";
+import { PublicKey, Connection } from "@solana/web3.js";
+import { PoolUtil, PriceMath, WhirlpoolContext, buildWhirlpoolClient, getAllPositionAccountsByOwner } from "@orca-so/whirlpools-sdk";
+import Decimal from "decimal.js";
 import type { PositionRow } from "./intentStore";
-import { updatePositionAccountingFromSync } from "./intentStore";
+import { listPositionsByUser, updatePositionAccountingFromSync } from "./intentStore";
 import { getDb } from "./db";
-import { listUserWallets } from "./userWallets";
 import { getMarketPriceSnapshot } from "./marketPricing";
+import { listUserWallets } from "./userWallets";
 
 // ──────────────────────────────────────────────────────────────────────────────
 //  Types
@@ -52,6 +45,21 @@ export type OnchainVerifyStatus =
   | "closed_onchain"  // 온체인 잔고 0, DB는 active
   | "rpc_error"       // RPC 호출 실패 — 조회 불가
   | "unsupported";    // 프로토콜 조회 미구현
+
+export type OrcaWalletPositionSnapshot = {
+  positionMint: string;
+  whirlpool: string;
+  liquidity: string;
+  tickLowerIndex: number;
+  tickUpperIndex: number;
+  tokenMintA: string;
+  tokenMintB: string;
+  tokenSymbolA: string;
+  tokenSymbolB: string;
+  tokenDecimalsA: number;
+  tokenDecimalsB: number;
+  amountUsd: number;
+};
 
 export type PositionVerifyResult = {
   positionId: string;
@@ -169,89 +177,6 @@ function getEvmClient(chain: string): ReturnType<typeof createPublicClient> | nu
   });
 }
 
-const SOLANA_RPC_CANDIDATES = [
-  process.env.SOLANA_MAINNET_RPC_URL?.trim(),
-  process.env.VITE_SOLANA_MAINNET_RPC_URL?.trim(),
-  process.env.SOLANA_LIVE_RPC_URL?.trim(),
-  process.env.SOLANA_RPC_URL?.trim(),
-  process.env.VITE_SOLANA_RPC_URL?.trim(),
-  "https://api.mainnet-beta.solana.com",
-  "https://solana-rpc.publicnode.com",
-  "https://rpc.ankr.com/solana"
-].filter((value): value is string => typeof value === "string" && value.length > 0);
-
-function isSolanaAddress(value: string): boolean {
-  try {
-    void new PublicKey(value);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function getSolanaMintPrice(mint: string, prices: Awaited<ReturnType<typeof getMarketPriceSnapshot>>["prices"]): number {
-  const lower = mint.toLowerCase();
-  const knownPrices: Record<string, number> = {
-    So11111111111111111111111111111111111111112: prices.SOL ?? 0,
-    EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: prices.USDC ?? 1,
-    Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: prices.USDT ?? prices.USDC ?? 1,
-    mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So: prices.SOL ?? 0
-  };
-  const matched = Object.entries(knownPrices).find(([key]) => key.toLowerCase() === lower);
-  return matched ? matched[1] : prices.USDC ?? 1;
-}
-
-function getSolanaMintLabel(mint: string): string {
-  const lower = mint.toLowerCase();
-  if (lower === "so11111111111111111111111111111111111111112") return "SOL";
-  if (lower === "epjfwdd5afqqssqeqm2q1nxyzbapc8g4wegkggkzytdt1v") return "USDC";
-  if (lower === "es9vmfrzacermjfrf4h2fyd4kconky11mccce8benwnyb") return "USDT";
-  if (lower === "msolzycxhdygdzu16g5qshi5k3z3kzk7ytfqcjm7so") return "mSOL";
-  return `${mint.slice(0, 4)}…${mint.slice(-4)}`;
-}
-
-class ReadonlyWallet {
-  public readonly publicKey: PublicKey;
-
-  constructor() {
-    this.publicKey = Keypair.generate().publicKey;
-  }
-
-  async signTransaction<T>(tx: T): Promise<T> {
-    return tx;
-  }
-
-  async signAllTransactions<T>(txs: T[]): Promise<T[]> {
-    return txs;
-  }
-}
-
-async function createOrcaReadOnlyClient(): Promise<{
-  connection: Connection;
-  ctx: WhirlpoolContext;
-  client: ReturnType<typeof buildWhirlpoolClient>;
-}> {
-  const wallet = new ReadonlyWallet();
-  let lastError = "";
-  for (const rpcUrl of SOLANA_RPC_CANDIDATES) {
-    try {
-      const connection = new Connection(rpcUrl, { commitment: "confirmed" });
-      const provider = new AnchorProvider(connection, wallet, AnchorProvider.defaultOptions());
-      const ctx = WhirlpoolContext.withProvider(provider, undefined, undefined, {
-        accountResolverOptions: {
-          createWrappedSolAccountMethod: "ata",
-          allowPDAOwnerAddress: true
-        }
-      });
-      const client = buildWhirlpoolClient(ctx);
-      return { connection, ctx, client };
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-    }
-  }
-  throw new Error(lastError || "failed to initialize Orca read-only client");
-}
-
 /**
  * DB position 레코드에서 지갑 주소를 조회.
  * positions 테이블에는 wallet_address 컬럼이 없으므로:
@@ -261,44 +186,11 @@ async function createOrcaReadOnlyClient(): Promise<{
  */
 async function resolveWalletAddress(
   position: PositionRow,
-  walletAddress?: string,
-  walletAddressMap?: Record<string, string>
+  walletAddress?: string
 ): Promise<string | null> {
-  const mappedAddress = walletAddressMap?.[position.chain] ?? walletAddressMap?.[position.protocol] ?? walletAddressMap?.["*"];
-  if (mappedAddress) {
-    if (position.chain === "Solana" && isSolanaAddress(mappedAddress)) {
-      return mappedAddress;
-    }
-    if (position.chain !== "Solana" && isAddress(mappedAddress)) {
-      return getAddress(mappedAddress);
-    }
-  }
-
-  if (position.chain === "Solana") {
-    if (walletAddress && isSolanaAddress(walletAddress)) {
-      return walletAddress;
-    }
-  } else if (walletAddress && isAddress(walletAddress)) {
+  if (walletAddress && isAddress(walletAddress)) {
     return getAddress(walletAddress);
   }
-
-  const linkedWallets = await listUserWallets(position.username);
-
-  if (position.chain === "Solana") {
-    const solanaWallet = linkedWallets.find((row) => row.chain.toLowerCase() === "solana" && isSolanaAddress(row.walletAddress));
-    if (solanaWallet) {
-      return solanaWallet.walletAddress;
-    }
-  } else {
-    const evmWallet = linkedWallets.find((row) => {
-      const chain = row.chain.toLowerCase();
-      return (chain === "ethereum" || chain === "arbitrum" || chain === "base") && isAddress(row.walletAddress);
-    });
-    if (evmWallet) {
-      return getAddress(evmWallet.walletAddress);
-    }
-  }
-
   if (position.protocol === "Aave" && position.depositTxHash) {
     const db = getDb();
     const rows = await db.$queryRawUnsafe<Array<{ wallet_address: string }>>(
@@ -315,38 +207,164 @@ function calcDriftPct(dbAmount: number, onchainAmount: number): number {
   return Math.abs((onchainAmount - dbAmount) / dbAmount) * 100;
 }
 
-type OrcaOwnedPosition = {
-  source: "position" | "positionWithTokenExtensions" | "bundled";
-  address: string;
-  data: PositionData;
-};
-
-function addressToString(address: unknown): string {
-  if (typeof address === "string") return address;
-  if (address && typeof (address as { toBase58?: () => string }).toBase58 === "function") {
-    return (address as { toBase58: () => string }).toBase58();
-  }
-  return String(address ?? "");
+function normalizeKey(value?: string | null): string {
+  return (value ?? "").trim().toLowerCase();
 }
 
-function flattenOrcaPositionMap(positionMap: Awaited<ReturnType<typeof getAllPositionAccountsByOwner>>): OrcaOwnedPosition[] {
-  const rows: OrcaOwnedPosition[] = [];
-  for (const [address, data] of positionMap.positions.entries()) {
-    rows.push({ source: "position", address, data });
+function getOrcaRpcCandidates(): string[] {
+  const custom = [process.env.SOLANA_LIVE_RPC_URL, process.env.SOLANA_MAINNET_RPC_URL, process.env.VITE_SOLANA_MAINNET_RPC_URL]
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter((item) => item.length > 0);
+  const defaults = [
+    "https://api.mainnet-beta.solana.com",
+    "https://solana-mainnet.g.alchemy.com/v2/docs-demo",
+    "https://docs-demo.solana-mainnet.quiknode.pro/",
+    "https://solana-rpc.publicnode.com",
+    "https://rpc.ankr.com/solana"
+  ];
+  return [...custom, ...defaults.filter((url) => !custom.includes(url))];
+}
+
+class ReadonlyWallet {
+  public readonly publicKey: PublicKey;
+
+  constructor(publicKey: PublicKey) {
+    this.publicKey = publicKey;
   }
-  for (const [address, data] of positionMap.positionsWithTokenExtensions.entries()) {
-    rows.push({ source: "positionWithTokenExtensions", address, data });
+
+  async signTransaction<T>(tx: T): Promise<T> {
+    return tx;
   }
-  for (const bundle of positionMap.positionBundles) {
-    for (const [bundleIndex, data] of bundle.bundledPositions.entries()) {
-      rows.push({
-        source: "bundled",
-        address: `${addressToString(bundle.positionBundleAddress)}#${bundleIndex}`,
-        data
-      });
+
+  async signAllTransactions<T>(txs: T[]): Promise<T[]> {
+    return txs;
+  }
+}
+
+async function createOrcaReadClient(ownerWalletAddress: string): Promise<{
+  client: ReturnType<typeof buildWhirlpoolClient>;
+  owner: PublicKey;
+}> {
+  const owner = new PublicKey(ownerWalletAddress);
+  const wallet = new ReadonlyWallet(owner);
+  let lastError = "";
+  for (const rpcUrl of getOrcaRpcCandidates()) {
+    try {
+      const connection = new Connection(rpcUrl, { commitment: "confirmed" });
+      const ctx = WhirlpoolContext.from(connection, wallet as never);
+      const client = buildWhirlpoolClient(ctx);
+      return { client, owner };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
     }
   }
-  return rows;
+  throw new Error(lastError || "failed to initialize Orca read client");
+}
+
+function mintPriceUsd(mint: string, prices: Awaited<ReturnType<typeof getMarketPriceSnapshot>>["prices"]): number {
+  const key = mint.toLowerCase();
+  const solMint = "so11111111111111111111111111111111111111112";
+  const usdcMint = "epjfwdd5aufqssqem2qn1xzybapc8g4weggkzwyt1v";
+  const usdtMint = "es9vmfrzacermjfrf4h2fyd4kcornk11mccce8benwnyb";
+  const msolMint = "msolzychxdygdzu16g5qsh3i5k3z3kzk7ytfqcjm7so";
+  if (key === usdcMint || key === usdtMint) return 1;
+  if (key === solMint || key === msolMint) return prices.SOL ?? 0;
+  return 0;
+}
+
+function estimateOrcaPositionUsd(
+  liquidity: unknown,
+  whirlpoolData: { sqrtPrice: unknown; tickCurrentIndex: number },
+  tickLowerIndex: number,
+  tickUpperIndex: number,
+  tokenMintA: string,
+  tokenMintB: string,
+  tokenDecimalsA: number,
+  tokenDecimalsB: number,
+  prices: Awaited<ReturnType<typeof getMarketPriceSnapshot>>["prices"]
+): number {
+  try {
+    const tokenAmounts = PoolUtil.getTokenAmountsFromLiquidity(
+      liquidity as never,
+      whirlpoolData.sqrtPrice as never,
+      PriceMath.tickIndexToSqrtPriceX64(tickLowerIndex),
+      PriceMath.tickIndexToSqrtPriceX64(tickUpperIndex),
+      false
+    );
+    const amountA = new Decimal(tokenAmounts.tokenA.toString()).div(new Decimal(10).pow(tokenDecimalsA));
+    const amountB = new Decimal(tokenAmounts.tokenB.toString()).div(new Decimal(10).pow(tokenDecimalsB));
+    const valueA = amountA.mul(mintPriceUsd(tokenMintA, prices));
+    const valueB = amountB.mul(mintPriceUsd(tokenMintB, prices));
+    return Number(valueA.plus(valueB).toFixed(2));
+  } catch {
+    return 0;
+  }
+}
+
+export async function scanOrcaWalletPositions(walletAddress: string): Promise<OrcaWalletPositionSnapshot[]> {
+  const { client, owner } = await createOrcaReadClient(walletAddress);
+  const positionMap = await getAllPositionAccountsByOwner({
+    ctx: client.getContext(),
+    owner,
+    includesPositions: true,
+    includesPositionsWithTokenExtensions: true,
+    includesBundledPositions: false
+  });
+  const priceSnapshot = await getMarketPriceSnapshot();
+  const merged = new Map<string, { position: { whirlpool: PublicKey; positionMint: PublicKey; liquidity: unknown; tickLowerIndex: number; tickUpperIndex: number }; withExtension?: boolean }>();
+
+  for (const [address, position] of positionMap.positions.entries()) {
+    merged.set(address, { position });
+  }
+  for (const [address, position] of positionMap.positionsWithTokenExtensions.entries()) {
+    merged.set(address, { position, withExtension: true });
+  }
+
+  const snapshots: OrcaWalletPositionSnapshot[] = [];
+  for (const [address, entry] of merged.entries()) {
+    try {
+      const pool = await client.getPool(entry.position.whirlpool);
+      const poolData = pool.getData();
+      const tokenAInfo = pool.getTokenAInfo();
+      const tokenBInfo = pool.getTokenBInfo();
+      const amountUsd = estimateOrcaPositionUsd(
+        entry.position.liquidity,
+        poolData,
+        entry.position.tickLowerIndex,
+        entry.position.tickUpperIndex,
+        tokenAInfo.mint.toBase58(),
+        tokenBInfo.mint.toBase58(),
+        tokenAInfo.decimals,
+        tokenBInfo.decimals,
+        priceSnapshot.prices
+      );
+      snapshots.push({
+        positionMint: entry.position.positionMint.toBase58(),
+        whirlpool: entry.position.whirlpool.toBase58(),
+        liquidity: String(entry.position.liquidity),
+        tickLowerIndex: entry.position.tickLowerIndex,
+        tickUpperIndex: entry.position.tickUpperIndex,
+        tokenMintA: tokenAInfo.mint.toBase58(),
+        tokenMintB: tokenBInfo.mint.toBase58(),
+        tokenSymbolA: tokenAInfo.symbol ?? "tokenA",
+        tokenSymbolB: tokenBInfo.symbol ?? "tokenB",
+        tokenDecimalsA: tokenAInfo.decimals,
+        tokenDecimalsB: tokenBInfo.decimals,
+        amountUsd
+      });
+    } catch (error) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          msg: "orca_position_scan_failed",
+          walletAddress,
+          positionAddress: address,
+          error: error instanceof Error ? error.message : String(error)
+        })
+      );
+    }
+  }
+  return snapshots;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -446,251 +464,6 @@ async function verifyAavePosition(
 }
 
 /**
- * Orca Whirlpool 포지션 온체인 검증.
- * walletAddress 의 SOL 지갑을 기준으로 owner 가 보유한 Whirlpool position accounts 를 조회한다.
- */
-async function verifyOrcaPosition(
-  position: PositionRow,
-  walletAddress: string
-): Promise<Omit<PositionVerifyResult, "positionId" | "protocol" | "chain" | "dbAmountUsd" | "verifiedAt" | "walletAddress">> {
-  if (!isSolanaAddress(walletAddress)) {
-    return {
-      onchainAmountUsd: null,
-      onchainRaw: null,
-      status: "rpc_error",
-      detail: "Solana 지갑 주소가 필요합니다.",
-      driftPct: null
-    };
-  }
-
-  let liveClient: Awaited<ReturnType<typeof createOrcaReadOnlyClient>>;
-  try {
-    liveClient = await createOrcaReadOnlyClient();
-  } catch (error) {
-    return {
-      onchainAmountUsd: null,
-      onchainRaw: null,
-      status: "rpc_error",
-      detail: `Orca RPC 초기화 실패: ${error instanceof Error ? error.message : String(error)}`,
-      driftPct: null
-    };
-  }
-
-  try {
-    const owner = new PublicKey(walletAddress);
-    const positionMap = await getAllPositionAccountsByOwner({
-      ctx: liveClient.ctx,
-      owner,
-      includesPositions: true,
-      includesPositionsWithTokenExtensions: true,
-      includesBundledPositions: true
-    });
-    const ownedPositions = flattenOrcaPositionMap(positionMap);
-    if (ownedPositions.length === 0) {
-      return {
-        onchainAmountUsd: 0,
-        onchainRaw: null,
-        status: "closed_onchain",
-        detail: "Orca Whirlpool 포지션이 현재 지갑에서 발견되지 않았습니다.",
-        driftPct: 100
-      };
-    }
-
-    const hintedPool = position.poolAddress?.trim().toLowerCase() ?? "";
-    const hintedPositionToken = position.positionToken?.trim().toLowerCase() ?? "";
-    const hintedProtocolPositionId = position.protocolPositionId?.trim().toLowerCase() ?? "";
-    const exactMatch = ownedPositions.find((item) => {
-      const whirlpool = item.data.whirlpool.toBase58().toLowerCase();
-      const positionMint = item.data.positionMint.toBase58().toLowerCase();
-      const accountAddress = item.address.toLowerCase();
-      return (
-        (hintedPool.length > 0 && (hintedPool === whirlpool || hintedPool === accountAddress)) ||
-        (hintedPositionToken.length > 0 && (hintedPositionToken === positionMint || hintedPositionToken === accountAddress)) ||
-        (hintedProtocolPositionId.length > 0 && (hintedProtocolPositionId === positionMint || hintedProtocolPositionId === accountAddress))
-      );
-    }) ?? (ownedPositions.length === 1 ? ownedPositions[0] : null);
-
-    if (!exactMatch) {
-      return {
-        onchainAmountUsd: null,
-        onchainRaw: null,
-        status: "unsupported",
-        detail: `Orca 포지션은 조회했지만 DB 행과 정확히 매칭되지 않았습니다. 지갑에는 ${ownedPositions.length}개 포지션이 있습니다.`,
-        driftPct: null
-      };
-    }
-
-    const pool = await liveClient.client.getPool(exactMatch.data.whirlpool);
-    const poolData = pool.getData();
-    const tokenAInfo = pool.getTokenAInfo();
-    const tokenBInfo = pool.getTokenBInfo();
-    const lowerSqrtPrice = PriceMath.tickIndexToSqrtPriceX64(exactMatch.data.tickLowerIndex);
-    const upperSqrtPrice = PriceMath.tickIndexToSqrtPriceX64(exactMatch.data.tickUpperIndex);
-    const tokenAmounts = PoolUtil.getTokenAmountsFromLiquidity(
-      exactMatch.data.liquidity,
-      poolData.sqrtPrice,
-      lowerSqrtPrice,
-      upperSqrtPrice,
-      false
-    );
-    const priceSnapshot = await getMarketPriceSnapshot();
-    const amountA = Number(formatUnits(BigInt(tokenAmounts.tokenA.toString()), tokenAInfo.decimals));
-    const amountB = Number(formatUnits(BigInt(tokenAmounts.tokenB.toString()), tokenBInfo.decimals));
-    const onchainAmountUsd = Number(
-      (amountA * getSolanaMintPrice(tokenAInfo.mint.toBase58(), priceSnapshot.prices) + amountB * getSolanaMintPrice(tokenBInfo.mint.toBase58(), priceSnapshot.prices)).toFixed(2)
-    );
-    const driftPct = calcDriftPct(position.amountUsd, onchainAmountUsd);
-    const liquidityRaw = exactMatch.data.liquidity.toString();
-
-    if (exactMatch.data.liquidity.isZero()) {
-      return {
-        onchainAmountUsd: 0,
-        onchainRaw: liquidityRaw,
-        status: "closed_onchain",
-        detail: `Orca 포지션은 발견됐지만 liquidity 가 0 입니다. Pool=${exactMatch.data.whirlpool.toBase58()}`,
-        driftPct: 100
-      };
-    }
-
-    if (driftPct > 5) {
-      return {
-        onchainAmountUsd,
-        onchainRaw: liquidityRaw,
-        status: "drift",
-        detail: `Orca 포지션 확인 완료: ${exactMatch.data.whirlpool.toBase58()} · 추정 $${onchainAmountUsd.toFixed(2)} · ${driftPct.toFixed(1)}% 차이`,
-        driftPct
-      };
-    }
-
-    return {
-      onchainAmountUsd,
-      onchainRaw: liquidityRaw,
-      status: "verified",
-      detail: `Orca 포지션 확인 완료: ${exactMatch.data.whirlpool.toBase58()} · 추정 $${onchainAmountUsd.toFixed(2)} · ${driftPct.toFixed(2)}% 차이`,
-      driftPct
-    };
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    return {
-      onchainAmountUsd: null,
-      onchainRaw: null,
-      status: "rpc_error",
-      detail: `Orca/Solana RPC 오류: ${msg}`,
-      driftPct: null
-    };
-  }
-}
-
-export async function listOrcaWalletPositions(
-  username: string,
-  walletAddress: string
-): Promise<Array<PositionRow & { verify: PositionVerifyResult | null }>> {
-  if (!isSolanaAddress(walletAddress)) {
-    return [];
-  }
-
-  let liveClient: Awaited<ReturnType<typeof createOrcaReadOnlyClient>>;
-  try {
-    liveClient = await createOrcaReadOnlyClient();
-  } catch {
-    return [];
-  }
-
-  const now = new Date().toISOString();
-  try {
-    const owner = new PublicKey(walletAddress);
-    const positionMap = await getAllPositionAccountsByOwner({
-      ctx: liveClient.ctx,
-      owner,
-      includesPositions: true,
-      includesPositionsWithTokenExtensions: true,
-      includesBundledPositions: true
-    });
-    const priceSnapshot = await getMarketPriceSnapshot();
-    const ownedPositions = flattenOrcaPositionMap(positionMap);
-    const rows = await Promise.all(
-      ownedPositions.map(async (item) => {
-        const pool = await liveClient.client.getPool(item.data.whirlpool);
-        const tokenAInfo = pool.getTokenAInfo();
-        const tokenBInfo = pool.getTokenBInfo();
-        const lowerSqrtPrice = PriceMath.tickIndexToSqrtPriceX64(item.data.tickLowerIndex);
-        const upperSqrtPrice = PriceMath.tickIndexToSqrtPriceX64(item.data.tickUpperIndex);
-        const tokenAmounts = PoolUtil.getTokenAmountsFromLiquidity(
-          item.data.liquidity,
-          pool.getData().sqrtPrice,
-          lowerSqrtPrice,
-          upperSqrtPrice,
-          false
-        );
-        const amountA = Number(formatUnits(BigInt(tokenAmounts.tokenA.toString()), tokenAInfo.decimals));
-        const amountB = Number(formatUnits(BigInt(tokenAmounts.tokenB.toString()), tokenBInfo.decimals));
-        const onchainAmountUsd = Number(
-          (
-            amountA * getSolanaMintPrice(tokenAInfo.mint.toBase58(), priceSnapshot.prices) +
-            amountB * getSolanaMintPrice(tokenBInfo.mint.toBase58(), priceSnapshot.prices)
-          ).toFixed(2)
-        );
-        const liquidityRaw = item.data.liquidity.toString();
-        const verify: PositionVerifyResult = {
-          positionId: `orca_raw_${item.address}`,
-          protocol: "Orca",
-          chain: "Solana",
-          dbAmountUsd: onchainAmountUsd,
-          onchainAmountUsd,
-          onchainRaw: liquidityRaw,
-          status: item.data.liquidity.isZero() ? "closed_onchain" : "verified",
-          detail: item.data.liquidity.isZero()
-            ? `Orca 포지션 ${item.address}의 liquidity 가 0 입니다.`
-            : `Orca 포지션 ${item.address} 확인 완료 · ${getSolanaMintLabel(tokenAInfo.mint.toBase58())}/${getSolanaMintLabel(tokenBInfo.mint.toBase58())}`,
-          driftPct: 0,
-          verifiedAt: now,
-          walletAddress
-        };
-        return {
-          id: `orca_raw_${item.address}`,
-          executionId: `orca_raw_${item.address}`,
-          username,
-          protocol: "Orca",
-          chain: "Solana",
-          asset: `${getSolanaMintLabel(tokenAInfo.mint.toBase58())}+${getSolanaMintLabel(tokenBInfo.mint.toBase58())}`,
-          poolAddress: item.data.whirlpool.toBase58(),
-          positionToken: item.data.positionMint.toBase58(),
-          positionRaw: liquidityRaw,
-          amountUsd: onchainAmountUsd,
-          depositTxHash: item.address,
-          lastSyncedAt: now,
-          status: "active" as const,
-          openedAt: now,
-          closedAt: null,
-          onchainDataJson: JSON.stringify({
-            source: "orca-wallet",
-            positionAddress: item.address,
-            whirlpool: item.data.whirlpool.toBase58(),
-            positionMint: item.data.positionMint.toBase58(),
-            liquidity: liquidityRaw,
-            tickLowerIndex: item.data.tickLowerIndex,
-            tickUpperIndex: item.data.tickUpperIndex
-          }),
-          principalUsd: onchainAmountUsd,
-          currentValueUsd: onchainAmountUsd,
-          unrealizedPnlUsd: 0,
-          realizedPnlUsd: null,
-          feesPaidUsd: null,
-          netApy: null,
-          entryPrice: null,
-          expectedApr: null,
-          protocolPositionId: item.address,
-          verify
-        };
-      })
-    );
-    return rows;
-  } catch {
-    return [];
-  }
-}
-
-/**
  * 현재 미구현 프로토콜에 대한 unsupported 결과 반환.
  */
 function unsupportedResult(
@@ -699,7 +472,7 @@ function unsupportedResult(
 ): Omit<PositionVerifyResult, "positionId" | "protocol" | "chain" | "dbAmountUsd" | "verifiedAt" | "walletAddress"> {
   const roadmap: Record<string, string> = {
     Uniswap: "NonfungiblePositionManager.positions(tokenId) 조회 구현 예정",
-    Orca: "Whirlpools SDK position PDA 조회 연결됨",
+    Orca: "Whirlpools SDK position PDA 조회 및 지갑 스캔 매칭 구현 완료",
     Aerodrome: "gauge/LP token balance 조회 구현 예정",
     Raydium: "LP/position account 조회 구현 예정",
     Curve: "LP token balanceOf 조회 구현 예정"
@@ -712,6 +485,81 @@ function unsupportedResult(
   };
 }
 
+function matchesOrcaSnapshot(position: PositionRow, snapshot: OrcaWalletPositionSnapshot): boolean {
+  const positionKeys = [position.poolAddress, position.positionToken, position.protocolPositionId].map(normalizeKey).filter(Boolean);
+  const snapshotKeys = [snapshot.whirlpool, snapshot.positionMint].map(normalizeKey);
+  return positionKeys.some((key) => snapshotKeys.includes(key));
+}
+
+async function verifyOrcaPosition(
+  position: PositionRow,
+  walletAddress: string
+): Promise<Omit<PositionVerifyResult, "positionId" | "protocol" | "chain" | "dbAmountUsd" | "verifiedAt" | "walletAddress">> {
+  try {
+    const snapshots = await scanOrcaWalletPositions(walletAddress);
+    const matched = snapshots.find((snapshot) => matchesOrcaSnapshot(position, snapshot));
+
+    if (!matched) {
+      if (snapshots.length === 0) {
+        return {
+          onchainAmountUsd: null,
+          onchainRaw: null,
+          status: "closed_onchain",
+          detail: "Orca Whirlpool 포지션이 현재 지갑에서 발견되지 않았습니다.",
+          driftPct: null
+        };
+      }
+      return {
+        onchainAmountUsd: null,
+        onchainRaw: null,
+        status: "unsupported",
+        detail: `Orca 포지션은 지갑에서 스캔했지만 DB 행과 정확히 매칭되지 않았습니다. 지갑에 ${snapshots.length}개 포지션이 있습니다.`,
+        driftPct: null
+      };
+    }
+
+    const onchainAmountUsd = matched.amountUsd;
+    const driftPct = calcDriftPct(position.amountUsd, onchainAmountUsd);
+
+    if (onchainAmountUsd === 0 && position.amountUsd > 0.01) {
+      return {
+        onchainAmountUsd,
+        onchainRaw: matched.liquidity,
+        status: "closed_onchain",
+        detail: `온체인 Orca 포지션 잔고 0 — DB에는 $${position.amountUsd.toFixed(2)} 기록. 외부에서 출금됐을 수 있습니다.`,
+        driftPct: 100
+      };
+    }
+
+    if (driftPct > 5) {
+      return {
+        onchainAmountUsd,
+        onchainRaw: matched.liquidity,
+        status: "drift",
+        detail: `DB $${position.amountUsd.toFixed(2)} vs 온체인 $${onchainAmountUsd.toFixed(2)} (${driftPct.toFixed(1)}% 차이). Orca 포지션이 일부 이동됐을 수 있습니다.`,
+        driftPct
+      };
+    }
+
+    return {
+      onchainAmountUsd,
+      onchainRaw: matched.liquidity,
+      status: "verified",
+      detail: `Orca 지갑 스캔 확인 완료: position ${matched.positionMint} / whirlpool ${matched.whirlpool}`,
+      driftPct
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      onchainAmountUsd: null,
+      onchainRaw: null,
+      status: "rpc_error",
+      detail: `Orca/${position.chain} RPC 오류: ${msg}`,
+      driftPct: null
+    };
+  }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 //  Public API
 // ──────────────────────────────────────────────────────────────────────────────
@@ -722,11 +570,10 @@ function unsupportedResult(
  */
 export async function verifyPosition(
   position: PositionRow,
-  walletAddress?: string,
-  walletAddressMap?: Record<string, string>
+  walletAddress?: string
 ): Promise<PositionVerifyResult> {
   const verifiedAt = new Date().toISOString();
-  const resolvedWallet = await resolveWalletAddress(position, walletAddress, walletAddressMap);
+  const resolvedWallet = await resolveWalletAddress(position, walletAddress);
 
   const base_: Pick<PositionVerifyResult, "positionId" | "protocol" | "chain" | "dbAmountUsd" | "verifiedAt" | "walletAddress"> = {
     positionId: position.id,
@@ -782,7 +629,7 @@ export async function verifyAllPositions(
 ): Promise<PositionVerifyResult[]> {
   const results = await Promise.allSettled(
     positions.map((pos) =>
-      verifyPosition(pos, walletAddressMap?.[pos.id] ?? walletAddressMap?.["*"], walletAddressMap)
+      verifyPosition(pos, walletAddressMap?.[pos.id] ?? walletAddressMap?.["*"])
     )
   );
 
@@ -863,7 +710,6 @@ export function isPositionStale(
 export async function enrichPositionsWithOnchain(
   positions: PositionRow[],
   walletAddress?: string,
-  walletAddressMap?: Record<string, string>,
   forceRefresh = false
 ): Promise<Array<PositionRow & { verify: PositionVerifyResult | null }>> {
   return Promise.all(
@@ -877,8 +723,110 @@ export async function enrichPositionsWithOnchain(
           // 파싱 실패 시 재조회
         }
       }
-      const verify = await verifyPosition(pos, walletAddress, walletAddressMap);
+      const verify = await verifyPosition(pos, walletAddress);
       return { ...pos, verify };
     })
   );
+}
+
+function buildWalletAddressMap(
+  wallets: Array<{ walletAddress: string; chain: string }>,
+  positions: PositionRow[]
+): Record<string, string> {
+  const byChain = new Map<string, string>();
+  for (const wallet of wallets) {
+    const chainKey = wallet.chain.toLowerCase();
+    if (!byChain.has(chainKey)) {
+      byChain.set(chainKey, wallet.walletAddress);
+    }
+  }
+  const fallback = wallets[0]?.walletAddress ?? "";
+  const map: Record<string, string> = {};
+  for (const pos of positions) {
+    const chainKey = pos.chain.toLowerCase();
+    map[pos.id] = byChain.get(chainKey) ?? (pos.protocol === "Orca" ? byChain.get("solana") ?? fallback : fallback);
+  }
+  if (fallback) {
+    map["*"] = fallback;
+  }
+  return map;
+}
+
+function buildSyntheticOrcaPositionRow(username: string, snapshot: OrcaWalletPositionSnapshot): PositionRow {
+  const now = new Date().toISOString();
+  return {
+    id: `orca_scan_${snapshot.positionMint}`,
+    executionId: `orca_scan_${snapshot.positionMint}`,
+    username,
+    protocol: "Orca",
+    chain: "Solana",
+    asset: `${snapshot.tokenSymbolA}/${snapshot.tokenSymbolB}`,
+    poolAddress: snapshot.whirlpool,
+    positionToken: snapshot.positionMint,
+    positionRaw: snapshot.liquidity,
+    amountUsd: snapshot.amountUsd,
+    depositTxHash: `orca_scan_${snapshot.positionMint}`,
+    lastSyncedAt: now,
+    status: "active",
+    openedAt: now,
+    closedAt: null,
+    onchainDataJson: null,
+    principalUsd: snapshot.amountUsd,
+    currentValueUsd: snapshot.amountUsd,
+    unrealizedPnlUsd: 0,
+    realizedPnlUsd: null,
+    feesPaidUsd: null,
+    netApy: null,
+    entryPrice: null,
+    expectedApr: null,
+    protocolPositionId: snapshot.positionMint
+  };
+}
+
+function attachSource<T extends PositionRow>(position: T, source: "db" | "wallet_scan"): T & { source: "db" | "wallet_scan" } {
+  return { ...position, source };
+}
+
+export async function listOnchainPositionsForUser(
+  username: string
+): Promise<Array<PositionRow & { verify: PositionVerifyResult | null; source: "db" | "wallet_scan" }>> {
+  const positions = await listPositionsByUser(username);
+  const wallets = await listUserWallets(username);
+  const walletMap = buildWalletAddressMap(wallets, positions);
+  const verified = await verifyAllPositions(positions, walletMap);
+
+  const rows: Array<PositionRow & { verify: PositionVerifyResult | null; source: "db" | "wallet_scan" }> = verified.map((verify, index) => ({
+    ...positions[index],
+    verify,
+    source: "db"
+  }));
+
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (row.protocol !== "Orca") continue;
+    seen.add(normalizeKey(row.poolAddress));
+    seen.add(normalizeKey(row.positionToken));
+    seen.add(normalizeKey(row.protocolPositionId));
+  }
+
+  const solanaWallets = [...new Set(wallets.filter((wallet) => wallet.chain.toLowerCase() === "solana").map((wallet) => wallet.walletAddress))];
+  for (const walletAddress of solanaWallets) {
+    const snapshots = await scanOrcaWalletPositions(walletAddress);
+    for (const snapshot of snapshots) {
+      const keys = [snapshot.whirlpool, snapshot.positionMint].map(normalizeKey);
+      if (keys.some((key) => key && seen.has(key))) {
+        continue;
+      }
+      const synthetic = buildSyntheticOrcaPositionRow(username, snapshot);
+      const verify = await verifyOrcaPosition(synthetic, walletAddress);
+      rows.push({
+        ...attachSource(synthetic, "wallet_scan"),
+        verify
+      });
+      seen.add(normalizeKey(snapshot.whirlpool));
+      seen.add(normalizeKey(snapshot.positionMint));
+    }
+  }
+
+  return rows.sort((left, right) => new Date(right.openedAt).getTime() - new Date(left.openedAt).getTime());
 }

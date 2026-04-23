@@ -313,6 +313,7 @@ export type OnchainPositionPayload = {
   entryPrice: number | null;
   expectedApr: number | null;
   protocolPositionId: string | null;
+  source?: "db" | "wallet_scan";
   verify?: {
     status: "verified" | "drift" | "closed_onchain" | "rpc_error" | "unsupported";
     onchainAmountUsd?: number | null;
@@ -1373,21 +1374,6 @@ export async function listOrcaWalletPositions(
   return data.positions ?? [];
 }
 
-export type PortfolioWithdrawLine = {
-  id: string;
-  amountUsd: number;
-  createdAt: string;
-};
-
-export async function listWithdrawalLedger(init: Pick<RequestInit, "signal"> = {}): Promise<PortfolioWithdrawLine[]> {
-  const response = await authedFetch("/api/portfolio/withdrawals", init);
-  if (!response.ok) {
-    throw new Error("출금 내역 조회 실패");
-  }
-  const data = (await response.json()) as { withdrawals?: PortfolioWithdrawLine[] };
-  return data.withdrawals ?? [];
-}
-
 export async function resetPortfolioLedgerRemote(): Promise<{ deletedPositions: number; deletedWithdrawals: number }> {
   const response = await authedFetch("/api/portfolio/reset-ledger", {
     method: "POST"
@@ -1399,7 +1385,7 @@ export async function resetPortfolioLedgerRemote(): Promise<{ deletedPositions: 
       data = JSON.parse(text) as typeof data;
     }
   } catch {
-    /* 비 JSON */
+    /* non-JSON response */
   }
   if (!response.ok) {
     let msg = data.message;
@@ -1415,6 +1401,21 @@ export async function resetPortfolioLedgerRemote(): Promise<{ deletedPositions: 
     deletedPositions: typeof data.deletedPositions === "number" ? data.deletedPositions : 0,
     deletedWithdrawals: typeof data.deletedWithdrawals === "number" ? data.deletedWithdrawals : 0
   };
+}
+
+export type PortfolioWithdrawLine = {
+  id: string;
+  amountUsd: number;
+  createdAt: string;
+};
+
+export async function listWithdrawalLedger(init: Pick<RequestInit, "signal"> = {}): Promise<PortfolioWithdrawLine[]> {
+  const response = await authedFetch("/api/portfolio/withdrawals", init);
+  if (!response.ok) {
+    throw new Error("출금 내역 조회 실패");
+  }
+  const data = (await response.json()) as { withdrawals?: PortfolioWithdrawLine[] };
+  return data.withdrawals ?? [];
 }
 
 export async function createDepositPositionRemote(payload: {
