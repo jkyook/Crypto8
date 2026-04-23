@@ -32,7 +32,7 @@ import type { ProtocolExecutionReadiness } from "./adapters/types";
 import { listLiveAccountAssets } from "./liveAccountAssets";
 import { resolveOrcaPoolCandidatesForAction } from "./orcaPools";
 import { listPositionsByUser } from "./intentStore";
-import { enrichPositionsWithOnchain, listOrcaWalletPositions } from "./positionVerifier";
+import { enrichPositionsWithOnchain, listOrcaWalletPositions, scanUniswapWalletPositions } from "./positionVerifier";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
@@ -1005,6 +1005,59 @@ app.get("/api/public/positions", async (req, res) => {
               detail: error instanceof Error ? error.message : "Aave 공개 조회 실패"
             }
           });
+        }
+      }
+    }
+    // Uniswap v3 — EVM 지갑에서 NFT LP 포지션 스캔
+    if (evmWalletAddress) {
+      for (const chain of ["Arbitrum", "Base", "Ethereum"] as const) {
+        try {
+          const uniSnapshots = await scanUniswapWalletPositions(chain, evmWalletAddress);
+          const now = new Date().toISOString();
+          for (const snap of uniSnapshots) {
+            rows.push({
+              id:              `public_uni_${chain}_${snap.tokenId}`,
+              executionId:     `public_uni_${chain}_${snap.tokenId}`,
+              username:        "guest",
+              protocol:        "Uniswap",
+              chain,
+              asset:           snap.symbol,
+              poolAddress:     null,
+              positionToken:   snap.tokenId,
+              positionRaw:     snap.liquidity,
+              amountUsd:       snap.amountUsd,
+              depositTxHash:   `public:uni:${chain}:${snap.tokenId}`,
+              lastSyncedAt:    now,
+              status:          "active" as const,
+              openedAt:        now,
+              closedAt:        null,
+              onchainDataJson: JSON.stringify({ source: "public-uniswap", chain, tokenId: snap.tokenId }),
+              principalUsd:    snap.amountUsd,
+              currentValueUsd: snap.amountUsd,
+              unrealizedPnlUsd: 0,
+              realizedPnlUsd:  null,
+              feesPaidUsd:     null,
+              netApy:          null,
+              entryPrice:      null,
+              expectedApr:     null,
+              protocolPositionId: snap.tokenId,
+              verify: {
+                status:           "verified",
+                onchainAmountUsd: snap.amountUsd,
+                onchainRaw:       snap.liquidity,
+                driftPct:         0,
+                verifiedAt:       now,
+                detail:           `Uniswap v3 ${chain} tokenId ${snap.tokenId} · ${snap.symbol}`
+              }
+            });
+          }
+        } catch (error) {
+          // 스캔 실패 시 해당 체인만 조용히 스킵 (전체 응답 중단 없음)
+          console.warn(JSON.stringify({
+            level: "warn", msg: "uniswap_public_scan_failed",
+            chain, walletAddress: evmWalletAddress,
+            error: error instanceof Error ? error.message : String(error)
+          }));
         }
       }
     }

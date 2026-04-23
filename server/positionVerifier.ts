@@ -185,6 +185,251 @@ const aavePoolAbi = [
 ] as const;
 
 // ──────────────────────────────────────────────────────────────────────────────
+//  Uniswap v3 설정 및 ABI
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** 체인별 NonfungiblePositionManager 주소 */
+const UNISWAP_NPM_ADDRESS: Record<string, Address> = {
+  Arbitrum:  "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
+  Ethereum:  "0xC36442b4a4522E871399CD717aBDD847Ab11FE88",
+  Base:      "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1",
+};
+
+/** 체인별 Uniswap v3 Factory 주소 */
+const UNISWAP_FACTORY_ADDRESS: Record<string, Address> = {
+  Arbitrum:  "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+  Ethereum:  "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+  Base:      "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
+};
+
+/** ERC20 민트 주소 → 가격 심볼 매핑 (소문자) */
+const TOKEN_PRICE_SYMBOL: Record<string, "USDC" | "USDT" | "ETH"> = {
+  // USDC
+  "0xaf88d065e77c8cc2239327c5edb3a432268e5831": "USDC", // Arbitrum
+  "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "USDC", // Base
+  "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "USDC", // Ethereum
+  // USDT
+  "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9": "USDT", // Arbitrum
+  "0xdac17f958d2ee523a2206206994597c13d831ec7": "USDT", // Ethereum
+  // WETH
+  "0x82af49447d8a07e3bd95bd0d56f35241523fbab1": "ETH",  // Arbitrum WETH
+  "0x4200000000000000000000000000000000000006": "ETH",  // Base WETH
+  "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": "ETH",  // Ethereum WETH
+};
+
+/** ERC20 민트 주소 → decimals 매핑 (소문자) */
+const TOKEN_DECIMALS: Record<string, number> = {
+  "0xaf88d065e77c8cc2239327c5edb3a432268e5831": 6,  // USDC Arb
+  "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": 6,  // USDC Base
+  "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": 6,  // USDC Eth
+  "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9": 6,  // USDT Arb
+  "0xdac17f958d2ee523a2206206994597c13d831ec7": 6,  // USDT Eth
+  "0x82af49447d8a07e3bd95bd0d56f35241523fbab1": 18, // WETH Arb
+  "0x4200000000000000000000000000000000000006": 18, // WETH Base
+  "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": 18, // WETH Eth
+};
+
+const npmAbi = [
+  { type: "function", name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "owner", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "tokenOfOwnerByIndex",
+    stateMutability: "view",
+    inputs: [{ name: "owner", type: "address" }, { name: "index", type: "uint256" }],
+    outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "positions",
+    stateMutability: "view",
+    inputs: [{ name: "tokenId", type: "uint256" }],
+    outputs: [
+      { name: "nonce",                    type: "uint96"  },
+      { name: "operator",                 type: "address" },
+      { name: "token0",                   type: "address" },
+      { name: "token1",                   type: "address" },
+      { name: "fee",                      type: "uint24"  },
+      { name: "tickLower",                type: "int24"   },
+      { name: "tickUpper",                type: "int24"   },
+      { name: "liquidity",                type: "uint128" },
+      { name: "feeGrowthInside0LastX128", type: "uint256" },
+      { name: "feeGrowthInside1LastX128", type: "uint256" },
+      { name: "tokensOwed0",              type: "uint128" },
+      { name: "tokensOwed1",              type: "uint128" }
+    ] }
+] as const;
+
+const factoryAbi = [
+  { type: "function", name: "getPool",
+    stateMutability: "view",
+    inputs: [
+      { name: "tokenA", type: "address" },
+      { name: "tokenB", type: "address" },
+      { name: "fee",    type: "uint24"  }
+    ],
+    outputs: [{ name: "pool", type: "address" }] }
+] as const;
+
+const poolSlot0Abi = [
+  { type: "function", name: "slot0",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "sqrtPriceX96",               type: "uint160" },
+      { name: "tick",                        type: "int24"   },
+      { name: "observationIndex",            type: "uint16"  },
+      { name: "observationCardinality",      type: "uint16"  },
+      { name: "observationCardinalityNext",  type: "uint16"  },
+      { name: "feeProtocol",                 type: "uint8"   },
+      { name: "unlocked",                    type: "bool"    }
+    ] }
+] as const;
+
+export type UniswapWalletPositionSnapshot = {
+  tokenId:   string;
+  token0:    string;
+  token1:    string;
+  fee:       number;
+  tickLower: number;
+  tickUpper: number;
+  liquidity: string;
+  amountUsd: number;
+  symbol:    string;   // e.g. "USDC/WETH"
+  chain:     string;
+};
+
+/**
+ * Uniswap v3 tick → sqrtPrice 변환 (JS float 근사).
+ * sqrt(1.0001^tick) = 1.0001^(tick/2)
+ */
+function tickToSqrtPrice(tick: number): number {
+  return Math.pow(1.0001, tick / 2);
+}
+
+/**
+ * Uniswap v3 LP 포지션의 토큰 수량 추정 (raw, decimals 미적용).
+ * 반환: [amount0Raw, amount1Raw]
+ */
+function calcUniswapTokenAmounts(
+  liquidity: bigint,
+  sqrtPriceX96: bigint,
+  tickCurrent: number,
+  tickLower: number,
+  tickUpper: number
+): [number, number] {
+  if (liquidity === 0n) return [0, 0];
+  const L = Number(liquidity);
+  const sqrtPrice  = Number(sqrtPriceX96) / 2 ** 96;
+  const sqrtLower  = tickToSqrtPrice(tickLower);
+  const sqrtUpper  = tickToSqrtPrice(tickUpper);
+
+  if (tickCurrent < tickLower) {
+    const a0 = L * (1 / sqrtLower - 1 / sqrtUpper);
+    return [a0, 0];
+  }
+  if (tickCurrent >= tickUpper) {
+    const a1 = L * (sqrtUpper - sqrtLower);
+    return [0, a1];
+  }
+  const a0 = L * (1 / sqrtPrice - 1 / sqrtUpper);
+  const a1 = L * (sqrtPrice - sqrtLower);
+  return [a0, a1];
+}
+
+/**
+ * EVM 지갑의 Uniswap v3 NFT LP 포지션을 스캔해 스냅샷 배열로 반환.
+ */
+export async function scanUniswapWalletPositions(
+  chain: string,
+  walletAddress: string
+): Promise<UniswapWalletPositionSnapshot[]> {
+  const npmAddr     = UNISWAP_NPM_ADDRESS[chain];
+  const factoryAddr = UNISWAP_FACTORY_ADDRESS[chain];
+  const client      = getEvmClient(chain);
+  if (!npmAddr || !factoryAddr || !client) return [];
+
+  const owner = getAddress(walletAddress) as Address;
+  const balance = await client.readContract({
+    address: npmAddr, abi: npmAbi,
+    functionName: "balanceOf", args: [owner]
+  });
+  if (balance === 0n) return [];
+
+  const priceSnapshot = await getMarketPriceSnapshot();
+  const snapshots: UniswapWalletPositionSnapshot[] = [];
+
+  for (let i = 0n; i < balance; i++) {
+    try {
+      const tokenId = await client.readContract({
+        address: npmAddr, abi: npmAbi,
+        functionName: "tokenOfOwnerByIndex", args: [owner, i]
+      });
+      const pos = await client.readContract({
+        address: npmAddr, abi: npmAbi,
+        functionName: "positions", args: [tokenId]
+      });
+      const { token0, token1, fee, tickLower, tickUpper, liquidity } = pos as {
+        token0: string; token1: string; fee: number;
+        tickLower: number; tickUpper: number; liquidity: bigint;
+      };
+      if (liquidity === 0n) continue;
+
+      // 풀 주소 조회 → slot0 (현재 가격)
+      const poolAddr = await client.readContract({
+        address: factoryAddr, abi: factoryAbi,
+        functionName: "getPool",
+        args: [token0 as Address, token1 as Address, fee]
+      }) as string;
+
+      let sqrtPriceX96 = 0n;
+      let tickCurrent  = 0;
+      if (poolAddr && poolAddr !== "0x0000000000000000000000000000000000000000") {
+        const slot0 = await client.readContract({
+          address: poolAddr as Address, abi: poolSlot0Abi,
+          functionName: "slot0"
+        }) as [bigint, number, ...unknown[]];
+        sqrtPriceX96 = slot0[0];
+        tickCurrent  = slot0[1];
+      }
+
+      const [a0Raw, a1Raw] = calcUniswapTokenAmounts(
+        liquidity, sqrtPriceX96, tickCurrent, tickLower, tickUpper
+      );
+
+      const t0key = token0.toLowerCase();
+      const t1key = token1.toLowerCase();
+      const dec0  = TOKEN_DECIMALS[t0key] ?? 18;
+      const dec1  = TOKEN_DECIMALS[t1key] ?? 18;
+      const sym0  = TOKEN_PRICE_SYMBOL[t0key];
+      const sym1  = TOKEN_PRICE_SYMBOL[t1key];
+      const price0 = sym0 ? priceSnapshot.prices[sym0] : 0;
+      const price1 = sym1 ? priceSnapshot.prices[sym1] : 0;
+
+      const usd0 = (a0Raw / 10 ** dec0) * price0;
+      const usd1 = (a1Raw / 10 ** dec1) * price1;
+      const amountUsd = usd0 + usd1;
+
+      const symbolLabel = `${sym0 ?? token0.slice(0, 6)}/${sym1 ?? token1.slice(0, 6)}`;
+
+      snapshots.push({
+        tokenId:   tokenId.toString(),
+        token0,    token1,
+        fee,       tickLower, tickUpper,
+        liquidity: liquidity.toString(),
+        amountUsd,
+        symbol:    symbolLabel,
+        chain
+      });
+    } catch (err) {
+      console.warn(JSON.stringify({
+        level: "warn", msg: "uniswap_position_scan_failed",
+        chain, walletAddress,
+        error: err instanceof Error ? err.message : String(err)
+      }));
+    }
+  }
+  return snapshots;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 //  Helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -499,7 +744,7 @@ function unsupportedResult(
   chain: string
 ): Omit<PositionVerifyResult, "positionId" | "protocol" | "chain" | "dbAmountUsd" | "verifiedAt" | "walletAddress"> {
   const roadmap: Record<string, string> = {
-    Uniswap: "NonfungiblePositionManager.positions(tokenId) 조회 구현 예정",
+    Uniswap: "NonfungiblePositionManager NFT 스캔 구현 완료",
     Orca: "Whirlpools SDK position PDA 조회 및 지갑 스캔 매칭 구현 완료",
     Aerodrome: "gauge/LP token balance 조회 구현 예정",
     Raydium: "LP/position account 조회 구현 예정",
@@ -511,6 +756,78 @@ function unsupportedResult(
     detail: roadmap[protocol] ?? `${protocol}/${chain} 온체인 조회 어댑터 미구현`,
     driftPct: null
   };
+}
+
+/**
+ * Uniswap v3 포지션 온체인 검증.
+ * NonfungiblePositionManager를 스캔해 DB 행과 매칭한다.
+ * DB의 protocolPositionId 또는 positionToken = NFT tokenId (숫자 문자열).
+ */
+async function verifyUniswapPosition(
+  position: PositionRow,
+  walletAddress: string
+): Promise<Omit<PositionVerifyResult, "positionId" | "protocol" | "chain" | "dbAmountUsd" | "verifiedAt" | "walletAddress">> {
+  try {
+    const snapshots = await scanUniswapWalletPositions(position.chain, walletAddress);
+
+    if (snapshots.length === 0) {
+      return {
+        onchainAmountUsd: null, onchainRaw: null,
+        status: "closed_onchain",
+        detail: "Uniswap v3 NFT LP 포지션이 지갑에서 발견되지 않았습니다.",
+        driftPct: null
+      };
+    }
+
+    // DB에 저장된 tokenId로 매칭 시도
+    const dbTokenId = (position.protocolPositionId ?? position.positionToken ?? "").trim();
+    const matched = dbTokenId
+      ? snapshots.find((s) => s.tokenId === dbTokenId)
+      : null;
+
+    // tokenId 매칭 실패 시 같은 토큰쌍 포지션 합산
+    const candidates = matched ? [matched] : snapshots;
+
+    const onchainAmountUsd = candidates.reduce((sum, s) => sum + s.amountUsd, 0);
+    const onchainRaw = candidates.map((s) => s.tokenId).join(",");
+    const driftPct = calcDriftPct(position.amountUsd, onchainAmountUsd);
+    const matchLabel = matched
+      ? `tokenId ${matched.tokenId}`
+      : `${candidates.length}개 포지션 합산`;
+
+    if (onchainAmountUsd === 0 && position.amountUsd > 0.01) {
+      return {
+        onchainAmountUsd, onchainRaw,
+        status: "closed_onchain",
+        detail: `온체인 Uniswap LP 잔고 0 — DB에는 $${position.amountUsd.toFixed(2)} 기록.`,
+        driftPct: 100
+      };
+    }
+
+    if (driftPct > 10) {
+      return {
+        onchainAmountUsd, onchainRaw,
+        status: "drift",
+        detail: `DB $${position.amountUsd.toFixed(2)} vs 온체인 $${onchainAmountUsd.toFixed(2)} (${driftPct.toFixed(1)}% 차이) · ${matchLabel}`,
+        driftPct
+      };
+    }
+
+    return {
+      onchainAmountUsd, onchainRaw,
+      status: "verified",
+      detail: `Uniswap v3 온체인 확인 완료 · ${matchLabel} / ${candidates[0]?.symbol ?? ""}`,
+      driftPct
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      onchainAmountUsd: null, onchainRaw: null,
+      status: "rpc_error",
+      detail: `Uniswap/${position.chain} RPC 오류: ${msg}`,
+      driftPct: null
+    };
+  }
 }
 
 function matchesOrcaSnapshot(position: PositionRow, snapshot: OrcaWalletPositionSnapshot): boolean {
@@ -669,6 +986,9 @@ export async function verifyPosition(
   switch (position.protocol) {
     case "Aave":
       partial = await verifyAavePosition(position, resolvedWallet);
+      break;
+    case "Uniswap":
+      partial = await verifyUniswapPosition(position, resolvedWallet);
       break;
     case "Orca":
       partial = await verifyOrcaPosition(position, resolvedWallet);
