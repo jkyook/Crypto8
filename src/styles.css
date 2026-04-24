@@ -4061,6 +4061,14 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
   margin-bottom: 8px;
 }
 
+.onchain-history-section-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .onchain-history-section-head h4 {
   margin: 0;
   font-size: 0.82rem;
@@ -4068,14 +4076,23 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
   letter-spacing: 0.02em;
 }
 
+.onchain-history-chart-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .onchain-history-chart {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 10px 8px;
-  border-radius: 12px;
-  background: rgba(7, 16, 29, 0.64);
-  border: 1px solid rgba(96, 132, 170, 0.16);
+  gap: 10px;
+  padding: 12px 12px 10px;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(16, 27, 46, 0.94), rgba(7, 16, 29, 0.92)),
+    radial-gradient(circle at top right, rgba(107, 140, 255, 0.12), transparent 28%);
+  border: 1px solid rgba(96, 132, 170, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 16px 32px rgba(2, 8, 16, 0.26);
 }
 
 .onchain-history-chart--empty {
@@ -4091,21 +4108,44 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
 
 .onchain-history-chart-head h4 {
   margin: 0;
-  font-size: 0.88rem;
-  color: #f0f6ff;
+  font-size: 0.96rem;
+  color: #f5f9ff;
+  letter-spacing: 0.01em;
 }
 
 .onchain-history-chart-stats {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 12px;
+  gap: 8px;
   justify-content: flex-end;
-  font-size: 0.72rem;
-  color: rgba(205, 221, 238, 0.92);
+  min-width: 240px;
 }
 
-.onchain-history-chart-stats strong {
-  font-size: 0.76rem;
+.onchain-history-stat-chip {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 92px;
+  padding: 8px 10px 7px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  backdrop-filter: blur(8px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.onchain-history-stat-label {
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.82;
+}
+
+.onchain-history-stat-chip strong {
+  font-size: 0.86rem;
+  line-height: 1;
+  letter-spacing: 0.01em;
   color: inherit;
 }
 
@@ -4113,10 +4153,11 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
   display: flex;
   flex-wrap: wrap;
   gap: 10px 14px;
-  font-size: 0.69rem;
-  font-weight: 700;
-  letter-spacing: 0.03em;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
+  color: rgba(228, 238, 248, 0.84);
 }
 
 .onchain-history-chart-svg {
@@ -4126,37 +4167,48 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
 }
 
 .onchain-history-axis {
-  stroke: rgba(124, 150, 179, 0.6);
-  stroke-width: 1;
+  stroke: rgba(124, 150, 179, 0.72);
+  stroke-width: 1.15;
 }
 
 .onchain-history-grid {
-  stroke: rgba(124, 150, 179, 0.12);
+  stroke: rgba(124, 150, 179, 0.16);
   stroke-width: 1;
   stroke-dasharray: 3 4;
 }
 
 .onchain-history-tick {
-  fill: rgba(195, 214, 231, 0.78);
-  font-size: 0.62rem;
+  fill: rgba(212, 225, 240, 0.64);
+  font-size: 0.36rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
 }
 
 .onchain-history-line {
-  filter: drop-shadow(0 0 5px rgba(103, 142, 255, 0.18));
+  filter: drop-shadow(0 0 5px rgba(103, 142, 255, 0.22));
+}
+
+.onchain-history-area {
+  opacity: 0.9;
 }
 
 .onchain-history-point {
-  stroke: rgba(11, 24, 42, 0.8);
-  stroke-width: 2;
+  stroke: rgba(255, 255, 255, 0.95);
+  stroke-width: 0.9;
+  filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.29)) drop-shadow(0 0 7px rgba(107, 140, 255, 0.11));
+}
+
+.onchain-history-point-halo {
+  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.15));
 }
 
 .onchain-history-footnote {
   display: flex;
   justify-content: space-between;
   gap: 10px;
-  font-size: 0.66rem;
-  color: rgba(158, 183, 205, 0.76);
-  letter-spacing: 0.03em;
+  font-size: 0.65rem;
+  color: rgba(168, 190, 211, 0.8);
+  letter-spacing: 0.05em;
   text-transform: uppercase;
 }
 
@@ -4172,6 +4224,19 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
   padding: 4px 10px;
   font-size: 0.68rem;
   line-height: 1;
+}
+
+.history-demo-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(255, 184, 107, 0.14);
+  border: 1px solid rgba(255, 184, 107, 0.28);
+  color: #ffd49f;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .ledger-sync-message {

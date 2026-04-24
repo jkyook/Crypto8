@@ -115,6 +115,7 @@ export function PortfolioPanel({
   const [selectedOnchainHistoryPoints, setSelectedOnchainHistoryPoints] = useState<OnchainPositionHistoryPoint[]>([]);
   const [selectedOnchainHistoryLoading, setSelectedOnchainHistoryLoading] = useState(false);
   const [selectedOnchainHistoryError, setSelectedOnchainHistoryError] = useState("");
+  const [showHistoryExample, setShowHistoryExample] = useState(false);
 
   const onchainQueryStorageKey = useMemo(() => {
     const session = getSession();
@@ -539,6 +540,53 @@ export function PortfolioPanel({
     () => onchainQueriedRows.find((row) => row.id === selectedOnchainRowKey) ?? null,
     [onchainQueriedRows, selectedOnchainRowKey]
   );
+
+  const selectedOnchainHistoryExamplePoints = useMemo<OnchainPositionHistoryPoint[]>(() => {
+    const protocol = selectedOnchainRow?.protocol ?? "Orca";
+    const base = Math.max(0.12, selectedOnchainRow?.currentValueUsd ?? selectedOnchainRow?.amountUsd ?? 0.48);
+    const current = selectedOnchainRow?.currentValueUsd ?? selectedOnchainRow?.amountUsd ?? base;
+    const dates = [4, 3, 2, 1, 0].map((daysAgo) => {
+      const d = new Date();
+      d.setDate(d.getDate() - daysAgo * 2);
+      return d.toISOString();
+    });
+    const make = (value: number, pnl: number, pending: number, t: string): OnchainPositionHistoryPoint => ({
+      t,
+      currentValueUsd: Number(value.toFixed(2)),
+      pnlUsd: Number(pnl.toFixed(2)),
+      pendingYieldUsd: Number(pending.toFixed(2)),
+      snapshotCount: 1
+    });
+    if (protocol === "Orca") {
+      return [
+        make(base * 0.82, -0.09, 0.00, dates[0]),
+        make(base * 0.88, -0.03, 0.01, dates[1]),
+        make(base * 0.94, 0.02, 0.01, dates[2]),
+        make(base * 0.97, 0.07, 0.01, dates[3]),
+        make(current, 0.12, 0.01, dates[4])
+      ];
+    }
+    if (protocol === "Uniswap") {
+      return [
+        make(base * 0.9, -0.04, 0.00, dates[0]),
+        make(base * 0.95, 0.00, 0.01, dates[1]),
+        make(base * 1.01, 0.05, 0.01, dates[2]),
+        make(base * 1.04, 0.08, 0.02, dates[3]),
+        make(current, 0.11, 0.02, dates[4])
+      ];
+    }
+    return [
+      make(base * 0.98, -0.01, 0.00, dates[0]),
+      make(base * 0.99, 0.00, 0.00, dates[1]),
+      make(base, 0.01, 0.00, dates[2]),
+      make(base * 1.01, 0.02, 0.00, dates[3]),
+      make(current, 0.03, 0.00, dates[4])
+    ];
+  }, [selectedOnchainRow?.protocol, selectedOnchainRow?.currentValueUsd, selectedOnchainRow?.amountUsd]);
+
+  const selectedOnchainHistoryRenderPoints = showHistoryExample
+    ? selectedOnchainHistoryExamplePoints
+    : selectedOnchainHistoryPoints;
 
   useEffect(() => {
     if (!selectedOnchainRow) {
@@ -1031,7 +1079,17 @@ export function PortfolioPanel({
                                     <p className="section-eyebrow">Snapshot Timeline</p>
                                     <h4>조회 시점별 자산가치 · 수익</h4>
                                   </div>
-                                  <span className="kpi-label">최근 30일 저장분</span>
+                                  <div className="onchain-history-section-actions">
+                                    <span className="kpi-label">{showHistoryExample ? "예시 데이터" : "최근 30일 저장분"}</span>
+                                    <button
+                                      type="button"
+                                      className="ghost-btn ghost-btn--compact"
+                                      onClick={() => setShowHistoryExample((prev) => !prev)}
+                                      title={showHistoryExample ? "실제 저장된 스냅샷으로 전환" : "예시 그래프로 전환"}
+                                    >
+                                      {showHistoryExample ? "실데이터 보기" : "예시 보기"}
+                                    </button>
+                                  </div>
                                 </div>
                                 {selectedOnchainHistoryLoading ? (
                                   <p className="kpi-label">히스토리 불러오는 중...</p>
@@ -1039,9 +1097,10 @@ export function PortfolioPanel({
                                   <p className="exec-verify-error">{selectedOnchainHistoryError}</p>
                                 ) : (
                                   <OnchainPositionHistoryChart
-                                    points={selectedOnchainHistoryPoints}
+                                    points={selectedOnchainHistoryRenderPoints}
                                     title={`${detailRow.protocol} · ${detailRow.chain}`}
                                     subtitle={selectedOnchainDetail?.poolLabel ?? detailRow.poolAddress ?? detailRow.positionToken ?? detailRow.asset}
+                                    modeLabel={showHistoryExample ? "예시 데이터" : undefined}
                                   />
                                 )}
                               </div>

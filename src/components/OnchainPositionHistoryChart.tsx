@@ -18,6 +18,7 @@ type OnchainPositionHistoryChartProps = {
   points: OnchainPositionHistoryPoint[];
   title: string;
   subtitle?: string;
+  modeLabel?: string;
 };
 
 function buildPath(
@@ -29,12 +30,25 @@ function buildPath(
   return points.map((point, index) => `${index === 0 ? "M" : "L"} ${xAt(point.t).toFixed(1)} ${yAt(point.y).toFixed(1)}`).join(" ");
 }
 
+function buildAreaPath(
+  points: Array<{ t: number; y: number }>,
+  xAt: (t: number) => number,
+  yAt: (y: number) => number,
+  baselineY: number
+): string {
+  if (points.length === 0) return "";
+  const line = buildPath(points, xAt, yAt);
+  const first = points[0];
+  const last = points[points.length - 1];
+  return `${line} L ${xAt(last.t).toFixed(1)} ${baselineY.toFixed(1)} L ${xAt(first.t).toFixed(1)} ${baselineY.toFixed(1)} Z`;
+}
+
 function formatUsd(value: number): string {
   const sign = value > 0 ? "+" : "";
   return `${sign}$${Math.abs(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-export function OnchainPositionHistoryChart({ points, title, subtitle }: OnchainPositionHistoryChartProps) {
+export function OnchainPositionHistoryChart({ points, title, subtitle, modeLabel }: OnchainPositionHistoryChartProps) {
   const layout = useMemo(() => {
     const innerW = VB_W - PAD_L - PAD_R;
     const innerH = VB_H - PAD_T - PAD_B;
@@ -97,6 +111,11 @@ export function OnchainPositionHistoryChart({ points, title, subtitle }: Onchain
     const latest = parsed[parsed.length - 1];
     const lineSeries = SERIES.map((series) => ({
       ...series,
+      points: parsed.map((point) => ({
+        x: xAt(point.t),
+        y: yAt(point.values.find((entry) => entry.key === series.key)?.y ?? 0),
+        value: point.values.find((entry) => entry.key === series.key)?.y ?? 0
+      })),
       path: buildPath(
         parsed.map((point) => ({
           t: point.t,
@@ -105,6 +124,18 @@ export function OnchainPositionHistoryChart({ points, title, subtitle }: Onchain
         xAt,
         yAt
       ),
+      areaPath:
+        series.key === "currentValueUsd"
+          ? buildAreaPath(
+              parsed.map((point) => ({
+                t: point.t,
+                y: point.values.find((entry) => entry.key === series.key)?.y ?? 0
+              })),
+              xAt,
+              yAt,
+              PAD_T + innerH
+            )
+          : "",
       latest: latest.values.find((entry) => entry.key === series.key)?.y ?? 0
     }));
 
@@ -147,16 +178,20 @@ export function OnchainPositionHistoryChart({ points, title, subtitle }: Onchain
       <div className="onchain-history-chart-head">
         <div>
           <p className="section-eyebrow">Historical Snapshots</p>
-          <h4>{title}</h4>
+          <h4 className="onchain-history-chart-title">
+            <span>{title}</span>
+            {modeLabel ? <span className="history-demo-badge">{modeLabel}</span> : null}
+          </h4>
           {subtitle ? <p className="kpi-label">{subtitle}</p> : null}
         </div>
         <div className="onchain-history-chart-stats">
           {SERIES.map((series) => {
             const latest = L.latest.values.find((entry) => entry.key === series.key)?.y ?? 0;
             return (
-              <span key={series.key} style={{ color: series.color }}>
-                {series.label} <strong>{formatUsd(latest)}</strong>
-              </span>
+              <div key={series.key} className="onchain-history-stat-chip" style={{ borderColor: `${series.color}38`, background: `${series.color}12`, color: series.color }}>
+                <span className="onchain-history-stat-label">{series.label}</span>
+                <strong>{formatUsd(latest)}</strong>
+              </div>
             );
           })}
         </div>
@@ -186,16 +221,40 @@ export function OnchainPositionHistoryChart({ points, title, subtitle }: Onchain
           </g>
         ))}
         {L.lineSeries.map((series, index) => (
-          <path
-            key={series.key}
-            d={series.path}
-            fill="none"
-            stroke={series.color}
-            strokeWidth={index === 0 ? 2.8 : 2.2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="onchain-history-line"
-          />
+          <g key={series.key}>
+            {series.areaPath ? (
+              <path d={series.areaPath} fill="url(#onchainHistoryFill)" className="onchain-history-area" />
+            ) : null}
+              <path
+                d={series.path}
+                fill="none"
+                stroke={series.color}
+              strokeWidth={index === 0 ? 1.2 : 0.95}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="onchain-history-line"
+              />
+            {series.points.map((point, pointIndex) => (
+              <g key={`${series.key}-${pointIndex}`}>
+                  <circle
+                    cx={point.x}
+                    cy={point.y}
+                    r={pointIndex === series.points.length - 1 ? 4.6 : 3.4}
+                    fill="#ffffff"
+                    opacity={0.26}
+                    className="onchain-history-point-halo"
+                  />
+                  <circle
+                    cx={point.x}
+                    cy={point.y}
+                    r={pointIndex === series.points.length - 1 ? 2.6 : 2.0}
+                    fill="#ffffff"
+                    opacity={pointIndex === series.points.length - 1 ? 1 : 0.95}
+                    className="onchain-history-point"
+                  />
+                </g>
+              ))}
+          </g>
         ))}
         {singlePoint ? (
           <>
@@ -203,7 +262,10 @@ export function OnchainPositionHistoryChart({ points, title, subtitle }: Onchain
               const point = singlePoint.values.find((entry) => entry.key === series.key);
               if (!point) return null;
               return (
-                <circle key={series.key} cx={singlePoint.cx} cy={L.yAt(point.y)} r="3.5" fill={series.color} className="onchain-history-point" />
+                <g key={series.key}>
+                  <circle cx={singlePoint.cx} cy={L.yAt(point.y)} r="4.6" fill="#ffffff" opacity="0.26" className="onchain-history-point-halo" />
+                  <circle cx={singlePoint.cx} cy={L.yAt(point.y)} r="2.6" fill="#ffffff" className="onchain-history-point" />
+                </g>
               );
             })}
           </>
