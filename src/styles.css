@@ -4195,11 +4195,11 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
 .onchain-history-point {
   stroke: rgba(255, 255, 255, 0.95);
   stroke-width: 0.9;
-  filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.29)) drop-shadow(0 0 7px rgba(107, 140, 255, 0.11));
+  filter: drop-shadow(0 0 2.4px rgba(255, 255, 255, 0.17)) drop-shadow(0 0 4.2px rgba(107, 140, 255, 0.066));
 }
 
 .onchain-history-point-halo {
-  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.15));
+  filter: drop-shadow(0 0 3.6px rgba(255, 255, 255, 0.09));
 }
 
 .onchain-history-footnote {

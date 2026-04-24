@@ -247,7 +247,7 @@ export function OnchainPositionHistoryChart({ points, title, subtitle, modeLabel
                   <circle
                     cx={point.x}
                     cy={point.y}
-                    r={pointIndex === series.points.length - 1 ? 2.6 : 2.0}
+                    r={pointIndex === series.points.length - 1 ? 1.3 : 1.0}
                     fill="#ffffff"
                     opacity={pointIndex === series.points.length - 1 ? 1 : 0.95}
                     className="onchain-history-point"
@@ -264,7 +264,7 @@ export function OnchainPositionHistoryChart({ points, title, subtitle, modeLabel
               return (
                 <g key={series.key}>
                   <circle cx={singlePoint.cx} cy={L.yAt(point.y)} r="4.6" fill="#ffffff" opacity="0.26" className="onchain-history-point-halo" />
-                  <circle cx={singlePoint.cx} cy={L.yAt(point.y)} r="2.6" fill="#ffffff" className="onchain-history-point" />
+                  <circle cx={singlePoint.cx} cy={L.yAt(point.y)} r="1.3" fill="#ffffff" className="onchain-history-point" />
                 </g>
               );
             })}
