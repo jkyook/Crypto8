@@ -4,6 +4,7 @@ import { useAccounts } from "@phantom/react-sdk";
 import {
   getSession,
   createDepositPositionRemote,
+  adjustDepositPositionRemote,
   listPublicOnchainPositions,
   listOnchainPositionHistory,
   login,
@@ -384,7 +385,7 @@ export function PortfolioPanel({
     return `Onchain Sync · ${row.protocol} · ${row.chain} · ${itemKey}`;
   };
 
-  const syncOnchainRowToLedger = async (row: OnchainPositionPayload) => {
+  const syncOnchainRowToLedger = async (row: OnchainPositionPayload, mode: "create" | "adjust" = "create") => {
     const syncAmount = row.verify?.onchainAmountUsd ?? row.currentValueUsd ?? row.amountUsd ?? 0;
     if (syncAmount <= 0) {
       setLedgerSyncError("0원인 포지션은 장부에 반영하지 않았습니다.");
@@ -398,11 +399,12 @@ export function PortfolioPanel({
     const confirmed = window.confirm(
       [
         "이 실제 조회 결과를 내부 예치 장부에 반영할까요?",
-        `프로토콜: ${row.protocol}`,
-        `체인: ${row.chain}`,
-        `금액: $${syncAmount.toFixed(2)}`,
-        `장부 이름: ${productName}`
-      ].join("\n")
+      `프로토콜: ${row.protocol}`,
+      `체인: ${row.chain}`,
+      `금액: $${syncAmount.toFixed(2)}`,
+      `장부 이름: ${productName}`,
+      mode === "adjust" ? "기존 장부 값을 현 값으로 수정합니다." : "새 장부 항목을 생성합니다."
+    ].join("\n")
     );
     if (!confirmed) {
       return;
@@ -412,7 +414,7 @@ export function PortfolioPanel({
     setLedgerSyncError("");
     setLedgerSyncMessage("");
     try {
-      await createDepositPositionRemote({
+      const syncPayload = {
         productName,
         amountUsd: syncAmount,
         expectedApr: row.protocol === "Aave" ? 0.05 : row.protocol === "Uniswap" ? 0.08 : row.protocol === "Orca" ? 0.08 : 0.0,
@@ -423,11 +425,16 @@ export function PortfolioPanel({
             pool: row.poolAddress ?? row.positionToken ?? row.asset ?? undefined
           }
         ]
-      });
+      };
+      if (mode === "adjust") {
+        await adjustDepositPositionRemote(syncPayload);
+      } else {
+        await createDepositPositionRemote(syncPayload);
+      }
       await onExecutionComplete?.();
-      setLedgerSyncMessage(`장부 반영 완료: ${productName}`);
+      setLedgerSyncMessage(mode === "adjust" ? `장부 수정 완료: ${productName}` : `장부 반영 완료: ${productName}`);
     } catch (error) {
-      setLedgerSyncError(error instanceof Error ? error.message : "장부 반영 실패");
+      setLedgerSyncError(error instanceof Error ? error.message : mode === "adjust" ? "장부 수정 실패" : "장부 반영 실패");
     } finally {
       setLedgerSyncLoadingKey("");
     }
@@ -841,14 +848,32 @@ export function PortfolioPanel({
                         </td>
                         <td data-label="장부">
                           {amountUsd && amountUsd > 0 ? (
-                            isLedgerRecorded ? (
+                            isLedgerRecorded && verifyStatus !== "drift" ? (
                               <span className="badge badge-low" title={syncProductName}>기록됨</span>
+                            ) : verifyStatus === "drift" && canPersistToServer ? (
+                              <button
+                                type="button"
+                                className="ghost-btn"
+                                disabled={ledgerSyncLoadingKey === syncKey}
+                                onClick={() => void syncOnchainRowToLedger(position, isLedgerRecorded ? "adjust" : "create")}
+                                title={
+                                  isLedgerRecorded
+                                    ? "이 조회 결과의 현재 값으로 기존 장부를 수정합니다."
+                                    : "이 조회 결과의 현재 값으로 장부를 새로 반영합니다."
+                                }
+                              >
+                                {ledgerSyncLoadingKey === syncKey
+                                  ? "수정 중..."
+                                  : isLedgerRecorded
+                                    ? "현 값으로 수정"
+                                    : "장부 반영"}
+                              </button>
                             ) : canPersistToServer ? (
                               <button
                                 type="button"
                                 className="ghost-btn"
                                 disabled={ledgerSyncLoadingKey === syncKey}
-                                onClick={() => void syncOnchainRowToLedger(position)}
+                                onClick={() => void syncOnchainRowToLedger(position, isLedgerRecorded ? "adjust" : "create")}
                                 title="이 조회 결과를 내부 예치 장부에 반영합니다. 승인 후 1건씩 처리됩니다."
                               >
                                 {ledgerSyncLoadingKey === syncKey ? "반영 중..." : "장부 반영"}

@@ -124,6 +124,37 @@ export async function createDepositPosition(
   return parseRow(row);
 }
 
+export async function updateDepositPositionAmount(
+  username: string,
+  productName: string,
+  input: { amountUsd: number; expectedApr: number; protocolMix: ProtocolMixEntry[] }
+): Promise<DepositPositionRow> {
+  assertValidPositionCreate({
+    productName,
+    amountUsd: input.amountUsd,
+    expectedApr: input.expectedApr,
+    protocolMix: input.protocolMix
+  });
+  const db = getDb();
+  const current = await db.depositPosition.findFirst({
+    where: { username, productName: productName.trim() },
+    orderBy: { createdAt: "desc" }
+  });
+  if (!current) {
+    throw new Error("matching deposit position not found");
+  }
+  await db.depositPosition.update({
+    where: { id: current.id },
+    data: {
+      amountUsd: input.amountUsd,
+      expectedApr: input.expectedApr,
+      protocolMix: JSON.stringify(input.protocolMix ?? [])
+    }
+  });
+  const updated = await db.depositPosition.findUniqueOrThrow({ where: { id: current.id } });
+  return parseRow(updated);
+}
+
 /** 최근 예치부터 amountUsd 만큼 차감(행 삭제 또는 금액 감소). */
 export function assertValidWithdrawAmount(amountUsd: number): void {
   if (!Number.isFinite(amountUsd) || amountUsd <= 0 || amountUsd > MAX_DEPOSIT_USD) {

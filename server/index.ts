@@ -11,6 +11,7 @@ import {
   listDepositPositions,
   listWithdrawalLedger,
   resetPortfolioLedger,
+  updateDepositPositionAmount,
   withdrawProtocolExposureAmount,
   withdrawProductDepositAmount,
   withdrawDepositAmount
@@ -1338,6 +1339,34 @@ app.post("/api/portfolio/positions", requireAuth(["orchestrator", "security", "v
     res.json({ ok: true, position: stripUsername(created) });
   } catch (error) {
     res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "create failed" });
+  }
+});
+
+app.post("/api/portfolio/positions/adjust", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+  const body = req.body as {
+    productName?: string;
+    amountUsd?: unknown;
+    expectedApr?: unknown;
+    protocolMix?: unknown;
+  };
+  const username = res.locals.user.username as string;
+  if (typeof body.productName !== "string" || typeof body.amountUsd !== "number" || typeof body.expectedApr !== "number") {
+    res.status(400).json({ ok: false, message: "productName, amountUsd, expectedApr required" });
+    return;
+  }
+  if (!Array.isArray(body.protocolMix)) {
+    res.status(400).json({ ok: false, message: "protocolMix must be an array" });
+    return;
+  }
+  try {
+    const updated = await updateDepositPositionAmount(username, body.productName, {
+      amountUsd: body.amountUsd,
+      expectedApr: body.expectedApr,
+      protocolMix: body.protocolMix as { name: string; weight: number; pool?: string }[]
+    });
+    res.json({ ok: true, position: stripUsername(updated) });
+  } catch (error) {
+    res.status(400).json({ ok: false, message: error instanceof Error ? error.message : "adjust failed" });
   }
 });
 

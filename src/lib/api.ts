@@ -1577,6 +1577,37 @@ export async function createDepositPositionRemote(payload: {
   return data.position;
 }
 
+export async function adjustDepositPositionRemote(payload: {
+  productName: string;
+  amountUsd: number;
+  expectedApr: number;
+  protocolMix: Array<{ name: string; weight: number; pool?: string }>;
+}): Promise<DepositPositionPayload> {
+  const response = await authedFetch("/api/portfolio/positions/adjust", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const text = await response.text();
+  let data = {} as { ok?: boolean; position?: DepositPositionPayload; message?: string };
+  try {
+    if (text) data = JSON.parse(text) as typeof data;
+  } catch {
+    // 비 JSON 응답
+  }
+  if (!response.ok || !data.position) {
+    let msg = data.message;
+    if (
+      response.status === 403 &&
+      (msg === "forbidden: insufficient role" || !msg || (typeof msg === "string" && msg.includes("insufficient role")))
+    ) {
+      msg = "권한이 없습니다. 로그인 후 다시 시도하세요.";
+    }
+    throw new Error(msg ?? "예치 포지션 수정 실패");
+  }
+  return data.position;
+}
+
 export async function withdrawDepositRemote(amountUsd: number): Promise<{ withdrawnUsd: number; mode?: string }> {
   const response = await authedFetch("/api/portfolio/withdraw", {
     method: "POST",
