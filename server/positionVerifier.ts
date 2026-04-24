@@ -905,6 +905,78 @@ async function verifyOrcaPosition(
   }
 }
 
+function buildSyntheticUniswapPositionRow(
+  username: string,
+  chain: string,
+  snapshot: UniswapWalletPositionSnapshot
+): PositionRow {
+  const now = new Date().toISOString();
+  return {
+    id: `uniswap_scan_${chain}_${snapshot.tokenId}`,
+    executionId: `uniswap_scan_${chain}_${snapshot.tokenId}`,
+    username,
+    protocol: "Uniswap",
+    chain,
+    asset: snapshot.symbol,
+    poolAddress: null,
+    positionToken: snapshot.tokenId,
+    positionRaw: snapshot.liquidity,
+    amountUsd: snapshot.amountUsd,
+    depositTxHash: `uniswap_scan_${chain}_${snapshot.tokenId}`,
+    lastSyncedAt: now,
+    status: "active",
+    openedAt: now,
+    closedAt: null,
+    onchainDataJson: null,
+    principalUsd: snapshot.amountUsd,
+    currentValueUsd: snapshot.amountUsd,
+    unrealizedPnlUsd: 0,
+    realizedPnlUsd: null,
+    feesPaidUsd: null,
+    netApy: null,
+    entryPrice: null,
+    expectedApr: null,
+    protocolPositionId: snapshot.tokenId
+  };
+}
+
+function verifyUniswapPositionFromSnapshot(
+  position: PositionRow,
+  snapshot: UniswapWalletPositionSnapshot
+): Omit<PositionVerifyResult, "positionId" | "protocol" | "chain" | "dbAmountUsd" | "verifiedAt" | "walletAddress"> {
+  const onchainAmountUsd = snapshot.amountUsd;
+  const driftPct = calcDriftPct(position.amountUsd, onchainAmountUsd);
+  const matchLabel = `tokenId ${snapshot.tokenId}`;
+
+  if (onchainAmountUsd === 0 && position.amountUsd > 0.01) {
+    return {
+      onchainAmountUsd,
+      onchainRaw: snapshot.liquidity,
+      status: "closed_onchain",
+      detail: `온체인 Uniswap LP 잔고 0 — DB에는 $${position.amountUsd.toFixed(2)} 기록.`,
+      driftPct: 100
+    };
+  }
+
+  if (driftPct > 10) {
+    return {
+      onchainAmountUsd,
+      onchainRaw: snapshot.liquidity,
+      status: "drift",
+      detail: `DB $${position.amountUsd.toFixed(2)} vs 온체인 $${onchainAmountUsd.toFixed(2)} (${driftPct.toFixed(1)}% 차이) · ${matchLabel}`,
+      driftPct
+    };
+  }
+
+  return {
+    onchainAmountUsd,
+    onchainRaw: snapshot.liquidity,
+    status: "verified",
+    detail: `Uniswap v3 온체인 확인 완료 · ${matchLabel} / ${snapshot.symbol}`,
+    driftPct
+  };
+}
+
 /**
  * 이미 스캔된 스냅샷으로부터 verify 결과를 직접 빌드.
  * scanOrcaWalletPositions를 재호출하지 않으므로 RPC 이중 호출 없음.
@@ -1098,6 +1170,7 @@ export function isPositionStale(
 export async function enrichPositionsWithOnchain(
   positions: PositionRow[],
   walletAddress?: string,
+  walletAddressMap?: Record<string, string>,
   forceRefresh = false
 ): Promise<Array<PositionRow & { verify: PositionVerifyResult | null }>> {
   return Promise.all(
@@ -1111,7 +1184,8 @@ export async function enrichPositionsWithOnchain(
           // 파싱 실패 시 재조회
         }
       }
-      const verify = await verifyPosition(pos, walletAddress);
+      const resolvedWallet = walletAddressMap?.[pos.id] ?? walletAddressMap?.[pos.chain] ?? walletAddressMap?.["*"] ?? walletAddress;
+      const verify = await verifyPosition(pos, resolvedWallet);
       return { ...pos, verify };
     })
   );
@@ -1171,6 +1245,32 @@ function buildSyntheticOrcaPositionRow(username: string, snapshot: OrcaWalletPos
   };
 }
 
+function buildSyntheticUniswapPositionRows(
+  username: string,
+  chain: string,
+  snapshots: UniswapWalletPositionSnapshot[]
+): Array<PositionRow & { verify: PositionVerifyResult | null; source: "wallet_scan" }> {
+  const rows: Array<PositionRow & { verify: PositionVerifyResult | null; source: "wallet_scan" }> = [];
+  for (const snapshot of snapshots) {
+    const synthetic = buildSyntheticUniswapPositionRow(username, chain, snapshot);
+    const verifyPartial = verifyUniswapPositionFromSnapshot(synthetic, snapshot);
+    const verify: PositionVerifyResult = {
+      positionId: synthetic.id,
+      protocol: synthetic.protocol,
+      chain: synthetic.chain,
+      dbAmountUsd: synthetic.amountUsd,
+      verifiedAt: new Date().toISOString(),
+      walletAddress: null,
+      ...verifyPartial
+    };
+    rows.push({
+      ...attachSource(synthetic, "wallet_scan"),
+      verify
+    });
+  }
+  return rows;
+}
+
 function attachSource<T extends PositionRow>(position: T, source: "db" | "wallet_scan"): T & { source: "db" | "wallet_scan" } {
   return { ...position, source };
 }
@@ -1191,7 +1291,7 @@ export async function listOnchainPositionsForUser(
 
   const seen = new Set<string>();
   for (const row of rows) {
-    if (row.protocol !== "Orca") continue;
+    if (row.protocol !== "Orca" && row.protocol !== "Uniswap") continue;
     seen.add(normalizeKey(row.poolAddress));
     seen.add(normalizeKey(row.positionToken));
     seen.add(normalizeKey(row.protocolPositionId));
@@ -1223,6 +1323,33 @@ export async function listOnchainPositionsForUser(
       });
       seen.add(normalizeKey(snapshot.whirlpool));
       seen.add(normalizeKey(snapshot.positionMint));
+    }
+  }
+
+  const evmWalletsByChain = new Map<string, string[]>();
+  for (const wallet of wallets) {
+    if (wallet.chain.toLowerCase() === "solana") continue;
+    const existing = evmWalletsByChain.get(wallet.chain) ?? [];
+    if (!existing.includes(wallet.walletAddress)) {
+      existing.push(wallet.walletAddress);
+    }
+    evmWalletsByChain.set(wallet.chain, existing);
+  }
+  for (const chain of ["Arbitrum", "Base", "Ethereum"] as const) {
+    for (const walletAddress of evmWalletsByChain.get(chain) ?? []) {
+      const snapshots = await scanUniswapWalletPositions(chain, walletAddress);
+      for (const row of buildSyntheticUniswapPositionRows(username, chain, snapshots)) {
+        const keys = [row.positionToken, row.protocolPositionId].map(normalizeKey);
+        if (keys.some((key) => key && seen.has(key))) {
+          continue;
+        }
+        rows.push(row);
+        for (const key of keys) {
+          if (key) {
+            seen.add(key);
+          }
+        }
+      }
     }
   }
 

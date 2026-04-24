@@ -869,6 +869,96 @@ function buildPublicOrcaErrorRow(walletAddress: string, error: unknown) {
   };
 }
 
+function buildPublicUniswapNoPositionRow(chain: string, walletAddress: string) {
+  const now = new Date().toISOString();
+  return {
+    id: `public_uniswap_empty_${chain}_${walletAddress}`,
+    executionId: `public_uniswap_empty_${chain}_${walletAddress}`,
+    username: "guest",
+    protocol: "Uniswap",
+    chain,
+    asset: "—",
+    poolAddress: null,
+    positionToken: null,
+    positionRaw: null,
+    amountUsd: 0,
+    depositTxHash: `public:${walletAddress}:${chain}:uniswap:empty`,
+    lastSyncedAt: now,
+    status: "active" as const,
+    openedAt: now,
+    closedAt: null,
+    onchainDataJson: JSON.stringify({
+      source: "public-uniswap",
+      walletAddress,
+      chain,
+      queryStatus: "ok",
+      queryResult: "empty"
+    }),
+    principalUsd: 0,
+    currentValueUsd: 0,
+    unrealizedPnlUsd: 0,
+    realizedPnlUsd: null,
+    feesPaidUsd: null,
+    netApy: null,
+    entryPrice: null,
+    expectedApr: null,
+    protocolPositionId: null,
+    verify: {
+      status: "closed_onchain" as const,
+      onchainAmountUsd: 0,
+      onchainRaw: null,
+      driftPct: 0,
+      verifiedAt: now,
+      detail: `Uniswap v3 ${chain} 공개 조회에서 NFT LP 포지션을 찾지 못했습니다.`
+    }
+  };
+}
+
+function buildPublicOrcaNoPositionRow(walletAddress: string) {
+  const now = new Date().toISOString();
+  return {
+    id: `public_orca_empty_${walletAddress}`,
+    executionId: `public_orca_empty_${walletAddress}`,
+    username: "guest",
+    protocol: "Orca",
+    chain: "Solana",
+    asset: "Whirlpool",
+    poolAddress: null,
+    positionToken: null,
+    positionRaw: null,
+    amountUsd: 0,
+    depositTxHash: `public:${walletAddress}:Solana:orca:empty`,
+    lastSyncedAt: now,
+    status: "active" as const,
+    openedAt: now,
+    closedAt: null,
+    onchainDataJson: JSON.stringify({
+      source: "public-orca",
+      walletAddress,
+      chain: "Solana",
+      queryStatus: "ok",
+      queryResult: "empty"
+    }),
+    principalUsd: 0,
+    currentValueUsd: 0,
+    unrealizedPnlUsd: 0,
+    realizedPnlUsd: null,
+    feesPaidUsd: null,
+    netApy: null,
+    entryPrice: null,
+    expectedApr: null,
+    protocolPositionId: null,
+    verify: {
+      status: "closed_onchain" as const,
+      onchainAmountUsd: 0,
+      onchainRaw: null,
+      driftPct: 0,
+      verifiedAt: now,
+      detail: "Orca Whirlpool 공개 조회에서 포지션을 찾지 못했습니다."
+    }
+  };
+}
+
 function buildProtocolMixFromExecutionPayload(
   payload: Awaited<ReturnType<typeof executeJob>>["payload"],
   depositUsd: number
@@ -1014,6 +1104,10 @@ app.get("/api/public/positions", async (req, res) => {
         try {
           const uniSnapshots = await scanUniswapWalletPositions(chain, evmWalletAddress);
           const now = new Date().toISOString();
+          if (uniSnapshots.length === 0) {
+            rows.push(buildPublicUniswapNoPositionRow(chain, evmWalletAddress));
+            continue;
+          }
           for (const snap of uniSnapshots) {
             rows.push({
               id:              `public_uni_${chain}_${snap.tokenId}`,
@@ -1064,6 +1158,9 @@ app.get("/api/public/positions", async (req, res) => {
     if (solanaWalletAddress) {
       try {
         const orcaRows = await listOrcaWalletPositions("guest", solanaWalletAddress);
+        if (orcaRows.length === 0) {
+          rows.push(buildPublicOrcaNoPositionRow(solanaWalletAddress));
+        }
         rows.push(...orcaRows);
       } catch (error) {
         rows.push(buildPublicOrcaErrorRow(solanaWalletAddress, error));

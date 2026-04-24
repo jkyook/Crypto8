@@ -53,6 +53,7 @@ export function PortfolioPanel({
   const [protocolDepositKey, setProtocolDepositKey] = useState(0);
   const [showPositionDetails, setShowPositionDetails] = useState(false);
   const [onchainMatchMap, setOnchainMatchMap] = useState<Record<string, { state: ProtocolPoolMatchState; detail: string }>>({});
+  const [onchainCatalogMatchMap, setOnchainCatalogMatchMap] = useState<Record<string, { state: ProtocolPoolMatchState; detail: string }>>({});
   const [onchainQueriedRows, setOnchainQueriedRows] = useState<OnchainPositionPayload[]>([]);
   const [onchainMatchSummary, setOnchainMatchSummary] = useState("");
   const [onchainMatchLoading, setOnchainMatchLoading] = useState(false);
@@ -205,11 +206,63 @@ export function PortfolioPanel({
       });
   }, []);
 
+  const evaluatePoolMatch = (
+    protocol: string,
+    chain: string,
+    pool: string,
+    combinedRows: OnchainPositionPayload[],
+    expectedUsd?: number
+  ): { state: ProtocolPoolMatchState; detail: string } => {
+    const protocolKey = `${protocol.toLowerCase()}__${chain.toLowerCase()}`;
+    const protocolChainCandidates = combinedRows.filter((row) => `${row.protocol.toLowerCase()}__${row.chain.toLowerCase()}` === protocolKey);
+    if (protocolChainCandidates.length === 0) {
+      return { state: "missing", detail: "실제 조회 포지션 없음" };
+    }
+    const poolAddressHint = (() => {
+      const hex = pool.match(/0x[a-fA-F0-9]{40}/)?.[0];
+      if (hex) return hex.toLowerCase();
+      const base58 = pool.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/)?.[0];
+      return base58 ? base58.toLowerCase() : null;
+    })();
+    const poolMatchedCandidates = poolAddressHint
+      ? protocolChainCandidates.filter((item) => {
+          const poolAddress = item.poolAddress?.toLowerCase();
+          const protocolPositionId = item.protocolPositionId?.toLowerCase();
+          return poolAddress === poolAddressHint || protocolPositionId === poolAddressHint;
+        })
+      : [];
+    const candidates = poolMatchedCandidates.length > 0 ? poolMatchedCandidates : protocolChainCandidates;
+    const basisLabel = poolMatchedCandidates.length > 0 ? "풀주소 기준" : "프로토콜/체인 기준";
+    const statuses = candidates.map((item) => item.verify?.status ?? "unsupported");
+    if (statuses.every((status) => status === "unsupported")) {
+      return { state: "unsupported", detail: `${basisLabel} · 해당 프로토콜의 온체인 검증 미지원` };
+    }
+    if (statuses.some((status) => status === "rpc_error")) {
+      return { state: "error", detail: `${basisLabel} · RPC 응답 불안정 (재시도 필요)` };
+    }
+    const actualUsd = candidates.reduce((sum, item) => sum + (item.currentValueUsd ?? item.amountUsd ?? 0), 0);
+    if (typeof expectedUsd === "number") {
+      const driftPct = Math.abs((actualUsd - expectedUsd) / Math.max(expectedUsd, 0.01)) * 100;
+      if (driftPct <= 25) {
+        return { state: "matched", detail: `${basisLabel} · 실제 $${actualUsd.toFixed(2)} · 차이 ${driftPct.toFixed(1)}%` };
+      }
+      return { state: "drift", detail: `${basisLabel} · 실제 $${actualUsd.toFixed(2)} · 차이 ${driftPct.toFixed(1)}%` };
+    }
+    if (poolMatchedCandidates.length > 0) {
+      return { state: "matched", detail: `${basisLabel} · 실제 $${actualUsd.toFixed(2)} · 조회 성공` };
+    }
+    if (protocolChainCandidates.length > 0) {
+      return { state: "available", detail: `${basisLabel} · 실제 조회 ${protocolChainCandidates.length}건` };
+    }
+    return { state: "missing", detail: "실제 조회 포지션 없음" };
+  };
+
   const verifyProtocolPoolMatches = async () => {
     setOnchainMatchLoading(true);
     setOnchainMatchError("");
     setOnchainMatchSummary("");
     setOnchainQueriedRows([]);
+    setOnchainCatalogMatchMap({});
     setHideOnchainResult(false);
     try {
       const evmWalletAddress = evmAccount?.address;
@@ -220,56 +273,19 @@ export function PortfolioPanel({
       const combinedRows = await listPublicOnchainPositions({}, { evmWalletAddress, solanaWalletAddress });
       setOnchainQueriedRows(combinedRows);
       const nextMap: Record<string, { state: ProtocolPoolMatchState; detail: string }> = {};
-      const byProtocolChain = combinedRows.reduce<Record<string, OnchainPositionPayload[]>>((acc, row) => {
-        const key = `${row.protocol.toLowerCase()}__${row.chain.toLowerCase()}`;
-        acc[key] = [...(acc[key] ?? []), row];
+      for (const row of protocolRows) {
+        nextMap[row.key] = evaluatePoolMatch(row.name, row.chain, row.pool, combinedRows, row.amount);
+      }
+      const nextCatalogMap = catalogPoolRows.reduce<Record<string, { state: ProtocolPoolMatchState; detail: string }>>((acc, row) => {
+        acc[row.key] = evaluatePoolMatch(row.protocol, row.chain, row.pool, combinedRows);
         return acc;
       }, {});
-      for (const row of protocolRows) {
-        const key = `${row.name.toLowerCase()}__${row.chain.toLowerCase()}`;
-        const protocolChainCandidates = byProtocolChain[key] ?? [];
-        if (protocolChainCandidates.length === 0) {
-          nextMap[row.key] = { state: "missing", detail: "실제 조회 포지션 없음" };
-          continue;
-        }
-        const poolAddressHint = (() => {
-          const hex = row.pool.match(/0x[a-fA-F0-9]{40}/)?.[0];
-          if (hex) return hex.toLowerCase();
-          const base58 = row.pool.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/)?.[0];
-          return base58 ? base58.toLowerCase() : null;
-        })();
-        const poolMatchedCandidates = poolAddressHint
-          ? protocolChainCandidates.filter((item) => {
-              const poolAddress = item.poolAddress?.toLowerCase();
-              const protocolPositionId = item.protocolPositionId?.toLowerCase();
-              return poolAddress === poolAddressHint || protocolPositionId === poolAddressHint;
-            })
-          : [];
-        const candidates = poolMatchedCandidates.length > 0 ? poolMatchedCandidates : protocolChainCandidates;
-        const basisLabel = poolMatchedCandidates.length > 0 ? "풀주소 기준" : "프로토콜/체인 기준";
-        const statuses = candidates.map((item) => item.verify?.status ?? "unsupported");
-        if (statuses.every((status) => status === "unsupported")) {
-          nextMap[row.key] = { state: "unsupported", detail: `${basisLabel} · 해당 프로토콜의 온체인 검증 미지원` };
-          continue;
-        }
-        if (statuses.some((status) => status === "rpc_error")) {
-          nextMap[row.key] = { state: "error", detail: `${basisLabel} · RPC 응답 불안정 (재시도 필요)` };
-          continue;
-        }
-        const actualUsd = candidates.reduce((sum, item) => sum + (item.currentValueUsd ?? item.amountUsd ?? 0), 0);
-        const base = Math.max(row.amount, 0.01);
-        const driftPct = Math.abs((actualUsd - row.amount) / base) * 100;
-        if (driftPct <= 25) {
-          nextMap[row.key] = { state: "matched", detail: `${basisLabel} · 실제 $${actualUsd.toFixed(2)} · 차이 ${driftPct.toFixed(1)}%` };
-        } else {
-          nextMap[row.key] = { state: "drift", detail: `${basisLabel} · 실제 $${actualUsd.toFixed(2)} · 차이 ${driftPct.toFixed(1)}%` };
-        }
-      }
       const counts = Object.values(nextMap).reduce<Record<ProtocolPoolMatchState, number>>(
         (acc, row) => ({ ...acc, [row.state]: acc[row.state] + 1 }),
         { matched: 0, drift: 0, missing: 0, unsupported: 0, error: 0, available: 0 }
       );
       setOnchainMatchMap(nextMap);
+      setOnchainCatalogMatchMap(nextCatalogMap);
       setOnchainMatchSummary(
         `매치 ${counts.matched} · 차이 ${counts.drift} · 미조회 ${counts.missing} · 미지원 ${counts.unsupported} · 오류 ${counts.error}`
       );
@@ -576,12 +592,14 @@ export function PortfolioPanel({
                 <th>풀</th>
                 <th>입금가능</th>
                 <th>포지션조회가능</th>
+                <th>조회상태</th>
                 <th>메모</th>
               </tr>
             </thead>
             <tbody>
               {catalogPoolRows.length > 0 ? (
                 catalogPoolRows.map((row) => {
+                  const match = onchainCatalogMatchMap[row.key];
                   return (
                     <tr key={row.key}>
                       <td data-label="상품">{row.productNames.join(" / ")}</td>
@@ -603,12 +621,44 @@ export function PortfolioPanel({
                           {row.queryable ? "O" : "X"}
                         </span>
                       </td>
+                      <td data-label="조회상태">
+                        {match ? (
+                          <span
+                            className={
+                              match.state === "matched" || match.state === "available"
+                                ? "protocol-match-badge protocol-match-badge--ok"
+                                : match.state === "drift"
+                                  ? "protocol-match-badge protocol-match-badge--drift"
+                                  : match.state === "unsupported"
+                                    ? "protocol-match-badge protocol-match-badge--unsupported"
+                                    : match.state === "error"
+                                      ? "protocol-match-badge protocol-match-badge--error"
+                                      : "protocol-match-badge protocol-match-badge--missing"
+                            }
+                            title={match.detail}
+                          >
+                            {match.state === "matched"
+                              ? "일치"
+                              : match.state === "available"
+                                ? "조회됨"
+                                : match.state === "drift"
+                                  ? "차이"
+                                  : match.state === "unsupported"
+                                    ? "미지원"
+                                    : match.state === "error"
+                                      ? "오류"
+                                      : "미조회"}
+                          </span>
+                        ) : (
+                          <span className="protocol-match-badge protocol-match-badge--pending">대기</span>
+                        )}
+                      </td>
                       <td data-label="메모">{row.memo}</td>
                     </tr>
                   );
                 })
               ) : (
-                <tr><td colSpan={7}>아직 대상 풀이 없습니다.</td></tr>
+                <tr><td colSpan={8}>아직 대상 풀이 없습니다.</td></tr>
               )}
             </tbody>
           </table>
@@ -760,4 +810,3 @@ export function PortfolioPanel({
     </section>
   );
 }
-
