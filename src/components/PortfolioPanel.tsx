@@ -3,6 +3,7 @@ import { AddressType } from "@phantom/browser-sdk";
 import { useAccounts } from "@phantom/react-sdk";
 import {
   getSession,
+  createDepositPositionRemote,
   listPublicOnchainPositions,
   login,
   type OnchainPositionPayload
@@ -62,6 +63,9 @@ export function PortfolioPanel({
   const [showQueryablePools, setShowQueryablePools] = useState(false);
   const [ledgerResetLoading, setLedgerResetLoading] = useState(false);
   const [ledgerResetError, setLedgerResetError] = useState("");
+  const [ledgerSyncLoadingKey, setLedgerSyncLoadingKey] = useState("");
+  const [ledgerSyncMessage, setLedgerSyncMessage] = useState("");
+  const [ledgerSyncError, setLedgerSyncError] = useState("");
 
   // ── 인출 상태 ──────────────────────────────────────────────
   const [withdrawDraft, setWithdrawDraft] = useState<{ row: ProtocolDetailRow; maxUsd: number } | null>(null);
@@ -257,6 +261,60 @@ export function PortfolioPanel({
     return { state: "missing", detail: "실제 조회 포지션 없음" };
   };
 
+  const buildLedgerSyncProductName = (row: OnchainPositionPayload): string => {
+    const itemKey = shortPositionId(row.protocolPositionId ?? row.positionToken ?? row.poolAddress ?? row.asset);
+    return `Onchain Sync · ${row.protocol} · ${row.chain} · ${itemKey}`;
+  };
+
+  const syncOnchainRowToLedger = async (row: OnchainPositionPayload) => {
+    const syncAmount = row.verify?.onchainAmountUsd ?? row.currentValueUsd ?? row.amountUsd ?? 0;
+    if (syncAmount <= 0) {
+      setLedgerSyncError("0원인 포지션은 장부에 반영하지 않았습니다.");
+      return;
+    }
+    const productName = buildLedgerSyncProductName(row);
+    if (positions.some((position) => position.productName === productName)) {
+      setLedgerSyncMessage(`이미 장부에 반영된 항목입니다: ${productName}`);
+      return;
+    }
+    const confirmed = window.confirm(
+      [
+        "이 실제 조회 결과를 내부 예치 장부에 반영할까요?",
+        `프로토콜: ${row.protocol}`,
+        `체인: ${row.chain}`,
+        `금액: $${syncAmount.toFixed(2)}`,
+        `장부 이름: ${productName}`
+      ].join("\n")
+    );
+    if (!confirmed) {
+      return;
+    }
+    const syncKey = `${row.protocol}__${row.chain}__${row.protocolPositionId ?? row.positionToken ?? row.poolAddress ?? row.asset}`;
+    setLedgerSyncLoadingKey(syncKey);
+    setLedgerSyncError("");
+    setLedgerSyncMessage("");
+    try {
+      await createDepositPositionRemote({
+        productName,
+        amountUsd: syncAmount,
+        expectedApr: row.protocol === "Aave" ? 0.05 : row.protocol === "Uniswap" ? 0.08 : row.protocol === "Orca" ? 0.08 : 0.0,
+        protocolMix: [
+          {
+            name: row.protocol,
+            weight: 1,
+            pool: row.poolAddress ?? row.positionToken ?? row.asset ?? undefined
+          }
+        ]
+      });
+      await onExecutionComplete?.();
+      setLedgerSyncMessage(`장부 반영 완료: ${productName}`);
+    } catch (error) {
+      setLedgerSyncError(error instanceof Error ? error.message : "장부 반영 실패");
+    } finally {
+      setLedgerSyncLoadingKey("");
+    }
+  };
+
   const verifyProtocolPoolMatches = async () => {
     setOnchainMatchLoading(true);
     setOnchainMatchError("");
@@ -407,6 +465,8 @@ export function PortfolioPanel({
               </button>
             </div>
           </div>
+          {ledgerSyncMessage ? <p className="auth-message auth-message--ok">{ledgerSyncMessage}</p> : null}
+          {ledgerSyncError ? <p className="exec-verify-error">{ledgerSyncError}</p> : null}
           <table className="protocol-detail-table portfolio-onchain-table">
             <thead>
               <tr>
@@ -416,6 +476,7 @@ export function PortfolioPanel({
                 <th>금액(USD)</th>
                 <th>상태</th>
                 <th>풀/포지션</th>
+                <th>장부</th>
               </tr>
             </thead>
             <tbody>
@@ -424,6 +485,9 @@ export function PortfolioPanel({
                 const verifyStatus = verify?.status;
                 const amountUsd = verify?.onchainAmountUsd ?? position.currentValueUsd ?? position.amountUsd;
                 const positionId = position.protocolPositionId ?? position.positionToken ?? position.poolAddress;
+                const syncProductName = buildLedgerSyncProductName(position);
+                const syncKey = `${position.protocol}__${position.chain}__${position.protocolPositionId ?? position.positionToken ?? position.poolAddress ?? position.asset}`;
+                const isLedgerRecorded = positions.some((item) => item.productName === syncProductName);
                 const verifiedAtLabel = verify?.verifiedAt
                   ? new Date(verify.verifiedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
                   : undefined;
@@ -443,6 +507,25 @@ export function PortfolioPanel({
                     </td>
                     <td data-label="풀/포지션" className="product-pool-pool-label" title={positionId ?? undefined}>
                       {shortPositionId(positionId)}
+                    </td>
+                    <td data-label="장부">
+                      {amountUsd && amountUsd > 0 ? (
+                        isLedgerRecorded ? (
+                          <span className="badge badge-low" title={syncProductName}>기록됨</span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="ghost-btn"
+                            disabled={ledgerSyncLoadingKey === syncKey}
+                            onClick={() => void syncOnchainRowToLedger(position)}
+                            title="이 조회 결과를 내부 예치 장부에 반영합니다. 승인 후 1건씩 처리됩니다."
+                          >
+                            {ledgerSyncLoadingKey === syncKey ? "반영 중..." : "장부 반영"}
+                          </button>
+                        )
+                      ) : (
+                        <span className="badge badge-high">-</span>
+                      )}
                     </td>
                   </tr>
                 );
