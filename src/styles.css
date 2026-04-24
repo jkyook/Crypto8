@@ -4174,6 +4174,14 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
   line-height: 1;
 }
 
+.ledger-sync-message {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+}
+
 .portfolio-position-address-cell {
   display: flex;
   flex-direction: column;

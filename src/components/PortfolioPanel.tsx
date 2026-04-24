@@ -808,7 +808,14 @@ export function PortfolioPanel({
               </button>
             </div>
           </div>
-          {ledgerSyncMessage ? <p className="auth-message auth-message--ok">{ledgerSyncMessage}</p> : null}
+          {ledgerSyncMessage ? (
+            <div className="auth-message auth-message--ok ledger-sync-message">
+              <span>{ledgerSyncMessage}</span>
+              <button type="button" className="ghost-btn ghost-btn--compact" onClick={() => setLedgerSyncMessage("")}>
+                닫기
+              </button>
+            </div>
+          ) : null}
           {ledgerSyncError ? <p className="exec-verify-error">{ledgerSyncError}</p> : null}
           {!hideOnchainResult ? (
             <table className="protocol-detail-table portfolio-onchain-table">
