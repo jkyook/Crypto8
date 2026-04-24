@@ -424,19 +424,20 @@ export function PortfolioPanel({
       return;
     }
     const productName = buildLedgerSyncProductName(row);
-    if (positions.some((position) => position.productName === productName)) {
+    const existingLedgerRow = positions.find((position) => position.productName === productName);
+    if (mode === "create" && existingLedgerRow) {
       setLedgerSyncMessage(`이미 장부에 반영된 항목입니다: ${productName}`);
       return;
     }
     const confirmed = window.confirm(
       [
-        "이 실제 조회 결과를 내부 예치 장부에 반영할까요?",
-      `프로토콜: ${row.protocol}`,
-      `체인: ${row.chain}`,
-      `금액: $${syncAmount.toFixed(2)}`,
-      `장부 이름: ${productName}`,
-      mode === "adjust" ? "기존 장부 값을 현 값으로 수정합니다." : "새 장부 항목을 생성합니다."
-    ].join("\n")
+        "이 실제 조회 결과의 온체인 현재값을 내부 예치 장부에 반영할까요?",
+        `프로토콜: ${row.protocol}`,
+        `체인: ${row.chain}`,
+        `금액: $${syncAmount.toFixed(2)}`,
+        `장부 이름: ${productName}`,
+        mode === "adjust" ? "기존 장부 값을 온체인 현재값으로 수정합니다." : "새 장부 항목을 생성합니다."
+      ].join("\n")
     );
     if (!confirmed) {
       return;
