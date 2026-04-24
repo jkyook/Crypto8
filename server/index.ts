@@ -40,6 +40,7 @@ import { linkUserWallet, listUserWallets } from "./userWallets";
 import type { ProtocolExecutionReadiness } from "./adapters/types";
 import { listLiveAccountAssets } from "./liveAccountAssets";
 import { resolveOrcaPoolCandidatesForAction } from "./orcaPools";
+import { listOnchainPositionHistory, recordOnchainPositionSnapshots, type SnapshotSourceRow } from "./onchainSnapshots";
 import { listPositionsByUser } from "./intentStore";
 import { enrichPositionsWithOnchain, getUniswapNpmAddress, listOrcaWalletPositions, scanUniswapWalletPositions } from "./positionVerifier";
 
@@ -1052,6 +1053,11 @@ app.get("/api/positions", requireAuth(["orchestrator", "security", "viewer"]), a
       ...(evmWalletAddress ? { Ethereum: evmWalletAddress, Arbitrum: evmWalletAddress, Base: evmWalletAddress } : {})
     };
     const enriched = await enrichPositionsWithOnchain(rows, walletAddress, walletAddressMap, forceRefresh);
+    try {
+      await recordOnchainPositionSnapshots(username, enriched);
+    } catch (error) {
+      console.warn(JSON.stringify({ level: "warn", msg: "onchain_snapshot_record_failed", scope: "private", error: String(error) }));
+    }
     res.json({
       ok: true,
       positions: enriched.map((row) => stripUsername(row))
@@ -1212,6 +1218,11 @@ app.get("/api/public/positions", async (req, res) => {
         rows.push(buildPublicOrcaErrorRow(solanaWalletAddress, error));
       }
     }
+    try {
+      await recordOnchainPositionSnapshots("guest", rows as SnapshotSourceRow[]);
+    } catch (error) {
+      console.warn(JSON.stringify({ level: "warn", msg: "onchain_snapshot_record_failed", scope: "public", error: String(error) }));
+    }
     res.json({ ok: true, positions: rows });
   } catch (error) {
     res.status(500).json({
@@ -1230,11 +1241,51 @@ app.get("/api/orca/positions", requireAuth(["orchestrator", "security", "viewer"
   }
   try {
     const positions = await listOrcaWalletPositions(username, walletAddress);
+    try {
+      await recordOnchainPositionSnapshots(username, positions as SnapshotSourceRow[]);
+    } catch (error) {
+      console.warn(JSON.stringify({ level: "warn", msg: "onchain_snapshot_record_failed", scope: "orca", error: String(error) }));
+    }
     res.json({ ok: true, positions });
   } catch (error) {
     res.status(500).json({
       ok: false,
       message: error instanceof Error ? error.message : "orca positions query failed"
+    });
+  }
+});
+
+app.get("/api/onchain/positions/history", requireAuth(["orchestrator", "security", "viewer"]), async (req, res) => {
+  const username = res.locals.user.username as string;
+  const protocol = typeof req.query.protocol === "string" ? req.query.protocol.trim() : "";
+  const chain = typeof req.query.chain === "string" ? req.query.chain.trim() : "";
+  const poolAddress = typeof req.query.poolAddress === "string" ? req.query.poolAddress.trim() : undefined;
+  const positionToken = typeof req.query.positionToken === "string" ? req.query.positionToken.trim() : undefined;
+  const asset = typeof req.query.asset === "string" ? req.query.asset.trim() : undefined;
+  const daysRaw = Number(req.query.days);
+  const days = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.min(Math.floor(daysRaw), 365) : 30;
+  const bucketRaw = typeof req.query.bucket === "string" ? req.query.bucket.trim() : "auto";
+  const bucket = bucketRaw === "hour" || bucketRaw === "day" || bucketRaw === "auto" ? bucketRaw : "auto";
+  if (!protocol || !chain) {
+    res.status(400).json({ ok: false, message: "protocol and chain are required" });
+    return;
+  }
+  try {
+    const history = await listOnchainPositionHistory({
+      username,
+      protocol,
+      chain,
+      poolAddress,
+      positionToken,
+      asset,
+      days,
+      bucket
+    });
+    res.json(history);
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      message: error instanceof Error ? error.message : "onchain history query failed"
     });
   }
 });

@@ -336,6 +336,21 @@ export type OnchainPositionPayload = {
   } | null;
 };
 
+export type OnchainPositionHistoryPoint = {
+  t: string;
+  currentValueUsd: number;
+  pnlUsd: number;
+  pendingYieldUsd: number;
+  snapshotCount: number;
+};
+
+export type OnchainPositionHistoryResponse = {
+  ok: true;
+  granularity: "hour" | "day";
+  poolKey: string;
+  points: OnchainPositionHistoryPoint[];
+};
+
 export type AccountAssetSymbol = "USDC" | "USDT" | "ETH" | "SOL" | "MSOL";
 
 export type AaveUsdcChain = "Arbitrum" | "Base" | "Ethereum";
@@ -1446,6 +1461,45 @@ export async function listOrcaWalletPositions(
   }
   const data = (await response.json()) as { positions?: OnchainPositionPayload[] };
   return data.positions ?? [];
+}
+
+export async function listOnchainPositionHistory(
+  opts: {
+    protocol: string;
+    chain: string;
+    poolAddress?: string | null;
+    positionToken?: string | null;
+    asset?: string | null;
+    days?: number;
+    bucket?: "hour" | "day" | "auto";
+  },
+  init: Pick<RequestInit, "signal"> = {}
+): Promise<OnchainPositionHistoryResponse> {
+  const query = new URLSearchParams({
+    protocol: opts.protocol,
+    chain: opts.chain
+  });
+  if (opts.poolAddress) {
+    query.set("poolAddress", opts.poolAddress);
+  }
+  if (opts.positionToken) {
+    query.set("positionToken", opts.positionToken);
+  }
+  if (opts.asset) {
+    query.set("asset", opts.asset);
+  }
+  if (opts.days != null) {
+    query.set("days", String(opts.days));
+  }
+  if (opts.bucket) {
+    query.set("bucket", opts.bucket);
+  }
+  const response = await authedFetch(`/api/onchain/positions/history?${query.toString()}`, init);
+  if (!response.ok) {
+    const raw = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(raw?.message ?? "온체인 히스토리 조회 실패");
+  }
+  return (await response.json()) as OnchainPositionHistoryResponse;
 }
 
 export async function resetPortfolioLedgerRemote(): Promise<{ deletedPositions: number; deletedWithdrawals: number }> {

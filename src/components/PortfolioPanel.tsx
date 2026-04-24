@@ -5,7 +5,9 @@ import {
   getSession,
   createDepositPositionRemote,
   listPublicOnchainPositions,
+  listOnchainPositionHistory,
   login,
+  type OnchainPositionHistoryPoint,
   type OnchainPositionPayload
 } from "../lib/api";
 import { DEFAULT_PRODUCTS } from "../lib/productCatalog";
@@ -23,6 +25,7 @@ import {
   onchainVerifyBadgeClass
 } from "../lib/protocolChain";
 import { ChainExposureDonut } from "./common/ChainExposureDonut";
+import { OnchainPositionHistoryChart } from "./OnchainPositionHistoryChart";
 import { OrchestratorBoard } from "./OrchestratorBoard";
 import { TradeControls } from "./common/TradeControls";
 import type { DepositPosition, PoolCatalogRow, ProtocolDetailRow, ProtocolPoolMatchState } from "../types/portfolio";
@@ -108,6 +111,9 @@ export function PortfolioPanel({
   const [ledgerSyncMessage, setLedgerSyncMessage] = useState("");
   const [ledgerSyncError, setLedgerSyncError] = useState("");
   const [selectedOnchainRowKey, setSelectedOnchainRowKey] = useState<string>("");
+  const [selectedOnchainHistoryPoints, setSelectedOnchainHistoryPoints] = useState<OnchainPositionHistoryPoint[]>([]);
+  const [selectedOnchainHistoryLoading, setSelectedOnchainHistoryLoading] = useState(false);
+  const [selectedOnchainHistoryError, setSelectedOnchainHistoryError] = useState("");
 
   const onchainQueryStorageKey = useMemo(() => {
     const session = getSession();
@@ -493,6 +499,46 @@ export function PortfolioPanel({
     () => onchainQueriedRows.find((row) => row.id === selectedOnchainRowKey) ?? null,
     [onchainQueriedRows, selectedOnchainRowKey]
   );
+
+  useEffect(() => {
+    if (!selectedOnchainRow) {
+      setSelectedOnchainHistoryPoints([]);
+      setSelectedOnchainHistoryError("");
+      setSelectedOnchainHistoryLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    setSelectedOnchainHistoryLoading(true);
+    setSelectedOnchainHistoryError("");
+    void listOnchainPositionHistory(
+      {
+        protocol: selectedOnchainRow.protocol,
+        chain: selectedOnchainRow.chain,
+        poolAddress: selectedOnchainRow.poolAddress ?? undefined,
+        positionToken: selectedOnchainRow.positionToken ?? undefined,
+        asset: selectedOnchainRow.asset ?? undefined,
+        days: 30,
+        bucket: "hour"
+      },
+      { signal: controller.signal }
+    )
+      .then((history) => {
+        setSelectedOnchainHistoryPoints(history.points);
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        setSelectedOnchainHistoryError(error instanceof Error ? error.message : "히스토리 조회 실패");
+        setSelectedOnchainHistoryPoints([]);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setSelectedOnchainHistoryLoading(false);
+        }
+      });
+    return () => controller.abort();
+  }, [selectedOnchainRow?.protocol, selectedOnchainRow?.chain, selectedOnchainRow?.poolAddress, selectedOnchainRow?.positionToken, selectedOnchainRow?.asset, selectedOnchainRow?.id]);
 
   const selectedOnchainDetail = useMemo<UniswapOnchainDetail | null>(() => {
     if (!selectedOnchainRow?.onchainDataJson) return null;
@@ -914,6 +960,26 @@ export function PortfolioPanel({
                                   </div>
                                 </div>
                               ) : null}
+                              <div className="onchain-history-section">
+                                <div className="onchain-history-section-head">
+                                  <div>
+                                    <p className="section-eyebrow">Snapshot Timeline</p>
+                                    <h4>조회 시점별 자산가치 · 수익</h4>
+                                  </div>
+                                  <span className="kpi-label">최근 30일 저장분</span>
+                                </div>
+                                {selectedOnchainHistoryLoading ? (
+                                  <p className="kpi-label">히스토리 불러오는 중...</p>
+                                ) : selectedOnchainHistoryError ? (
+                                  <p className="exec-verify-error">{selectedOnchainHistoryError}</p>
+                                ) : (
+                                  <OnchainPositionHistoryChart
+                                    points={selectedOnchainHistoryPoints}
+                                    title={`${detailRow.protocol} · ${detailRow.chain}`}
+                                    subtitle={selectedOnchainDetail?.poolLabel ?? detailRow.poolAddress ?? detailRow.positionToken ?? detailRow.asset}
+                                  />
+                                )}
+                              </div>
                             </div>
                           </td>
                         </tr>

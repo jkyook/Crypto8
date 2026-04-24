@@ -21,6 +21,7 @@ model User {
   aaveUsdcPositions AaveUsdcPosition[]
   depositIntents    DepositIntent[]
   positions         Position[]
+  onchainPositionSnapshots OnchainPositionSnapshot[]
   withdrawalIntents WithdrawalIntent[]
 
   @@index([registeredAt])
@@ -156,6 +157,41 @@ model MarketRatesSnapshot {
 
   @@index([sampledAt])
   @@map("market_rates_snapshots")
+}
+
+model OnchainPositionSnapshot {
+  id                String  @id
+  username          String
+  sampledAt         String  @map("sampled_at")
+  protocol          String
+  chain             String
+  poolKey           String  @map("pool_key")
+  poolAddress       String? @map("pool_address")
+  positionToken     String? @map("position_token")
+  asset             String
+  amountUsd         Float   @map("amount_usd")
+  principalUsd      Float?  @map("principal_usd")
+  currentValueUsd   Float?  @map("current_value_usd")
+  unrealizedPnlUsd  Float?  @map("unrealized_pnl_usd")
+  realizedPnlUsd    Float?  @map("realized_pnl_usd")
+  feesPaidUsd       Float?  @map("fees_paid_usd")
+  pendingYieldUsd   Float?  @map("pending_yield_usd")
+  netApy            Float?  @map("net_apy")
+  expectedApr       Float?  @map("expected_apr")
+  currentPrice      Float?  @map("current_price")
+  rangeLowerPrice   Float?  @map("range_lower_price")
+  rangeUpperPrice   Float?  @map("range_upper_price")
+  walletAddress     String? @map("wallet_address")
+  source            String?
+  positionId        String? @map("position_id")
+  onchainDataJson   String? @map("onchain_data_json")
+
+  user User @relation(fields: [username], references: [username], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([username, sampledAt])
+  @@index([username, protocol, chain, poolKey, sampledAt])
+  @@index([username, protocol, chain, positionToken, sampledAt])
+  @@map("onchain_position_snapshots")
 }
 
 // ─────────────────────────────────────────────

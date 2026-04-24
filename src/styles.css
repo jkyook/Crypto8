@@ -4047,6 +4047,119 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
   text-transform: uppercase;
 }
 
+.onchain-history-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(96, 132, 170, 0.18);
+}
+
+.onchain-history-section-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.onchain-history-section-head h4 {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #e9f2fb;
+  letter-spacing: 0.02em;
+}
+
+.onchain-history-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 10px 8px;
+  border-radius: 12px;
+  background: rgba(7, 16, 29, 0.64);
+  border: 1px solid rgba(96, 132, 170, 0.16);
+}
+
+.onchain-history-chart--empty {
+  padding: 16px 12px;
+}
+
+.onchain-history-chart-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.onchain-history-chart-head h4 {
+  margin: 0;
+  font-size: 0.88rem;
+  color: #f0f6ff;
+}
+
+.onchain-history-chart-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  justify-content: flex-end;
+  font-size: 0.72rem;
+  color: rgba(205, 221, 238, 0.92);
+}
+
+.onchain-history-chart-stats strong {
+  font-size: 0.76rem;
+  color: inherit;
+}
+
+.onchain-history-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  font-size: 0.69rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.onchain-history-chart-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.onchain-history-axis {
+  stroke: rgba(124, 150, 179, 0.6);
+  stroke-width: 1;
+}
+
+.onchain-history-grid {
+  stroke: rgba(124, 150, 179, 0.12);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+
+.onchain-history-tick {
+  fill: rgba(195, 214, 231, 0.78);
+  font-size: 0.62rem;
+}
+
+.onchain-history-line {
+  filter: drop-shadow(0 0 5px rgba(103, 142, 255, 0.18));
+}
+
+.onchain-history-point {
+  stroke: rgba(11, 24, 42, 0.8);
+  stroke-width: 2;
+}
+
+.onchain-history-footnote {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.66rem;
+  color: rgba(158, 183, 205, 0.76);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
 .portfolio-position-address-cell {
   display: flex;
   flex-direction: column;
