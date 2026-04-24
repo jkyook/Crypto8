@@ -34,6 +34,19 @@ function buildPath(
   return pts.map((p, i) => `${i === 0 ? "M" : "L"} ${xAt(p.t).toFixed(1)} ${yAt(p.yv).toFixed(1)}`).join(" ");
 }
 
+function buildAreaPath(
+  pts: Array<{ t: number; yv: number }>,
+  xAt: (t: number) => number,
+  yAt: (v: number) => number,
+  baselineY: number
+): string {
+  if (pts.length === 0) return "";
+  const line = buildPath(pts, xAt, yAt);
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  return `${line} L ${xAt(last.t).toFixed(1)} ${baselineY.toFixed(1)} L ${xAt(first.t).toFixed(1)} ${baselineY.toFixed(1)} Z`;
+}
+
 function compactLabel(label: string): string {
   return label
     .replace(/^Aave V3\s*/i, "Aave ")
@@ -113,16 +126,17 @@ export function MarketAprTimeSeriesChart({ points, granularity, series }: Market
         weight: item.weight,
         color: SERIES_COLORS[idx % SERIES_COLORS.length],
         path: parsed.length >= 2 ? buildPath(valuePoints, xAt, yAt) : lineAcross(valuePoints[0].yv),
+        points: valuePoints.map((point) => ({
+          x: xAt(point.t),
+          y: yAt(point.yv)
+        })),
         latest: valuePoints[valuePoints.length - 1].yv
       };
     });
 
     const blendPoints = parsed.map((p) => ({ t: p.t, yv: p.blend }));
     const pathB = parsed.length >= 2 ? buildPath(blendPoints, xAt, yAt) : lineAcross(blendPoints[0].yv);
-    const blendArea =
-      parsed.length >= 2
-        ? `${pathB} L ${xAt(parsed[parsed.length - 1].t).toFixed(1)} ${(PAD_T + innerH).toFixed(1)} L ${xAt(parsed[0].t).toFixed(1)} ${(PAD_T + innerH).toFixed(1)} Z`
-        : "";
+    const blendArea = parsed.length >= 2 ? buildAreaPath(blendPoints, xAt, yAt, PAD_T + innerH) : "";
     const latest = parsed[parsed.length - 1];
     const first = parsed[0];
     const delta = latest.blend - first.blend;
@@ -179,8 +193,14 @@ export function MarketAprTimeSeriesChart({ points, granularity, series }: Market
           <p className="market-apr-ts-chart-sub">선택 상품을 구성하는 실제 풀 APY와 배분 가중 합성 APY입니다.</p>
         </div>
         <div className="market-apr-ts-stat-strip">
-          <span>합성 APY <strong>{L.latest.blend.toFixed(2)}%</strong></span>
-          <span className={L.delta >= 0 ? "up" : "down"}>{L.delta >= 0 ? "+" : ""}{L.delta.toFixed(2)}p</span>
+          <span className="market-apr-ts-stat-chip">
+            <span className="market-apr-ts-stat-label">합성 APY</span>
+            <strong>{L.latest.blend.toFixed(2)}%</strong>
+          </span>
+          <span className={`market-apr-ts-stat-chip ${L.delta >= 0 ? "up" : "down"}`}>
+            <span className="market-apr-ts-stat-label">변화량</span>
+            <strong>{L.delta >= 0 ? "+" : ""}{L.delta.toFixed(2)}p</strong>
+          </span>
         </div>
         <span className="market-apr-ts-legend">
           {L.poolPaths.map((item) => (
@@ -217,25 +237,21 @@ export function MarketAprTimeSeriesChart({ points, granularity, series }: Market
         ))}
         {L.blendArea ? <path d={L.blendArea} fill="url(#marketAprBlendFill)" className="market-apr-ts-area" /> : null}
         {L.poolPaths.map((item) => (
-          <path
-            key={item.key}
-            d={item.path}
-            fill="none"
-            stroke={item.color}
-            strokeWidth={1.6}
-            className="market-apr-ts-line market-apr-ts-line--muted"
-          />
-        ))}
-        <path d={L.pathB} fill="none" stroke={COL_BLEND} strokeWidth={2.7} className="market-apr-ts-line market-apr-ts-line--blend" filter="url(#marketAprGlow)" />
-        {L.singlePoint ? (
-          <g>
-            {L.poolPaths.map((item) => {
-              const singlePoint = L.singlePoint!;
-              const point = singlePoint.pts.values.find((value) => value.key === item.key);
-              return point ? <circle key={item.key} cx={singlePoint.cx} cy={L.yAt(point.yv)} r={2.5} fill={item.color} /> : null;
-            })}
-            <circle cx={L.singlePoint.cx} cy={L.yAt(L.singlePoint.pts.blend)} r={3} fill={COL_BLEND} />
+          <g key={item.key}>
+            <path
+              d={item.path}
+              fill="none"
+              stroke={item.color}
+              strokeWidth={1.05}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="market-apr-ts-line market-apr-ts-line--muted"
+            />
           </g>
+        ))}
+        <path d={L.pathB} fill="none" stroke={COL_BLEND} strokeWidth={1.3} className="market-apr-ts-line market-apr-ts-line--blend" filter="url(#marketAprGlow)" />
+        {L.singlePoint ? (
+          <g />
         ) : null}
         {L.xTicks.map((xt) => (
           <text key={xt.label + xt.x} x={xt.x} y={VB_H - 11} textAnchor="middle" className="market-apr-ts-xtick">
