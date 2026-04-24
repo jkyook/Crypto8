@@ -3909,6 +3909,121 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
   padding: 5px 8px;
 }
 
+.onchain-detail-row td {
+  padding-top: 0;
+  padding-bottom: 8px;
+  background: rgba(17, 31, 52, 0.35);
+}
+
+.onchain-detail-inline--embedded {
+  margin: 4px 0 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(96, 132, 170, 0.22);
+  background: linear-gradient(180deg, rgba(11, 24, 42, 0.95), rgba(8, 18, 34, 0.88));
+}
+
+.onchain-detail-table-wrap {
+  overflow-x: auto;
+}
+
+.onchain-detail-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin-top: 8px;
+  font-size: 0.72rem;
+}
+
+.onchain-detail-table th,
+.onchain-detail-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(96, 132, 170, 0.16);
+  vertical-align: top;
+}
+
+.onchain-detail-table thead th {
+  color: var(--c8-text-muted);
+  font-weight: 700;
+  text-align: center;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  border-bottom: 1px solid rgba(123, 232, 195, 0.22);
+  font-size: 0.66rem;
+  text-transform: uppercase;
+}
+
+.onchain-detail-table tbody td {
+  color: #e7f0fb;
+  text-align: center;
+  font-weight: 600;
+  font-size: 0.74rem;
+  line-height: 1.28;
+  word-break: break-word;
+}
+
+.onchain-detail-table tbody tr:last-child th,
+.onchain-detail-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.onchain-detail-table--horizontal {
+  min-width: 930px;
+}
+
+.onchain-detail-table--horizontal thead th,
+.onchain-detail-table--horizontal tbody td {
+  min-width: 112px;
+}
+
+.onchain-detail-table--compact {
+  min-width: 1080px;
+}
+
+.onchain-detail-table--compact thead th,
+.onchain-detail-table--compact tbody td {
+  min-width: 110px;
+}
+
+.onchain-detail-breakdown {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(96, 132, 170, 0.18);
+}
+
+.onchain-detail-value {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.1;
+}
+
+.onchain-detail-value--normal {
+  color: #edf5ff;
+}
+
+.onchain-detail-value--muted {
+  color: rgba(158, 183, 205, 0.72);
+  font-weight: 500;
+}
+
+.onchain-detail-value--zero {
+  color: rgba(231, 240, 251, 0.68);
+  font-weight: 550;
+}
+
+.onchain-detail-value--negative {
+  color: #ff9f9f;
+}
+
+.onchain-detail-breakdown h4 {
+  margin: 0 0 4px;
+  font-size: 0.7rem;
+  color: #c7d7e8;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
 .portfolio-position-address-cell {
   display: flex;
   flex-direction: column;

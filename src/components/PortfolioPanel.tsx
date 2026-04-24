@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { AddressType } from "@phantom/browser-sdk";
 import { useAccounts } from "@phantom/react-sdk";
 import {
@@ -34,6 +34,27 @@ type OnchainQueryCache = {
   summary: string;
   hidden: boolean;
   savedAt: string;
+};
+
+type UniswapOnchainDetail = {
+  source?: string;
+  chain?: string;
+  tokenId?: string;
+  poolAddress?: string;
+  token0?: string;
+  token1?: string;
+  fee?: number;
+  tickLower?: number;
+  tickUpper?: number;
+  tickCurrent?: number;
+  amount0Raw?: string;
+  amount1Raw?: string;
+  amount0Usd?: number;
+  amount1Usd?: number;
+  feesOwed0Raw?: string;
+  feesOwed1Raw?: string;
+  feesOwed0Usd?: number;
+  feesOwed1Usd?: number;
 };
 
 export function PortfolioPanel({
@@ -76,6 +97,7 @@ export function PortfolioPanel({
   const [ledgerSyncLoadingKey, setLedgerSyncLoadingKey] = useState("");
   const [ledgerSyncMessage, setLedgerSyncMessage] = useState("");
   const [ledgerSyncError, setLedgerSyncError] = useState("");
+  const [selectedOnchainRowKey, setSelectedOnchainRowKey] = useState<string>("");
 
   const onchainQueryStorageKey = useMemo(() => {
     const session = getSession();
@@ -331,6 +353,7 @@ export function PortfolioPanel({
     setOnchainCatalogMatchMap(nextCatalogMap);
     setOnchainMatchSummary(summary);
     setHideOnchainResult(hidden);
+    setSelectedOnchainRowKey((current) => current || combinedRows.find((row) => row.verify?.status === "verified")?.id || combinedRows[0]?.id || "");
     persistOnchainQueryCache({
       rows: combinedRows,
       matchMap: nextMap,
@@ -453,7 +476,60 @@ export function PortfolioPanel({
     setOnchainCatalogMatchMap(cached.catalogMatchMap);
     setOnchainMatchSummary(cached.summary);
     setHideOnchainResult(cached.hidden);
+    setSelectedOnchainRowKey(cached.rows.find((row) => row.verify?.status === "verified")?.id ?? cached.rows[0]?.id ?? "");
   }, [onchainQueryStorageKey]);
+
+  const selectedOnchainRow = useMemo(
+    () => onchainQueriedRows.find((row) => row.id === selectedOnchainRowKey) ?? null,
+    [onchainQueriedRows, selectedOnchainRowKey]
+  );
+
+  const selectedOnchainDetail = useMemo<UniswapOnchainDetail | null>(() => {
+    if (!selectedOnchainRow?.onchainDataJson) return null;
+    try {
+      return JSON.parse(selectedOnchainRow.onchainDataJson) as UniswapOnchainDetail;
+    } catch {
+      return null;
+    }
+  }, [selectedOnchainRow?.onchainDataJson]);
+
+  const formatDetailMoney = (value: number | null | undefined, options?: { allowZeroPrefix?: boolean }) => {
+    if (value == null) {
+      return <span className="onchain-detail-value onchain-detail-value--muted">—</span>;
+    }
+    const isZero = Math.abs(value) < 0.005;
+    const formatted = `$${Math.abs(value).toFixed(2)}`;
+    const prefix = value > 0 ? "+" : value < 0 ? "-" : options?.allowZeroPrefix ? "+" : "";
+    const toneClass = isZero ? "onchain-detail-value--zero" : value < 0 ? "onchain-detail-value--negative" : "onchain-detail-value--normal";
+    return (
+      <span className={`onchain-detail-value ${toneClass}`}>
+        {prefix}
+        {formatted}
+      </span>
+    );
+  };
+
+  const formatDetailPercent = (value: number | null | undefined) => {
+    if (value == null) {
+      return <span className="onchain-detail-value onchain-detail-value--muted">—</span>;
+    }
+    const isZero = Math.abs(value) < 0.00005;
+    const toneClass = isZero ? "onchain-detail-value--zero" : value < 0 ? "onchain-detail-value--negative" : "onchain-detail-value--normal";
+    const prefix = value > 0 ? "+" : value < 0 ? "-" : "";
+    return (
+      <span className={`onchain-detail-value ${toneClass}`}>
+        {prefix}
+        {(Math.abs(value) * 100).toFixed(2)}%
+      </span>
+    );
+  };
+
+  const formatDetailText = (value: string | null | undefined) => {
+    if (!value) {
+      return <span className="onchain-detail-value onchain-detail-value--muted">—</span>;
+    }
+    return <span className="onchain-detail-value onchain-detail-value--normal">{value}</span>;
+  };
 
   return (
     <section className="card portfolio-panel-card">
@@ -572,6 +648,7 @@ export function PortfolioPanel({
                   <th>금액(USD)</th>
                   <th>상태</th>
                   <th>풀/포지션</th>
+                  <th>상세</th>
                   <th>장부</th>
                 </tr>
               </thead>
@@ -585,57 +662,156 @@ export function PortfolioPanel({
                   const syncProductName = buildLedgerSyncProductName(position);
                   const syncKey = `${position.protocol}__${position.chain}__${position.protocolPositionId ?? position.positionToken ?? position.poolAddress ?? position.asset}`;
                   const isLedgerRecorded = positions.some((item) => item.productName === syncProductName);
+                  const detailRow = selectedOnchainRowKey === position.id && verifyStatus === "verified" ? selectedOnchainRow : null;
                   const verifiedAtLabel = verify?.verifiedAt
                     ? new Date(verify.verifiedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
                     : undefined;
                   return (
-                    <tr key={`${position.id}-${position.chain}-${position.protocol}`}>
-                      <td data-label="프로토콜">{position.protocol}</td>
-                      <td data-label="체인">{position.chain}</td>
-                      <td data-label="자산">{position.asset}</td>
-                      <td data-label="금액(USD)">{amountUsd == null ? "—" : `$${amountUsd.toFixed(2)}`}</td>
-                      <td data-label="상태">
-                        <span
-                          className={onchainVerifyBadgeClass(verifyStatus)}
-                          title={[verify?.detail, verifiedAtLabel].filter(Boolean).join(" · ") || undefined}
-                        >
-                          {onchainVerifyLabel(verifyStatus)}
-                        </span>
-                      </td>
-                      <td data-label="풀/포지션" className="product-pool-pool-label" title={[positionId, poolAddress].filter(Boolean).join(" · ") || undefined}>
-                        {position.protocol === "Uniswap" ? (
-                          <div className="portfolio-uniswap-position-cell">
-                            <span className="portfolio-uniswap-position-primary">{shortPositionId(positionId)}</span>
-                            <span className="portfolio-uniswap-position-secondary">
-                              {poolAddress ? shortPositionId(poolAddress) : "조회 대상 없음"}
-                            </span>
-                          </div>
-                        ) : (
-                          shortPositionId(positionId)
-                        )}
-                      </td>
-                      <td data-label="장부">
-                        {amountUsd && amountUsd > 0 ? (
-                          isLedgerRecorded ? (
-                            <span className="badge badge-low" title={syncProductName}>기록됨</span>
-                          ) : canPersistToServer ? (
+                    <Fragment key={`${position.id}-${position.chain}-${position.protocol}`}>
+                      <tr>
+                        <td data-label="프로토콜">{position.protocol}</td>
+                        <td data-label="체인">{position.chain}</td>
+                        <td data-label="자산">{position.asset}</td>
+                        <td data-label="금액(USD)">{amountUsd == null ? "—" : `$${amountUsd.toFixed(2)}`}</td>
+                        <td data-label="상태">
+                          <span
+                            className={onchainVerifyBadgeClass(verifyStatus)}
+                            title={[verify?.detail, verifiedAtLabel].filter(Boolean).join(" · ") || undefined}
+                          >
+                            {onchainVerifyLabel(verifyStatus)}
+                          </span>
+                        </td>
+                        <td data-label="풀/포지션" className="product-pool-pool-label" title={[positionId, poolAddress].filter(Boolean).join(" · ") || undefined}>
+                          {position.protocol === "Uniswap" ? (
+                            <div className="portfolio-uniswap-position-cell">
+                              <span className="portfolio-uniswap-position-primary">{shortPositionId(positionId)}</span>
+                              <span className="portfolio-uniswap-position-secondary">
+                                {poolAddress ? shortPositionId(poolAddress) : "조회 대상 없음"}
+                              </span>
+                            </div>
+                          ) : (
+                            shortPositionId(positionId)
+                          )}
+                        </td>
+                        <td data-label="상세">
+                          {verifyStatus === "verified" ? (
                             <button
                               type="button"
-                              className="ghost-btn"
-                              disabled={ledgerSyncLoadingKey === syncKey}
-                              onClick={() => void syncOnchainRowToLedger(position)}
-                              title="이 조회 결과를 내부 예치 장부에 반영합니다. 승인 후 1건씩 처리됩니다."
+                              className={selectedOnchainRowKey === position.id ? "ghost-btn ghost-btn--active" : "ghost-btn"}
+                              onClick={() => setSelectedOnchainRowKey((current) => (current === position.id ? "" : position.id))}
+                              title="이 성공한 조회 결과의 세부 정보를 펼쳐 봅니다."
                             >
-                              {ledgerSyncLoadingKey === syncKey ? "반영 중..." : "장부 반영"}
+                              {selectedOnchainRowKey === position.id ? "열림" : "상세"}
                             </button>
                           ) : (
-                            <span className="badge badge-high" title="로그인 후 장부 반영 가능">로그인 필요</span>
-                          )
-                        ) : (
-                          <span className="badge badge-high">-</span>
-                        )}
-                      </td>
-                    </tr>
+                            <span className="badge badge-low">-</span>
+                          )}
+                        </td>
+                        <td data-label="장부">
+                          {amountUsd && amountUsd > 0 ? (
+                            isLedgerRecorded ? (
+                              <span className="badge badge-low" title={syncProductName}>기록됨</span>
+                            ) : canPersistToServer ? (
+                              <button
+                                type="button"
+                                className="ghost-btn"
+                                disabled={ledgerSyncLoadingKey === syncKey}
+                                onClick={() => void syncOnchainRowToLedger(position)}
+                                title="이 조회 결과를 내부 예치 장부에 반영합니다. 승인 후 1건씩 처리됩니다."
+                              >
+                                {ledgerSyncLoadingKey === syncKey ? "반영 중..." : "장부 반영"}
+                              </button>
+                            ) : (
+                              <span className="badge badge-high" title="로그인 후 장부 반영 가능">로그인 필요</span>
+                            )
+                          ) : (
+                            <span className="badge badge-high">-</span>
+                          )}
+                        </td>
+                      </tr>
+                      {detailRow ? (
+                        <tr className="onchain-detail-row">
+                          <td colSpan={8}>
+                            <div className="onchain-detail-inline onchain-detail-inline--embedded">
+                              <div className="onchain-detail-table-wrap">
+                                <table className="onchain-detail-table onchain-detail-table--horizontal">
+                                  <thead>
+                                    <tr>
+                                      <th>현재가치</th>
+                                      <th>원금/기록값</th>
+                                      <th>미실현 손익</th>
+                                      <th>실현 손익</th>
+                                      <th>수수료</th>
+                                      <th>예상 APY</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    <tr>
+                                      <td>{formatDetailMoney(detailRow.currentValueUsd ?? 0)}</td>
+                                      <td>{formatDetailMoney(detailRow.principalUsd ?? detailRow.amountUsd ?? 0)}</td>
+                                      <td>{formatDetailMoney(detailRow.unrealizedPnlUsd, { allowZeroPrefix: true })}</td>
+                                      <td>{formatDetailMoney(detailRow.realizedPnlUsd, { allowZeroPrefix: true })}</td>
+                                      <td>{formatDetailMoney(detailRow.feesPaidUsd)}</td>
+                                      <td>{formatDetailPercent(detailRow.netApy)}</td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </div>
+                              {detailRow.protocol === "Uniswap" ? (
+                                <div className="onchain-detail-breakdown">
+                                  <div className="onchain-detail-table-wrap">
+                                    <table className="onchain-detail-table onchain-detail-table--horizontal onchain-detail-table--compact">
+                                      <thead>
+                                        <tr>
+                                          <th>풀 주소</th>
+                                          <th>토큰쌍</th>
+                                          <th>fee tier</th>
+                                          <th>tick 범위</th>
+                                          <th>현재 tick</th>
+                                          <th>미청구 수수료 추정</th>
+                                          <th>구성 자산 0</th>
+                                          <th>구성 자산 1</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        <tr>
+                                          <td>{formatDetailText(selectedOnchainDetail?.poolAddress ? shortPositionId(selectedOnchainDetail.poolAddress) : null)}</td>
+                                          <td>{formatDetailText(detailRow.asset)}</td>
+                                          <td>
+                                            {selectedOnchainDetail?.fee == null ? (
+                                              <span className="onchain-detail-value onchain-detail-value--muted">—</span>
+                                            ) : (
+                                              <span className="onchain-detail-value onchain-detail-value--normal">{selectedOnchainDetail.fee / 10_000}%</span>
+                                            )}
+                                          </td>
+                                          <td>
+                                            {selectedOnchainDetail?.tickLower == null || selectedOnchainDetail.tickUpper == null ? (
+                                              <span className="onchain-detail-value onchain-detail-value--muted">—</span>
+                                            ) : (
+                                              <span className="onchain-detail-value onchain-detail-value--normal">
+                                                {selectedOnchainDetail.tickLower} ~ {selectedOnchainDetail.tickUpper}
+                                              </span>
+                                            )}
+                                          </td>
+                                          <td>{selectedOnchainDetail?.tickCurrent == null ? formatDetailText(null) : formatDetailText(String(selectedOnchainDetail.tickCurrent))}</td>
+                                          <td>
+                                            {selectedOnchainDetail
+                                              ? formatDetailMoney((selectedOnchainDetail.feesOwed0Usd ?? 0) + (selectedOnchainDetail.feesOwed1Usd ?? 0))
+                                              : formatDetailText(null)}
+                                          </td>
+                                          <td>{formatDetailText(selectedOnchainDetail?.amount0Raw ?? null)}</td>
+                                          <td>{formatDetailText(selectedOnchainDetail?.amount1Raw ?? null)}</td>
+                                        </tr>
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              ) : null}
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
                   );
                 })}
               </tbody>

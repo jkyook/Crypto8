@@ -295,7 +295,17 @@ export type UniswapWalletPositionSnapshot = {
   fee:       number;
   tickLower: number;
   tickUpper: number;
+  tickCurrent: number;
+  sqrtPriceX96: string;
   liquidity: string;
+  amount0Raw: string;
+  amount1Raw: string;
+  amount0Usd: number;
+  amount1Usd: number;
+  feesOwed0Raw: string;
+  feesOwed1Raw: string;
+  feesOwed0Usd: number;
+  feesOwed1Usd: number;
   amountUsd: number;
   symbol:    string;   // e.g. "USDC/WETH"
   chain:     string;
@@ -375,6 +385,9 @@ export async function scanUniswapWalletPositions(
         token0: string; token1: string; fee: number;
         tickLower: number; tickUpper: number; liquidity: bigint;
       };
+      const [, , , , , , , , , , tokensOwed0, tokensOwed1] = pos as [
+        unknown, unknown, string, string, number, number, number, bigint, bigint, bigint, bigint, bigint
+      ];
       if (liquidity === 0n) continue;
 
       // 풀 주소 조회 → slot0 (현재 가격)
@@ -410,6 +423,10 @@ export async function scanUniswapWalletPositions(
 
       const usd0 = (a0Raw / 10 ** dec0) * price0;
       const usd1 = (a1Raw / 10 ** dec1) * price1;
+      const feesOwed0 = Number(tokensOwed0) / 10 ** dec0;
+      const feesOwed1 = Number(tokensOwed1) / 10 ** dec1;
+      const feesOwed0Usd = feesOwed0 * price0;
+      const feesOwed1Usd = feesOwed1 * price1;
       const amountUsd = usd0 + usd1;
 
       const symbolLabel = `${sym0 ?? token0.slice(0, 6)}/${sym1 ?? token1.slice(0, 6)}`;
@@ -419,7 +436,17 @@ export async function scanUniswapWalletPositions(
         poolAddress: poolAddr,
         token0,    token1,
         fee,       tickLower, tickUpper,
+        tickCurrent,
+        sqrtPriceX96: sqrtPriceX96.toString(),
         liquidity: liquidity.toString(),
+        amount0Raw: a0Raw.toFixed(18),
+        amount1Raw: a1Raw.toFixed(18),
+        amount0Usd: usd0,
+        amount1Usd: usd1,
+        feesOwed0Raw: feesOwed0.toFixed(18),
+        feesOwed1Raw: feesOwed1.toFixed(18),
+        feesOwed0Usd,
+        feesOwed1Usd,
         amountUsd,
         symbol:    symbolLabel,
         chain
