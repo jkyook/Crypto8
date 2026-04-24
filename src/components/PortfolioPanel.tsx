@@ -322,6 +322,22 @@ export function PortfolioPanel({
     return { state: "missing", detail: "실제 조회 포지션 없음" };
   };
 
+  const resolveCatalogSyncTarget = (row: (typeof catalogPoolRows)[number]) => {
+    const poolHint = row.pool.match(/0x[a-fA-F0-9]{40}/)?.[0]?.toLowerCase() ?? row.pool.match(/[1-9A-HJ-NP-Za-km-z]{32,44}/)?.[0]?.toLowerCase() ?? null;
+    const protocolKey = `${row.protocol.toLowerCase()}__${row.chain.toLowerCase()}`;
+    const candidates = onchainQueriedRows.filter((item) => `${item.protocol.toLowerCase()}__${item.chain.toLowerCase()}` === protocolKey);
+    if (candidates.length === 0) return null;
+    if (poolHint) {
+      const matched = candidates.find((item) => {
+        const itemPool = item.poolAddress?.toLowerCase();
+        const itemToken = item.protocolPositionId?.toLowerCase() ?? item.positionToken?.toLowerCase();
+        return itemPool === poolHint || itemToken === poolHint;
+      });
+      if (matched) return matched;
+    }
+    return candidates.find((item) => (item.verify?.onchainAmountUsd ?? item.currentValueUsd ?? item.amountUsd) > 0) ?? candidates[0] ?? null;
+  };
+
   const recomputeQueryState = (combinedRows: OnchainPositionPayload[]) => {
     const nextMap: Record<string, { state: ProtocolPoolMatchState; detail: string }> = {};
     for (const row of protocolRows) {
@@ -1189,32 +1205,58 @@ export function PortfolioPanel({
                       </td>
                       <td data-label="조회상태">
                         {match ? (
-                          <span
-                            className={
-                              match.state === "matched" || match.state === "available"
-                                ? "protocol-match-badge protocol-match-badge--ok"
-                                : match.state === "drift"
-                                  ? "protocol-match-badge protocol-match-badge--drift"
-                                  : match.state === "unsupported"
-                                    ? "protocol-match-badge protocol-match-badge--unsupported"
-                                    : match.state === "error"
-                                      ? "protocol-match-badge protocol-match-badge--error"
-                                      : "protocol-match-badge protocol-match-badge--missing"
-                            }
-                            title={match.detail}
-                          >
-                            {match.state === "matched"
-                              ? "일치"
-                              : match.state === "available"
-                                ? "조회됨"
-                                : match.state === "drift"
-                                  ? "차이"
-                                  : match.state === "unsupported"
-                                    ? "미지원"
-                                    : match.state === "error"
-                                      ? "오류"
-                                      : "미조회"}
-                          </span>
+                          <div className="catalog-match-cell">
+                            <span
+                              className={
+                                match.state === "matched" || match.state === "available"
+                                  ? "protocol-match-badge protocol-match-badge--ok"
+                                  : match.state === "drift"
+                                    ? "protocol-match-badge protocol-match-badge--drift"
+                                    : match.state === "unsupported"
+                                      ? "protocol-match-badge protocol-match-badge--unsupported"
+                                      : match.state === "error"
+                                        ? "protocol-match-badge protocol-match-badge--error"
+                                        : "protocol-match-badge protocol-match-badge--missing"
+                              }
+                              title={match.detail}
+                            >
+                              {match.state === "matched"
+                                ? "일치"
+                                : match.state === "available"
+                                  ? "조회됨"
+                                  : match.state === "drift"
+                                    ? "차이"
+                                    : match.state === "unsupported"
+                                      ? "미지원"
+                                      : match.state === "error"
+                                        ? "오류"
+                                        : "미조회"}
+                            </span>
+                            {match.state === "drift" ? (
+                              (() => {
+                                const target = resolveCatalogSyncTarget(row);
+                                const syncKey = target
+                                  ? `${target.protocol}__${target.chain}__${target.protocolPositionId ?? target.positionToken ?? target.poolAddress ?? target.asset}`
+                                  : row.key;
+                                const isRecorded = target ? positions.some((item) => item.productName === buildLedgerSyncProductName(target)) : false;
+                                return target && canPersistToServer ? (
+                                  <button
+                                    type="button"
+                                    className="ghost-btn ghost-btn--compact"
+                                    disabled={ledgerSyncLoadingKey === syncKey}
+                                    onClick={() => void syncOnchainRowToLedger(target, isRecorded ? "adjust" : "create")}
+                                    title="실제 조회된 현재 값으로 장부를 바로 맞춥니다."
+                                  >
+                                    {ledgerSyncLoadingKey === syncKey
+                                      ? "처리 중..."
+                                      : isRecorded
+                                        ? "현 값으로 수정"
+                                        : "장부 반영"}
+                                  </button>
+                                ) : null;
+                              })()
+                            ) : null}
+                          </div>
                         ) : (
                           <span className="protocol-match-badge protocol-match-badge--pending">대기</span>
                         )}
