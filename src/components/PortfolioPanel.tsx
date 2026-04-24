@@ -536,6 +536,24 @@ export function PortfolioPanel({
     setSelectedOnchainRowKey(cached.rows.find((row) => row.verify?.status === "verified")?.id ?? cached.rows[0]?.id ?? "");
   }, [onchainQueryStorageKey]);
 
+  useEffect(() => {
+    if (onchainQueriedRows.length === 0) {
+      return;
+    }
+    const { nextMap, nextCatalogMap, summary } = recomputeQueryState(onchainQueriedRows);
+    setOnchainMatchMap(nextMap);
+    setOnchainCatalogMatchMap(nextCatalogMap);
+    setOnchainMatchSummary(summary);
+    persistOnchainQueryCache({
+      rows: onchainQueriedRows,
+      matchMap: nextMap,
+      catalogMatchMap: nextCatalogMap,
+      summary,
+      hidden: hideOnchainResult
+    });
+    // 장부 수정/예치/인출 뒤 positions가 갱신되면 이미 저장된 조회 결과도 즉시 재대조한다.
+  }, [onchainQueriedRows, positions, hideOnchainResult]);
+
   const selectedOnchainRow = useMemo(
     () => onchainQueriedRows.find((row) => row.id === selectedOnchainRowKey) ?? null,
     [onchainQueriedRows, selectedOnchainRowKey]
