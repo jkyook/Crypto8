@@ -1,3 +1,4 @@
+import type { BrowserSDK } from "@phantom/browser-sdk";
 import type { RiskLevel } from "../types";
 
 function stripTrailingSlash(s: string): string {
@@ -41,6 +42,10 @@ function buildApiUrl(base: string, path: string): string {
     return p;
   }
   return `${base}${p}`;
+}
+
+function inferWalletChain(walletAddress: string): WalletChain {
+  return /^0x[a-fA-F0-9]{40}$/.test(walletAddress.trim()) ? "Ethereum" : "Solana";
 }
 
 /** 백서 PDF — API 서버가 `/api/whitepaper.pdf`로 제공(정적 호스트가 아님). */
@@ -124,6 +129,7 @@ const LEGACY_REFRESH_TOKEN_KEY = "crypto8_refresh_token";
 const ROLE_KEY = "crypto8_role";
 const USERNAME_KEY = "crypto8_username";
 const LOGIN_TYPE_KEY = "crypto8_login_type";
+const WALLET_CHAIN_KEY = "crypto8_wallet_chain";
 const CSRF_COOKIE_NAME = "csrf_token";
 
 export type ProductNetwork = "Ethereum" | "Arbitrum" | "Base" | "Solana" | "Multi";
@@ -180,7 +186,10 @@ export type AuthSession = {
   username: string;
   /** 로그인 방식: 지갑 서명 로그인이면 "wallet", 아이디/비밀번호 로그인이면 "password" */
   loginType: "wallet" | "password";
+  walletChain?: WalletChain;
 };
+
+export type WalletChain = "Solana" | "Ethereum";
 
 export type ApprovalLog = {
   id: string;
@@ -594,7 +603,8 @@ export function getSession(): AuthSession | null {
     return null;
   }
   const loginType = (localStorage.getItem(LOGIN_TYPE_KEY) as "wallet" | "password" | null) ?? "password";
-  return { role, username, loginType };
+  const walletChain = localStorage.getItem(WALLET_CHAIN_KEY) as WalletChain | null;
+  return walletChain ? { role, username, loginType, walletChain } : { role, username, loginType };
 }
 
 /** `useSyncExternalStore`용: HttpOnly 쿠키 대신 로컬 세션 마커만 구독합니다. */
@@ -617,6 +627,8 @@ export function subscribeLocalAuth(callback: () => void): () => void {
       e.key === LEGACY_REFRESH_TOKEN_KEY ||
       e.key === ROLE_KEY ||
       e.key === USERNAME_KEY ||
+      e.key === LOGIN_TYPE_KEY ||
+      e.key === WALLET_CHAIN_KEY ||
       e.key === null
     ) {
       callback();
@@ -638,6 +650,7 @@ function clearAuthStorageSync(): void {
   localStorage.removeItem(ROLE_KEY);
   localStorage.removeItem(USERNAME_KEY);
   localStorage.removeItem(LOGIN_TYPE_KEY);
+  localStorage.removeItem(WALLET_CHAIN_KEY);
   clearStoredCsrfToken();
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(AUTH_CLEARED_EVENT));
@@ -730,19 +743,49 @@ export async function login(username: string, password: string): Promise<AuthSes
   localStorage.setItem(ROLE_KEY, session.role);
   localStorage.setItem(USERNAME_KEY, session.username);
   localStorage.setItem(LOGIN_TYPE_KEY, "password");
+  localStorage.removeItem(WALLET_CHAIN_KEY);
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(AUTH_UPDATED_EVENT));
   }
   return session;
 }
 
-export async function loginWithWallet(walletAddress: string): Promise<AuthSession> {
+function extractSolanaSignatureBytes(
+  signed: Uint8Array | { signature?: Uint8Array | number[] | string; rawSignature?: Uint8Array | number[] | string } | string | null
+): Uint8Array | null {
+  if (signed instanceof Uint8Array) {
+    return signed;
+  }
+  const candidate = typeof signed === "string" ? signed : signed?.signature ?? signed?.rawSignature;
+  if (candidate instanceof Uint8Array) {
+    return candidate;
+  }
+  if (Array.isArray(candidate)) {
+    return new Uint8Array(candidate);
+  }
+  if (typeof candidate === "string") {
+    try {
+      return Uint8Array.from(atob(candidate), (char) => char.charCodeAt(0));
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+type WalletLoginOptions = {
+  chain?: WalletChain;
+  sdk?: BrowserSDK | null;
+};
+
+export async function loginWithWallet(walletAddress: string, options: WalletLoginOptions = {}): Promise<AuthSession> {
+  const chain = options.chain ?? inferWalletChain(walletAddress);
   const challengeResponse = await fetchWithLocal8787Fallback(
     "/api/auth/wallet/challenge",
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ walletAddress })
+      body: JSON.stringify({ walletAddress, chain })
     },
     "지갑 로그인 메시지 생성"
   );
@@ -754,36 +797,61 @@ export async function loginWithWallet(walletAddress: string): Promise<AuthSessio
   if (!challengeResponse.ok || !challenge.nonce || !challenge.message) {
     throw new Error(typeof challenge.message === "string" ? challenge.message : "지갑 로그인 메시지 생성 실패");
   }
-  const provider = (window as {
-    phantom?: {
-      solana?: {
-        isPhantom?: boolean;
-        signMessage?: (message: Uint8Array) => Promise<Uint8Array | { signature?: Uint8Array | number[] }>;
+
+  let signature: string | null = null;
+  if (chain === "Solana") {
+    const provider = (window as {
+      phantom?: {
+        solana?: {
+          isPhantom?: boolean;
+          signMessage?: (message: Uint8Array) => Promise<
+            Uint8Array | { signature?: Uint8Array | number[] | string; rawSignature?: Uint8Array | number[] | string } | string
+          >;
+        };
       };
-    };
-  }).phantom?.solana;
-  if (!provider?.isPhantom || typeof provider.signMessage !== "function") {
-    throw new Error("Phantom 지갑 서명이 필요합니다.");
+    }).phantom?.solana;
+    if (!provider?.isPhantom || typeof provider.signMessage !== "function") {
+      throw new Error("Phantom 지갑 서명이 필요합니다.");
+    }
+    const signed = await provider.signMessage(new TextEncoder().encode(challenge.message));
+    const signatureBytes = extractSolanaSignatureBytes(signed);
+    if (!signatureBytes) {
+      throw new Error("지갑 서명 결과를 읽지 못했습니다.");
+    }
+    signature = btoa(String.fromCharCode(...signatureBytes));
+  } else {
+    const provider =
+      options.sdk?.ethereum ??
+      (window as {
+        phantom?: {
+          ethereum?: {
+            isPhantom?: boolean;
+            signPersonalMessage?: (message: string, address: string) => Promise<{ signature?: string; rawSignature?: string } | string>;
+          };
+        };
+      }).phantom?.ethereum;
+    if (typeof provider?.signPersonalMessage !== "function") {
+      throw new Error("Phantom EVM 지갑 서명이 필요합니다.");
+    }
+    const signed = await provider.signPersonalMessage(challenge.message, walletAddress);
+    if (typeof signed === "string") {
+      signature = signed;
+    } else if (typeof signed.signature === "string") {
+      signature = signed.signature;
+    } else if (typeof signed.rawSignature === "string") {
+      signature = signed.rawSignature;
+    }
+    if (!signature) {
+      throw new Error("지갑 서명 결과를 읽지 못했습니다.");
+    }
   }
-  const signed = await provider.signMessage(new TextEncoder().encode(challenge.message));
-  const signatureBytes =
-    signed instanceof Uint8Array
-      ? signed
-      : signed.signature instanceof Uint8Array
-        ? signed.signature
-        : Array.isArray(signed.signature)
-          ? new Uint8Array(signed.signature)
-          : null;
-  if (!signatureBytes) {
-    throw new Error("지갑 서명 결과를 읽지 못했습니다.");
-  }
-  const signature = btoa(String.fromCharCode(...signatureBytes));
+
   const response = await fetchWithLocal8787Fallback(
     "/api/auth/wallet",
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ walletAddress, nonce: challenge.nonce, signature })
+      body: JSON.stringify({ walletAddress, chain, nonce: challenge.nonce, signature })
     },
     "지갑 로그인"
   );
@@ -797,13 +865,14 @@ export async function loginWithWallet(walletAddress: string): Promise<AuthSessio
   if (!response.ok || !data.role || !data.username) {
     throw new Error(typeof data.message === "string" ? data.message : "지갑 로그인 실패");
   }
-  const session: AuthSession = { role: data.role, username: data.username, loginType: "wallet" };
+  const session: AuthSession = { role: data.role, username: data.username, loginType: "wallet", walletChain: chain };
   localStorage.removeItem(LEGACY_TOKEN_KEY);
   localStorage.removeItem(LEGACY_REFRESH_TOKEN_KEY);
   storeCsrfTokenFromResponse(response, data);
   localStorage.setItem(ROLE_KEY, session.role);
   localStorage.setItem(USERNAME_KEY, session.username);
   localStorage.setItem(LOGIN_TYPE_KEY, "wallet");
+  localStorage.setItem(WALLET_CHAIN_KEY, chain);
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(AUTH_UPDATED_EVENT));
   }
@@ -865,6 +934,7 @@ export async function register(username: string, password: string): Promise<Auth
   localStorage.setItem(ROLE_KEY, session.role);
   localStorage.setItem(USERNAME_KEY, session.username);
   localStorage.setItem(LOGIN_TYPE_KEY, "password");
+  localStorage.removeItem(WALLET_CHAIN_KEY);
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(AUTH_UPDATED_EVENT));
   }

@@ -18,6 +18,7 @@ import {
   type AccountAssetSymbol,
   type AuthSession,
   type DepositPositionPayload,
+  type WalletChain,
   type UserWallet
 } from "../lib/api";
 import { loadCachedAccountAssets, saveCachedAccountAssets } from "../lib/accountAssetCache";
@@ -177,18 +178,34 @@ function readConnectedSolanaAddress(): string | undefined {
   return phantomSolana?.publicKey?.toBase58?.() ?? phantomSolana?.publicKey?.toString?.();
 }
 
+function readConnectedEthereumAddress(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  const phantomEthereum = (window as {
+    phantom?: {
+      ethereum?: {
+        selectedAddress?: string;
+      };
+    };
+  }).phantom?.ethereum;
+  return phantomEthereum?.selectedAddress;
+}
+
+function readConnectedWalletAddress(): string | undefined {
+  return readConnectedEthereumAddress() ?? readConnectedSolanaAddress();
+}
+
 function readBrowserPhantomSolana(): ISolanaChain | undefined {
   if (typeof window === "undefined") return undefined;
   return (window as { phantom?: { solana?: ISolanaChain } }).phantom?.solana;
 }
 
-async function waitForConnectedSolanaAddress(fallback?: string): Promise<string | undefined> {
+async function waitForConnectedWalletAddress(fallback?: string): Promise<string | undefined> {
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    const addr = readConnectedSolanaAddress() ?? fallback;
+    const addr = readConnectedWalletAddress() ?? fallback;
     if (addr) return addr;
     await new Promise((resolve) => window.setTimeout(resolve, attempt === 0 ? 0 : 100));
   }
-  return readConnectedSolanaAddress() ?? fallback;
+  return readConnectedWalletAddress() ?? fallback;
 }
 
 function NetworkStatusBlock({ network, plain }: { network: "mainnet" | "devnet"; plain?: boolean }) {
@@ -362,7 +379,7 @@ export function WalletPanel({
 }: WalletPanelProps) {
   const { connect } = useConnect();
   const { disconnect } = useDisconnect();
-  const { isConnected } = usePhantom();
+  const { isConnected, sdk } = usePhantom();
   const accounts = useAccounts();
   const solanaAccount = accounts?.find((account) => account.addressType === AddressType.solana);
   const evmAccount = accounts?.find((account) => account.addressType === AddressType.ethereum);
@@ -668,15 +685,15 @@ export function WalletPanel({
     setIsConnecting(true);
     setConnectError("");
     try {
-      if (!solanaAccount?.address) {
+      if (!solanaAccount?.address && !evmAccount?.address) {
         await connectPhantomWallet();
       }
-      const addr = await waitForConnectedSolanaAddress(solanaAccount?.address);
+      const addr = await waitForConnectedWalletAddress(evmAccount?.address ?? solanaAccount?.address);
       if (!addr) {
         setConnectError("지갑 연결은 됐지만 주소를 아직 읽지 못했습니다. 잠시 후 다시 눌러 주세요.");
         return;
       }
-      const session = await loginWithWallet(addr);
+      const session = await loginWithWallet(addr, { sdk });
       onSessionChange?.(session);
       setAppUsername(session.username);
       setLoginChoiceOpen(false);
@@ -689,8 +706,8 @@ export function WalletPanel({
 
   const onLinkCurrentWallet = async () => {
     setConnectError("");
-    let addr = primaryWalletAddress;
-    let chain = solanaAccount?.address ? "Solana" : evmAccount?.address ? "Ethereum" : "Solana";
+    let addr = readConnectedWalletAddress() ?? primaryWalletAddress;
+    let chain: WalletChain = addr?.startsWith("0x") ? "Ethereum" : "Solana";
     if (!addr) {
       setIsConnecting(true);
       try {
@@ -700,19 +717,8 @@ export function WalletPanel({
         setIsConnecting(false);
         return;
       }
-      addr =
-        primaryWalletAddress ??
-        readConnectedSolanaAddress() ??
-        (window as {
-          phantom?: {
-            ethereum?: { selectedAddress?: string };
-          };
-        }).phantom?.ethereum?.selectedAddress;
-      if (!solanaAccount?.address && addr?.startsWith("0x")) {
-        chain = "Ethereum";
-      } else if (addr) {
-        chain = "Solana";
-      }
+      addr = readConnectedWalletAddress() ?? primaryWalletAddress;
+      chain = addr?.startsWith("0x") ? "Ethereum" : "Solana";
     }
     if (!addr) {
       setConnectError("지갑 주소를 아직 읽지 못했습니다. 연결 후 다시 시도해 주세요.");
@@ -721,11 +727,9 @@ export function WalletPanel({
     }
     try {
       let session: AuthSession | null = getSession();
-      if (chain === "Solana") {
-        session = await loginWithWallet(addr);
-        onSessionChange?.(session);
-        setAppUsername(session.username);
-      }
+      session = await loginWithWallet(addr, { chain, sdk });
+      onSessionChange?.(session);
+      setAppUsername(session.username);
       const wallet = await linkAccountWallet(addr, chain, "phantom");
       setLinkedWallets((prev) => [wallet, ...prev.filter((item) => item.walletAddress !== wallet.walletAddress)]);
       setWalletCreateOpen(false);

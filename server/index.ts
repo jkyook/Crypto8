@@ -17,7 +17,16 @@ import {
 } from "./positions";
 import { approveJob, cancelJob, createJob, executeJob, getJob, listApprovals, listExecutionEvents, listJobs } from "./store";
 import type { ApprovalLog, JobInput } from "./types";
-import { authenticate, authenticateWallet, refreshAccessToken, registerUser, revokeRefreshToken, type UserRole, verifyToken } from "./auth";
+import {
+  authenticate,
+  authenticateWallet,
+  createWalletLoginChallenge,
+  refreshAccessToken,
+  registerUser,
+  revokeRefreshToken,
+  type UserRole,
+  verifyToken
+} from "./auth";
 import { getDb, initDb } from "./db";
 import { ensureDemoUsersIfEmpty } from "./ensureDemoUsers";
 import rateLimit from "express-rate-limit";
@@ -491,18 +500,34 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
   res.json({ ok: true, role: auth.role, username, csrfToken });
 });
 
-app.post("/api/auth/wallet", authLimiter, async (req, res) => {
-  const body = req.body as { walletAddress?: unknown };
+app.post("/api/auth/wallet/challenge", authLimiter, async (req, res) => {
+  const body = req.body as { walletAddress?: unknown; chain?: unknown };
   if (typeof body.walletAddress !== "string") {
     res.status(400).json({ ok: false, message: "walletAddress required" });
     return;
   }
-  const auth = await authenticateWallet(body.walletAddress);
+  const chain = typeof body.chain === "string" ? body.chain : undefined;
+  const challenge = createWalletLoginChallenge(body.walletAddress as string, chain);
+  if (!challenge.ok || !challenge.message || !challenge.nonce) {
+    res.status(400).json({ ok: false, message: challenge.message ?? "wallet challenge failed" });
+    return;
+  }
+  res.json({ ok: true, chain: challenge.chain, nonce: challenge.nonce, message: challenge.message, expiresAt: challenge.expiresAt });
+});
+
+app.post("/api/auth/wallet", authLimiter, async (req, res) => {
+  const body = req.body as { walletAddress?: unknown; chain?: unknown; nonce?: unknown; signature?: unknown };
+  if (typeof body.walletAddress !== "string" || typeof body.nonce !== "string" || typeof body.signature !== "string") {
+    res.status(400).json({ ok: false, message: "walletAddress/nonce/signature required" });
+    return;
+  }
+  const chain = typeof body.chain === "string" ? body.chain : undefined;
+  const auth = await authenticateWallet(body.walletAddress, chain, body.nonce, body.signature);
   if (!auth.ok || !auth.accessToken || !auth.refreshToken || !auth.role || !auth.username) {
     res.status(400).json({ ok: false, message: auth.message ?? "wallet login failed" });
     return;
   }
-  await linkUserWallet(auth.username, body.walletAddress);
+  await linkUserWallet(auth.username, body.walletAddress, auth.chain ?? (typeof chain === "string" && chain.trim() ? chain.trim() : "Solana"));
   const csrfToken = setAuthCookies(res, auth.accessToken, auth.refreshToken);
   res.json({ ok: true, role: auth.role, username: auth.username, csrfToken });
 });

@@ -5,8 +5,10 @@ import { Prisma } from "@prisma/client";
 import { getDb } from "./db";
 import { PublicKey } from "@solana/web3.js";
 import nacl from "tweetnacl";
+import { getAddress, isAddress, recoverMessageAddress } from "viem";
 
 export type UserRole = "orchestrator" | "security" | "viewer";
+export type WalletChain = "Solana" | "Ethereum";
 
 /**
  * `JWT_SECRET`은 서버 기동 시 필수. 운영 환경에서 기본값이 쓰이는 사고를 막으려고
@@ -37,6 +39,7 @@ const WALLET_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 
 type WalletLoginChallenge = {
   walletAddress: string;
+  chain: WalletChain;
   message: string;
   expiresAt: number;
 };
@@ -85,25 +88,52 @@ function isValidSolanaAddress(address: string): boolean {
   }
 }
 
-function buildWalletChallengeMessage(walletAddress: string, nonce: string, expiresAt: number): string {
+function isValidEthereumAddress(address: string): boolean {
+  return isAddress(address);
+}
+
+function normalizeWalletChain(walletAddress: string, chain?: string): WalletChain | null {
+  const trimmedChain = chain?.trim().toLowerCase();
+  if (trimmedChain === "solana") {
+    return isValidSolanaAddress(walletAddress) ? "Solana" : null;
+  }
+  if (trimmedChain === "ethereum" || trimmedChain === "evm") {
+    return isValidEthereumAddress(walletAddress) ? "Ethereum" : null;
+  }
+  if (isValidEthereumAddress(walletAddress)) {
+    return "Ethereum";
+  }
+  if (isValidSolanaAddress(walletAddress)) {
+    return "Solana";
+  }
+  return null;
+}
+
+function buildWalletChallengeMessage(walletAddress: string, chain: WalletChain, nonce: string, expiresAt: number): string {
   return [
     "Crypto8 wallet login",
+    `Chain: ${chain}`,
     `Wallet: ${walletAddress}`,
     `Nonce: ${nonce}`,
     `Expires: ${new Date(expiresAt).toISOString()}`
   ].join("\n");
 }
 
-export function createWalletLoginChallenge(walletAddress: string): { ok: boolean; message?: string; nonce?: string; expiresAt?: string } {
+export function createWalletLoginChallenge(
+  walletAddress: string,
+  chain?: string
+): { ok: boolean; message?: string; nonce?: string; expiresAt?: string; chain?: WalletChain } {
   const address = walletAddress.trim();
-  if (!isValidSolanaAddress(address)) {
+  const resolvedChain = normalizeWalletChain(address, chain);
+  if (!resolvedChain) {
     return { ok: false, message: "wallet address invalid" };
   }
   const nonce = crypto.randomBytes(24).toString("hex");
   const expiresAt = Date.now() + WALLET_CHALLENGE_TTL_MS;
-  const message = buildWalletChallengeMessage(address, nonce, expiresAt);
-  walletLoginChallenges.set(nonce, { walletAddress: address, message, expiresAt });
-  return { ok: true, nonce, message, expiresAt: new Date(expiresAt).toISOString() };
+  const normalizedAddress = resolvedChain === "Ethereum" ? getAddress(address) : address;
+  const message = buildWalletChallengeMessage(normalizedAddress, resolvedChain, nonce, expiresAt);
+  walletLoginChallenges.set(nonce, { walletAddress: normalizedAddress, chain: resolvedChain, message, expiresAt });
+  return { ok: true, nonce, message, expiresAt: new Date(expiresAt).toISOString(), chain: resolvedChain };
 }
 
 async function issueRefreshToken(username: string): Promise<string> {
@@ -177,39 +207,57 @@ export async function authenticate(
 
 export async function authenticateWallet(
   walletAddress: string,
+  chain: string | undefined,
   nonce: string,
-  signatureBase64: string
-): Promise<{ ok: boolean; username?: string; role?: UserRole; accessToken?: string; refreshToken?: string; message?: string }> {
+  signature: string
+): Promise<{ ok: boolean; username?: string; role?: UserRole; accessToken?: string; refreshToken?: string; message?: string; chain?: WalletChain }> {
   const address = walletAddress.trim();
-  if (!isValidSolanaAddress(address)) {
+  const resolvedChain = normalizeWalletChain(address, chain);
+  if (!resolvedChain) {
     return { ok: false, message: "wallet address invalid" };
   }
   const challenge = walletLoginChallenges.get(nonce);
   walletLoginChallenges.delete(nonce);
-  if (!challenge || challenge.walletAddress !== address) {
+  const normalizedAddress = resolvedChain === "Ethereum" ? getAddress(address) : address;
+  if (!challenge || challenge.walletAddress !== normalizedAddress || challenge.chain !== resolvedChain) {
     return { ok: false, message: "wallet challenge invalid" };
   }
   if (challenge.expiresAt < Date.now()) {
     return { ok: false, message: "wallet challenge expired" };
   }
-  let signature: Buffer;
-  try {
-    signature = Buffer.from(signatureBase64, "base64");
-  } catch {
-    return { ok: false, message: "wallet signature invalid" };
+  if (resolvedChain === "Solana") {
+    let signatureBytes: Buffer;
+    try {
+      signatureBytes = Buffer.from(signature, "base64");
+    } catch {
+      return { ok: false, message: "wallet signature invalid" };
+    }
+    if (signatureBytes.length !== 64) {
+      return { ok: false, message: "wallet signature invalid" };
+    }
+    const verified = nacl.sign.detached.verify(
+      new TextEncoder().encode(challenge.message),
+      new Uint8Array(signatureBytes),
+      new PublicKey(normalizedAddress).toBytes()
+    );
+    if (!verified) {
+      return { ok: false, message: "wallet signature verification failed" };
+    }
+  } else {
+    try {
+      const recovered = await recoverMessageAddress({
+        message: challenge.message,
+        signature
+      });
+      if (getAddress(recovered) !== normalizedAddress) {
+        return { ok: false, message: "wallet signature verification failed" };
+      }
+    } catch {
+      return { ok: false, message: "wallet signature invalid" };
+    }
   }
-  if (signature.length !== 64) {
-    return { ok: false, message: "wallet signature invalid" };
-  }
-  const verified = nacl.sign.detached.verify(
-    new TextEncoder().encode(challenge.message),
-    new Uint8Array(signature),
-    new PublicKey(address).toBytes()
-  );
-  if (!verified) {
-    return { ok: false, message: "wallet signature verification failed" };
-  }
-  const username = `wallet_${address.slice(0, 8)}_${address.slice(-6)}`;
+  const usernamePrefix = resolvedChain === "Ethereum" ? "evm" : "wallet";
+  const username = `${usernamePrefix}_${normalizedAddress.slice(0, 8)}_${normalizedAddress.slice(-6)}`;
   const db = getDb();
   const existing = await db.user.findUnique({ where: { username } });
   if (!existing) {
@@ -223,14 +271,15 @@ export async function authenticateWallet(
     });
   }
   const user = existing ?? (await db.user.findUniqueOrThrow({ where: { username } }));
-  return {
-    ok: true,
-    username: user.username,
-    role: user.role,
-    accessToken: signAccessToken(user.username, user.role),
-    refreshToken: await issueRefreshToken(user.username)
-  };
-}
+    return {
+      ok: true,
+      username: user.username,
+      role: user.role,
+      chain: resolvedChain,
+      accessToken: signAccessToken(user.username, user.role),
+      refreshToken: await issueRefreshToken(user.username)
+    };
+  }
 
 export function verifyToken(token: string): { ok: boolean; role?: UserRole; subject?: string } {
   try {

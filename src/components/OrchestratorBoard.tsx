@@ -113,7 +113,7 @@ export function OrchestratorBoard({
   onOpenOperationsWithJob,
   onExecutionComplete
 }: OrchestratorBoardProps) {
-  const { isConnected } = usePhantom();
+  const { isConnected, sdk } = usePhantom();
   const accounts = useAccounts();
   const solanaAccount = accounts?.find((account) => account.addressType === AddressType.solana);
   const evmAccount = accounts?.find((account) => account.addressType === AddressType.ethereum);
@@ -630,7 +630,7 @@ export function OrchestratorBoard({
         return;
       }
       try {
-        await loginWithWallet(walletAddress);
+        await loginWithWallet(walletAddress, { sdk });
       } catch (error) {
         setApiMessage(error instanceof Error ? error.message : "지갑 세션을 만들지 못했습니다.");
         return;
@@ -733,7 +733,7 @@ export function OrchestratorBoard({
           setApiMessage("지갑 주소를 아직 읽지 못했습니다. 연결 후 다시 시도해 주세요.");
           return;
         }
-        await loginWithWallet(walletAddress);
+        await loginWithWallet(walletAddress, { sdk });
       }
       const walletProvider = (window as { phantom?: { solana?: { isPhantom?: boolean; signMessage?: (message: Uint8Array) => Promise<unknown> } } }).phantom
         ?.solana;

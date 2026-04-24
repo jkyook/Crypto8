@@ -1,14 +1,24 @@
 import { useState } from "react";
 import { AddressType } from "@phantom/browser-sdk";
-import { useAccounts, useConnect } from "@phantom/react-sdk";
+import { useAccounts, useConnect, usePhantom } from "@phantom/react-sdk";
 import { clearSession, getSession, login, loginWithWallet, register } from "../lib/api";
 import { useSessionContext } from "../contexts/SessionContext";
 
 type MainTab = "login" | "signup";
 type LoginMode = "id" | "wallet";
 
-function readConnectedSolanaAddress(): string | undefined {
+function readConnectedWalletAddress(): string | undefined {
   if (typeof window === "undefined") return undefined;
+  const phantomEthereum = (window as {
+    phantom?: {
+      ethereum?: {
+        selectedAddress?: string;
+      };
+    };
+  }).phantom?.ethereum;
+  if (phantomEthereum?.selectedAddress) {
+    return phantomEthereum.selectedAddress;
+  }
   const phantomSolana = (window as {
     phantom?: {
       solana?: {
@@ -22,19 +32,21 @@ function readConnectedSolanaAddress(): string | undefined {
   return phantomSolana?.publicKey?.toBase58?.() ?? phantomSolana?.publicKey?.toString?.();
 }
 
-async function waitForConnectedSolanaAddress(fallback?: string): Promise<string | undefined> {
+async function waitForConnectedWalletAddress(fallback?: string): Promise<string | undefined> {
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    const addr = readConnectedSolanaAddress() ?? fallback;
+    const addr = readConnectedWalletAddress() ?? fallback;
     if (addr) return addr;
     await new Promise((resolve) => window.setTimeout(resolve, attempt === 0 ? 0 : 100));
   }
-  return readConnectedSolanaAddress() ?? fallback;
+  return readConnectedWalletAddress() ?? fallback;
 }
 
 export function AuthPanel() {
   const { connect } = useConnect();
+  const { sdk } = usePhantom();
   const accounts = useAccounts();
   const solanaAccount = accounts?.find((account) => account.addressType === AddressType.solana);
+  const evmAccount = accounts?.find((account) => account.addressType === AddressType.ethereum);
   const { setSession } = useSessionContext();
 
   const [mainTab, setMainTab] = useState<MainTab>("login");
@@ -86,15 +98,15 @@ export function AuthPanel() {
     setWalletBusy(true);
     setMessage(null);
     try {
-      if (!solanaAccount?.address) {
+      if (!solanaAccount?.address && !evmAccount?.address) {
         await connectPhantomWallet();
       }
-      const addr = await waitForConnectedSolanaAddress(solanaAccount?.address);
+      const addr = await waitForConnectedWalletAddress(evmAccount?.address ?? solanaAccount?.address);
       if (!addr) {
         showMsg("info", "지갑 연결은 됐지만 주소를 아직 읽지 못했습니다. 잠시 후 다시 눌러 주세요.");
         return;
       }
-      const next = await loginWithWallet(addr);
+      const next = await loginWithWallet(addr, { sdk });
       setSession(next);
       showMsg("ok", `지갑 로그인 완료 — ${next.username} (${next.role})`);
     } catch (error) {
