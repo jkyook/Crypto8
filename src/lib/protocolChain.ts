@@ -47,7 +47,7 @@ export function isPoolDepositPossible(protocolName: string, chain: string): bool
 /** 해당 프로토콜의 온체인 포지션 조회가 구현되어 있는지 여부. */
 export function isPoolPositionQueryable(protocolName: string): boolean {
   const protocol = protocolName.toLowerCase();
-  return protocol.includes("aave") || protocol.includes("orca") || protocol.includes("uniswap");
+  return protocol.includes("aave") || protocol.includes("orca") || protocol.includes("uniswap") || protocol.includes("curve");
 }
 
 /** 입금 경로 안내 메시지. */
@@ -86,7 +86,7 @@ export function getPoolQueryReason(protocolName: string): string {
   if (protocol.includes("uniswap")) return "Uniswap v3 NonfungiblePositionManager NFT 스캔 어댑터가 연결되어 있습니다.";
   if (protocol.includes("orca")) return "Orca Whirlpool 포지션 조회 어댑터가 연결되어 있습니다.";
   if (protocol.includes("aerodrome")) return "Aerodrome 포지션 조회 어댑터는 아직 미구현입니다.";
-  if (protocol.includes("curve")) return "Curve 포지션 조회 어댑터는 아직 미구현입니다.";
+  if (protocol.includes("curve")) return "Curve LP token 및 gauge balanceOf 조회 어댑터가 연결되어 있습니다.";
   if (protocol.includes("raydium")) return "Raydium 포지션 조회 어댑터는 아직 미구현입니다.";
   return "해당 프로토콜의 포지션 조회 기준을 현재 정의하지 않았습니다.";
 }

@@ -43,7 +43,7 @@ import { listLiveAccountAssets } from "./liveAccountAssets";
 import { resolveOrcaPoolCandidatesForAction } from "./orcaPools";
 import { listOnchainPositionHistory, recordOnchainPositionSnapshots, type SnapshotSourceRow } from "./onchainSnapshots";
 import { listPositionsByUser } from "./intentStore";
-import { enrichPositionsWithOnchain, getUniswapNpmAddress, listOrcaWalletPositions, scanUniswapWalletPositions } from "./positionVerifier";
+import { enrichPositionsWithOnchain, getUniswapNpmAddress, listOrcaWalletPositions, scanCurveWalletPositions, scanUniswapWalletPositions, type CurveWalletPositionSnapshot } from "./positionVerifier";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
@@ -999,6 +999,154 @@ function buildPublicOrcaNoPositionRow(walletAddress: string) {
   };
 }
 
+function buildPublicCurveRow(snapshot: CurveWalletPositionSnapshot, walletAddress: string) {
+  const now = new Date().toISOString();
+  const hasPosition = snapshot.amountUsd > 0;
+  return {
+    id: `public_curve_${snapshot.poolKey}_${walletAddress}`,
+    executionId: `public_curve_${snapshot.poolKey}_${walletAddress}`,
+    username: "guest",
+    protocol: "Curve",
+    chain: "Ethereum",
+    asset: snapshot.poolLabel,
+    poolAddress: snapshot.poolAddress,
+    positionToken: snapshot.lpTokenAddress,
+    positionRaw: snapshot.totalLpBalanceRaw,
+    amountUsd: snapshot.amountUsd,
+    depositTxHash: `public:${walletAddress}:Ethereum:${snapshot.poolKey}`,
+    lastSyncedAt: now,
+    status: "active" as const,
+    openedAt: now,
+    closedAt: null,
+    onchainDataJson: JSON.stringify({
+      source: "public-curve",
+      walletAddress,
+      chain: "Ethereum",
+      poolKey: snapshot.poolKey,
+      poolLabel: snapshot.poolLabel,
+      poolAddress: snapshot.poolAddress,
+      lpTokenAddress: snapshot.lpTokenAddress,
+      gaugeAddress: snapshot.gaugeAddress,
+      lpBalanceRaw: snapshot.lpBalanceRaw,
+      gaugeBalanceRaw: snapshot.gaugeBalanceRaw,
+      totalLpBalanceRaw: snapshot.totalLpBalanceRaw,
+      virtualPrice: snapshot.virtualPrice,
+      amountUsd: snapshot.amountUsd,
+      queryStatus: "ok"
+    }),
+    principalUsd: snapshot.amountUsd,
+    currentValueUsd: snapshot.amountUsd,
+    unrealizedPnlUsd: 0,
+    realizedPnlUsd: null,
+    feesPaidUsd: null,
+    netApy: null,
+    entryPrice: null,
+    expectedApr: null,
+    protocolPositionId: snapshot.lpTokenAddress,
+    verify: {
+      status: hasPosition ? ("verified" as const) : ("closed_onchain" as const),
+      onchainAmountUsd: snapshot.amountUsd,
+      onchainRaw: snapshot.totalLpBalanceRaw,
+      driftPct: 0,
+      verifiedAt: now,
+      detail: hasPosition
+        ? `Curve Ethereum ${snapshot.poolLabel} · ${snapshot.amountUsd.toFixed(2)} USD`
+        : `Curve Ethereum ${snapshot.poolLabel} 공개 조회에서 예치 잔고를 찾지 못했습니다.`
+    }
+  };
+}
+
+function buildPublicCurveNoPositionRow(walletAddress: string) {
+  const now = new Date().toISOString();
+  return {
+    id: `public_curve_empty_${walletAddress}`,
+    executionId: `public_curve_empty_${walletAddress}`,
+    username: "guest",
+    protocol: "Curve",
+    chain: "Ethereum",
+    asset: "—",
+    poolAddress: null,
+    positionToken: null,
+    positionRaw: null,
+    amountUsd: 0,
+    depositTxHash: `public:${walletAddress}:Ethereum:curve:empty`,
+    lastSyncedAt: now,
+    status: "active" as const,
+    openedAt: now,
+    closedAt: null,
+    onchainDataJson: JSON.stringify({
+      source: "public-curve",
+      walletAddress,
+      chain: "Ethereum",
+      queryStatus: "ok",
+      queryResult: "empty"
+    }),
+    principalUsd: 0,
+    currentValueUsd: 0,
+    unrealizedPnlUsd: 0,
+    realizedPnlUsd: null,
+    feesPaidUsd: null,
+    netApy: null,
+    entryPrice: null,
+    expectedApr: null,
+    protocolPositionId: null,
+    verify: {
+      status: "closed_onchain" as const,
+      onchainAmountUsd: 0,
+      onchainRaw: null,
+      driftPct: 0,
+      verifiedAt: now,
+      detail: "Curve Ethereum 공개 조회에서 포지션을 찾지 못했습니다."
+    }
+  };
+}
+
+function buildPublicCurveErrorRow(walletAddress: string, error: unknown) {
+  const now = new Date().toISOString();
+  const detail = error instanceof Error ? error.message : String(error);
+  return {
+    id: `public_curve_error_${walletAddress}`,
+    executionId: `public_curve_error_${walletAddress}`,
+    username: "guest",
+    protocol: "Curve",
+    chain: "Ethereum",
+    asset: "Curve LP",
+    poolAddress: null,
+    positionToken: null,
+    positionRaw: null,
+    amountUsd: 0,
+    depositTxHash: `public:${walletAddress}:Ethereum:curve:error`,
+    lastSyncedAt: now,
+    status: "active" as const,
+    openedAt: now,
+    closedAt: null,
+    onchainDataJson: JSON.stringify({
+      source: "public-curve",
+      walletAddress,
+      chain: "Ethereum",
+      queryStatus: "rpc_error",
+      queryError: detail
+    }),
+    principalUsd: 0,
+    currentValueUsd: 0,
+    unrealizedPnlUsd: 0,
+    realizedPnlUsd: null,
+    feesPaidUsd: null,
+    netApy: null,
+    entryPrice: null,
+    expectedApr: null,
+    protocolPositionId: null,
+    verify: {
+      status: "rpc_error" as const,
+      onchainAmountUsd: null,
+      onchainRaw: null,
+      driftPct: null,
+      verifiedAt: now,
+      detail
+    }
+  };
+}
+
 function buildProtocolMixFromExecutionPayload(
   payload: Awaited<ReturnType<typeof executeJob>>["payload"],
   depositUsd: number
@@ -1217,6 +1365,20 @@ app.get("/api/public/positions", async (req, res) => {
             error: error instanceof Error ? error.message : String(error)
           }));
         }
+      }
+    }
+    if (evmWalletAddress) {
+      try {
+        const curveSnapshots = await scanCurveWalletPositions(evmWalletAddress);
+        if (curveSnapshots.length === 0) {
+          rows.push(buildPublicCurveNoPositionRow(evmWalletAddress));
+        } else {
+          for (const snapshot of curveSnapshots) {
+            rows.push(buildPublicCurveRow(snapshot, evmWalletAddress));
+          }
+        }
+      } catch (error) {
+        rows.push(buildPublicCurveErrorRow(evmWalletAddress, error));
       }
     }
     if (solanaWalletAddress) {

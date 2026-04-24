@@ -163,6 +163,34 @@ const EVM_CHAIN_CONFIG: Record<string, EvmChainConfig> = {
   }
 };
 
+type CurvePoolConfig = {
+  key: string;
+  poolLabel: string;
+  poolAddress: Address;
+  lpTokenAddress: Address;
+  gaugeAddress: Address;
+  valueUnit: "USD" | "ETH";
+};
+
+const CURVE_ETHEREUM_POOLS: CurvePoolConfig[] = [
+  {
+    key: "curve-3pool",
+    poolLabel: "Curve 3pool (DAI-USDC-USDT)",
+    poolAddress: "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7",
+    lpTokenAddress: "0x6c3F90f043a72FA612cbac8115EE7e52BDe6E490",
+    gaugeAddress: "0xbFcF63294aD7105dEa65aA58F8AE5BE2D9d0952A",
+    valueUnit: "USD"
+  },
+  {
+    key: "curve-steth-eth",
+    poolLabel: "Curve stETH-ETH",
+    poolAddress: "0xDC24316b9AE028F1497c275EB9192a3Ea0f67022",
+    lpTokenAddress: "0x06325440D014e39736583c165C2963BA99fAf14E",
+    gaugeAddress: "0x182B723a58739a9c974cFDB385ceaDb237453c28",
+    valueUnit: "ETH"
+  }
+];
+
 const erc20BalanceAbi = [
   {
     type: "function", name: "balanceOf",
@@ -197,6 +225,16 @@ const aavePoolAbi = [
         { name: "isolationModeTotalDebt", type: "uint128" }
       ]
     }]
+  }
+] as const;
+
+const curvePoolAbi = [
+  {
+    type: "function",
+    name: "get_virtual_price",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }]
   }
 ] as const;
 
@@ -848,7 +886,7 @@ function unsupportedResult(
     Orca: "Whirlpools SDK position PDA 조회 및 지갑 스캔 매칭 구현 완료",
     Aerodrome: "gauge/LP token balance 조회 구현 예정",
     Raydium: "LP/position account 조회 구현 예정",
-    Curve: "LP token balanceOf 조회 구현 예정"
+    Curve: "Curve LP token 및 gauge balanceOf 조회 구현 완료"
   };
   return {
     onchainAmountUsd: null, onchainRaw: null,
@@ -928,6 +966,200 @@ async function verifyUniswapPosition(
       driftPct: null
     };
   }
+}
+
+async function verifyCurvePosition(
+  position: PositionRow,
+  walletAddress: string
+): Promise<Omit<PositionVerifyResult, "positionId" | "protocol" | "chain" | "dbAmountUsd" | "verifiedAt" | "walletAddress">> {
+  try {
+    const snapshots = await scanCurveWalletPositions(walletAddress);
+    const matched = snapshots.find((snapshot) => matchesCurveSnapshot(position, snapshot));
+
+    if (!matched) {
+      if (snapshots.length === 0) {
+        return {
+          onchainAmountUsd: null,
+          onchainRaw: null,
+          status: "closed_onchain",
+          detail: "Curve 포지션이 현재 지갑에서 발견되지 않았습니다.",
+          driftPct: null
+        };
+      }
+      return {
+        onchainAmountUsd: null,
+        onchainRaw: null,
+        status: "unsupported",
+        detail: `Curve 포지션은 지갑에서 스캔했지만 DB 행과 정확히 매칭되지 않았습니다. 지갑에 ${snapshots.length}개 포지션이 있습니다.`,
+        driftPct: null
+      };
+    }
+
+    return verifyCurvePositionFromSnapshot(position, matched);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      onchainAmountUsd: null,
+      onchainRaw: null,
+      status: "rpc_error",
+      detail: `Curve/${position.chain} RPC 오류: ${msg}`,
+      driftPct: null
+    };
+  }
+}
+
+export type CurveWalletPositionSnapshot = {
+  poolKey: string;
+  poolLabel: string;
+  poolAddress: string;
+  lpTokenAddress: string;
+  gaugeAddress: string;
+  lpBalanceRaw: string;
+  gaugeBalanceRaw: string;
+  totalLpBalanceRaw: string;
+  virtualPrice: string;
+  amountUsd: number;
+  chain: "Ethereum";
+};
+
+function buildCurveValueUsd(
+  totalLpBalanceRaw: bigint,
+  virtualPriceRaw: bigint,
+  valueUnitPrice: number
+): number {
+  if (totalLpBalanceRaw <= 0n || virtualPriceRaw <= 0n || !Number.isFinite(valueUnitPrice) || valueUnitPrice <= 0) {
+    return 0;
+  }
+  const lpUnits = new Decimal(totalLpBalanceRaw.toString()).div(new Decimal(10).pow(18));
+  const priceUnits = new Decimal(virtualPriceRaw.toString()).div(new Decimal(10).pow(18));
+  return Number(lpUnits.mul(priceUnits).mul(valueUnitPrice).toFixed(2));
+}
+
+/**
+ * Curve Ethereum LP / gauge 포지션 스캔.
+ * wallet가 보유한 LP 토큰과 gauge 스테이킹 잔고를 함께 합산한다.
+ */
+export async function scanCurveWalletPositions(walletAddress: string): Promise<CurveWalletPositionSnapshot[]> {
+  const client = getEvmClient("Ethereum");
+  if (!client) return [];
+
+  const owner = getAddress(walletAddress) as Address;
+  const priceSnapshot = await getMarketPriceSnapshot();
+  const snapshots: CurveWalletPositionSnapshot[] = [];
+  let sawAnySuccess = false;
+  let sawAnyFailure = false;
+  let firstError: unknown = null;
+
+  for (const pool of CURVE_ETHEREUM_POOLS) {
+    try {
+      const [lpBalance, gaugeBalance, virtualPrice] = await Promise.all([
+        client.readContract({
+          address: pool.lpTokenAddress,
+          abi: erc20BalanceAbi,
+          functionName: "balanceOf",
+          args: [owner]
+        }),
+        client.readContract({
+          address: pool.gaugeAddress,
+          abi: erc20BalanceAbi,
+          functionName: "balanceOf",
+          args: [owner]
+        }),
+        client.readContract({
+          address: pool.poolAddress,
+          abi: curvePoolAbi,
+          functionName: "get_virtual_price"
+        })
+      ]);
+
+      const totalLpBalance = lpBalance + gaugeBalance;
+      if (totalLpBalance === 0n) {
+        continue;
+      }
+
+      const valueUnitPrice = pool.valueUnit === "ETH" ? priceSnapshot.prices.ETH : 1;
+      const amountUsd = buildCurveValueUsd(totalLpBalance, virtualPrice, valueUnitPrice);
+      snapshots.push({
+        poolKey: pool.key,
+        poolLabel: pool.poolLabel,
+        poolAddress: pool.poolAddress,
+        lpTokenAddress: pool.lpTokenAddress,
+        gaugeAddress: pool.gaugeAddress,
+        lpBalanceRaw: lpBalance.toString(),
+        gaugeBalanceRaw: gaugeBalance.toString(),
+        totalLpBalanceRaw: totalLpBalance.toString(),
+        virtualPrice: virtualPrice.toString(),
+        amountUsd,
+        chain: "Ethereum"
+      });
+      sawAnySuccess = true;
+    } catch (error) {
+      sawAnyFailure = true;
+      if (firstError === null) {
+        firstError = error;
+      }
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          msg: "curve_position_scan_failed",
+          walletAddress,
+          poolAddress: pool.poolAddress,
+          error: error instanceof Error ? error.message : String(error)
+        })
+      );
+    }
+  }
+
+  if (!sawAnySuccess && sawAnyFailure) {
+    throw firstError instanceof Error
+      ? firstError
+      : new Error(firstError ? String(firstError) : "curve_position_scan_failed");
+  }
+
+  return snapshots;
+}
+
+function matchesCurveSnapshot(position: PositionRow, snapshot: CurveWalletPositionSnapshot): boolean {
+  const positionKeys = [position.poolAddress, position.positionToken, position.protocolPositionId].map(normalizeKey).filter(Boolean);
+  const snapshotKeys = [snapshot.poolAddress, snapshot.lpTokenAddress, snapshot.gaugeAddress].map(normalizeKey);
+  return positionKeys.some((key) => snapshotKeys.includes(key));
+}
+
+function verifyCurvePositionFromSnapshot(
+  position: PositionRow,
+  snapshot: CurveWalletPositionSnapshot
+): Omit<PositionVerifyResult, "positionId" | "protocol" | "chain" | "dbAmountUsd" | "verifiedAt" | "walletAddress"> {
+  const onchainAmountUsd = snapshot.amountUsd;
+  const driftPct = calcDriftPct(position.amountUsd, onchainAmountUsd);
+  const matchLabel = `${snapshot.poolLabel}`;
+
+  if (onchainAmountUsd === 0 && position.amountUsd > 0.01) {
+    return {
+      onchainAmountUsd,
+      onchainRaw: snapshot.totalLpBalanceRaw,
+      status: "closed_onchain",
+      detail: `온체인 Curve 포지션 잔고 0 — DB에는 $${position.amountUsd.toFixed(2)} 기록.`,
+      driftPct: 100
+    };
+  }
+
+  if (driftPct > 10) {
+    return {
+      onchainAmountUsd,
+      onchainRaw: snapshot.totalLpBalanceRaw,
+      status: "drift",
+      detail: `DB $${position.amountUsd.toFixed(2)} vs 온체인 $${onchainAmountUsd.toFixed(2)} (${driftPct.toFixed(1)}% 차이) · ${matchLabel}`,
+      driftPct
+    };
+  }
+
+  return {
+    onchainAmountUsd,
+    onchainRaw: snapshot.totalLpBalanceRaw,
+    status: "verified",
+    detail: `Curve 온체인 확인 완료 · ${matchLabel}`,
+    driftPct
+  };
 }
 
 function matchesOrcaSnapshot(position: PositionRow, snapshot: OrcaWalletPositionSnapshot): boolean {
@@ -1174,6 +1406,9 @@ export async function verifyPosition(
     case "Orca":
       partial = await verifyOrcaPosition(position, resolvedWallet);
       break;
+    case "Curve":
+      partial = await verifyCurvePosition(position, resolvedWallet);
+      break;
     default:
       partial = unsupportedResult(position.protocol, position.chain);
   }
@@ -1398,6 +1633,82 @@ function buildSyntheticUniswapPositionRows(
   return rows;
 }
 
+function buildSyntheticCurvePositionRow(
+  username: string,
+  snapshot: CurveWalletPositionSnapshot,
+  walletAddress: string
+): PositionRow & { walletAddress: string } {
+  const now = new Date().toISOString();
+  return {
+    id: `curve_scan_${snapshot.poolKey}_${snapshot.lpTokenAddress}`,
+    executionId: `curve_scan_${snapshot.poolKey}_${snapshot.lpTokenAddress}`,
+    username,
+    protocol: "Curve",
+    chain: "Ethereum",
+    asset: snapshot.poolLabel,
+    poolAddress: snapshot.poolAddress,
+    positionToken: snapshot.lpTokenAddress,
+    positionRaw: snapshot.totalLpBalanceRaw,
+    amountUsd: snapshot.amountUsd,
+    depositTxHash: `curve_scan_${snapshot.poolKey}_${snapshot.lpTokenAddress}`,
+    lastSyncedAt: now,
+    status: "active",
+    openedAt: now,
+    closedAt: null,
+    onchainDataJson: JSON.stringify({
+      source: "wallet_scan",
+      protocol: "Curve",
+      chain: "Ethereum",
+      poolKey: snapshot.poolKey,
+      poolLabel: snapshot.poolLabel,
+      poolAddress: snapshot.poolAddress,
+      lpTokenAddress: snapshot.lpTokenAddress,
+      gaugeAddress: snapshot.gaugeAddress,
+      lpBalanceRaw: snapshot.lpBalanceRaw,
+      gaugeBalanceRaw: snapshot.gaugeBalanceRaw,
+      totalLpBalanceRaw: snapshot.totalLpBalanceRaw,
+      virtualPrice: snapshot.virtualPrice,
+      amountUsd: snapshot.amountUsd
+    }),
+    principalUsd: snapshot.amountUsd,
+    currentValueUsd: snapshot.amountUsd,
+    unrealizedPnlUsd: 0,
+    realizedPnlUsd: null,
+    feesPaidUsd: null,
+    netApy: null,
+    entryPrice: null,
+    expectedApr: null,
+    protocolPositionId: snapshot.lpTokenAddress,
+    walletAddress
+  };
+}
+
+function buildSyntheticCurvePositionRows(
+  username: string,
+  snapshots: CurveWalletPositionSnapshot[],
+  walletAddress: string
+): Array<PositionRow & { verify: PositionVerifyResult | null; source: "wallet_scan"; walletAddress: string }> {
+  const rows: Array<PositionRow & { verify: PositionVerifyResult | null; source: "wallet_scan"; walletAddress: string }> = [];
+  for (const snapshot of snapshots) {
+    const synthetic = buildSyntheticCurvePositionRow(username, snapshot, walletAddress);
+    const verifyPartial = verifyCurvePositionFromSnapshot(synthetic, snapshot);
+    const verify: PositionVerifyResult = {
+      positionId: synthetic.id,
+      protocol: synthetic.protocol,
+      chain: synthetic.chain,
+      dbAmountUsd: synthetic.amountUsd,
+      verifiedAt: new Date().toISOString(),
+      walletAddress,
+      ...verifyPartial
+    };
+    rows.push({
+      ...attachSource(synthetic, "wallet_scan"),
+      verify
+    });
+  }
+  return rows;
+}
+
 function attachSource<T extends PositionRow>(position: T, source: "db" | "wallet_scan"): T & { source: "db" | "wallet_scan" } {
   return { ...position, source };
 }
@@ -1477,6 +1788,34 @@ export async function listOnchainPositionsForUser(
           }
         }
       }
+    }
+  }
+
+  for (const walletAddress of evmWalletsByChain.get("Ethereum") ?? []) {
+    try {
+      const snapshots = await scanCurveWalletPositions(walletAddress);
+      for (const row of buildSyntheticCurvePositionRows(username, snapshots, walletAddress)) {
+        const keys = [row.poolAddress, row.positionToken, row.protocolPositionId].map(normalizeKey);
+        if (keys.some((key) => key && seen.has(key))) {
+          continue;
+        }
+        rows.push(row);
+        for (const key of keys) {
+          if (key) {
+            seen.add(key);
+          }
+        }
+      }
+    } catch (error) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          msg: "curve_wallet_scan_failed",
+          username,
+          walletAddress,
+          error: error instanceof Error ? error.message : String(error)
+        })
+      );
     }
   }
 
