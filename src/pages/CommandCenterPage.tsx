@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { PortfolioCommandCenter } from "../components/PortfolioCommandCenter";
+import { MorphoBenchmarkPanel } from "../components/insights/MorphoBenchmarkPanel";
 import type { DepositPosition } from "../types/portfolio";
 import type { ExecutionEvent, Job, OnchainPositionPayload } from "../lib/api";
 import type { MenuKey } from "../lib/menu";
@@ -88,6 +89,9 @@ export function CommandCenterPage({
         </section>
       ) : null}
       <PortfolioCommandCenter positions={positions} onchainPositions={onchainPositions} onOpenExecution={() => onGo("execution")} />
+      <div style={{ marginTop: 16 }}>
+        <MorphoBenchmarkPanel />
+      </div>
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { MARKET_APR_REFRESH_MS } from "../lib/constants";
 
 type UseMarketAprResult = {
   marketApr: MarketAprSnapshot | null;
+  morphoApy: number | null;
   aprError: string;
   marketHistoryPoints: MarketPoolAprHistoryPoint[];
   marketHistorySeries: MarketPoolAprHistorySeries[];
@@ -17,6 +18,7 @@ export function useMarketApr(selectedPoolLabels: string[]): UseMarketAprResult {
   const [marketHistoryPoints, setMarketHistoryPoints] = useState<MarketPoolAprHistoryPoint[]>([]);
   const [marketHistorySeries, setMarketHistorySeries] = useState<MarketPoolAprHistorySeries[]>([]);
   const [historyCsvDays, setHistoryCsvDays] = useState(90);
+  const morphoApy = marketApr?.morpho ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -54,6 +56,7 @@ export function useMarketApr(selectedPoolLabels: string[]): UseMarketAprResult {
 
   return {
     marketApr,
+    morphoApy,
     aprError,
     marketHistoryPoints,
     marketHistorySeries,

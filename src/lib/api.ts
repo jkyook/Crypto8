@@ -254,6 +254,7 @@ export type MarketAprSnapshot = {
   aave: number;
   uniswap: number;
   orca: number;
+  morpho?: number | null;
   updatedAt: string;
 };
 
@@ -1902,6 +1903,91 @@ export async function fetchMarketAprSnapshot(): Promise<MarketAprSnapshot> {
     }
   }
   throw new Error("시장 이율 조회 실패");
+}
+
+export type MorphoMarketSummary = {
+  uniqueKey: string;
+  lltv: string;
+  loanAsset: string;
+  collateralAsset: string;
+  supplyApyPct: string;
+  borrowApyPct: string;
+  liquidityUsdM: string;
+  utilization: string;
+};
+
+export type MorphoVaultSummary = {
+  address: string;
+  name: string;
+  symbol: string;
+  curator: string;
+  curatorAddress: string | null;
+  apyPct: string;
+  netApyPct: string;
+  feePct: string;
+  tvlUsdM: string;
+};
+
+export type MorphoBenchmarkSummary = {
+  ok?: boolean;
+  fetchedAt: string;
+  bestMarketApy: number;
+  topVaults: Array<{
+    name: string;
+    curator: string;
+    grossApy: number;
+    netApy: number;
+    feePct: number;
+    totalAssetsUsdM: number;
+  }>;
+};
+
+export type MorphoUserPositionSummary = {
+  ok?: boolean;
+  address: string;
+  chainId: number;
+  totalUsd: number;
+  marketPositions: Array<{
+    marketKey: string;
+    asset: string;
+    supplyUsd: number;
+    borrowUsd: number;
+  }>;
+  vaultPositions: Array<{
+    vaultAddress: string;
+    vaultName: string;
+    symbol: string;
+    assetsUsd: number;
+  }>;
+};
+
+async function fetchMorphoJson<T>(path: string, context: string): Promise<T> {
+  const response = await publicApiFetch(path);
+  const raw = await readJsonFromApiResponse(response, context);
+  if (!response.ok) {
+    throw new Error(typeof raw.message === "string" && raw.message.length > 0 ? raw.message : `${context} failed`);
+  }
+  return raw as T;
+}
+
+export async function fetchMorphoMarkets(chainId = 42161): Promise<MorphoMarketSummary[]> {
+  const raw = await fetchMorphoJson<{ markets?: MorphoMarketSummary[] }>(`/api/morpho/markets?chainId=${chainId}`, "Morpho markets 조회");
+  return raw.markets ?? [];
+}
+
+export async function fetchMorphoVaults(chainId = 42161): Promise<MorphoVaultSummary[]> {
+  const raw = await fetchMorphoJson<{ vaults?: MorphoVaultSummary[] }>(`/api/morpho/vaults?chainId=${chainId}`, "Morpho vaults 조회");
+  return raw.vaults ?? [];
+}
+
+export async function fetchMorphoBenchmark(chainId = 42161): Promise<MorphoBenchmarkSummary> {
+  const raw = await fetchMorphoJson<MorphoBenchmarkSummary>(`/api/morpho/benchmark?chainId=${chainId}`, "Morpho benchmark 조회");
+  return raw;
+}
+
+export async function fetchMorphoPosition(address: string, chainId = 42161): Promise<MorphoUserPositionSummary> {
+  const encoded = encodeURIComponent(address.trim());
+  return fetchMorphoJson<MorphoUserPositionSummary>(`/api/morpho/position/${encoded}?chainId=${chainId}`, "Morpho position 조회");
 }
 
 export async function fetchMarketAprHistory(opts?: {

@@ -44,6 +44,7 @@ import { resolveOrcaPoolCandidatesForAction } from "./orcaPools";
 import { listOnchainPositionHistory, recordOnchainPositionSnapshots, type SnapshotSourceRow } from "./onchainSnapshots";
 import { listPositionsByUser } from "./intentStore";
 import { enrichPositionsWithOnchain, getUniswapNpmAddress, listOrcaWalletPositions, scanCurveWalletPositions, scanUniswapWalletPositions, type CurveWalletPositionSnapshot } from "./positionVerifier";
+import { getTopUsdcMarkets, getUsdcVaults, getUserPosition, getMorphoBenchmark, CHAIN_IDS } from "./morphoClient";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
@@ -704,12 +705,22 @@ app.get("/api/health", async (_req, res) => {
 
 app.get("/api/market/rates", async (_req, res) => {
   const rates = await fetchCurrentAprs();
+
+  // Morpho 최고 APY를 병렬 조회해서 응답에 포함
+  let morphoBestApy: number | null = null;
+  try {
+    const { getBestMarketApy: getMorphoApy } = await import("./morphoClient");
+    morphoBestApy = await getMorphoApy(CHAIN_IDS.arbitrum);
+  } catch {
+    // Morpho 조회 실패 시 기존 rates만 반환 (비차단)
+  }
+
   try {
     await maybeAppendMarketRatesSnapshot(rates, false);
   } catch (err) {
     console.warn(JSON.stringify({ level: "warn", msg: "market_rates_snapshot_append_failed", error: String(err) }));
   }
-  res.json({ ok: true, rates });
+  res.json({ ok: true, rates: { ...rates, morpho: morphoBestApy } });
 });
 
 app.get("/api/market/rates/history", async (req, res) => {
@@ -764,6 +775,140 @@ app.get("/api/market/pool-apy-history-csv", (req, res) => {
     series: out.series,
     points: out.points
   });
+});
+
+// ══════════════════════════════════════════════════════════════════
+//  Morpho API 라우트
+//  Morpho Offchain GraphQL (api.morpho.org) 데이터를 중계·캐싱합니다.
+//  Rate limit: 5k/5min → 서버 캐시 5분으로 실제 호출 최소화
+// ══════════════════════════════════════════════════════════════════
+
+/**
+ * GET /api/morpho/markets?chainId=42161
+ * USDC 렌딩 마켓 APY 상위 목록 (리밸런싱 판단, 오케스트레이터용)
+ *
+ * 응답: { ok, chainId, markets: [{ uniqueKey, lltv, loanAsset, collateralAsset, state }] }
+ */
+app.get("/api/morpho/markets", async (req, res) => {
+  const chainId = Number(req.query.chainId) || CHAIN_IDS.arbitrum;
+  try {
+    const markets = await getTopUsdcMarkets(chainId);
+    res.json({
+      ok: true,
+      chainId,
+      markets: markets.map((m) => ({
+        uniqueKey: m.uniqueKey,
+        lltv: (Number(m.lltv) / 1e18 * 100).toFixed(1) + "%",
+        loanAsset: m.loanAsset.symbol,
+        collateralAsset: m.collateralAsset?.symbol ?? "none",
+        supplyApyPct: (m.state.supplyApy * 100).toFixed(3),
+        borrowApyPct: (m.state.borrowApy * 100).toFixed(3),
+        liquidityUsdM: (m.state.liquidityAssetsUsd / 1_000_000).toFixed(2),
+        utilization: (m.state.utilization * 100).toFixed(1) + "%",
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, message: err instanceof Error ? err.message : "morpho markets fetch failed" });
+  }
+});
+
+/**
+ * GET /api/morpho/vaults?chainId=42161
+ * USDC Vault 목록 — 큐레이터·APY·TVL (경쟁사 벤치마크용)
+ *
+ * 응답: { ok, chainId, vaults: [{ address, name, curator, netApyPct, tvlUsdM }] }
+ */
+app.get("/api/morpho/vaults", async (req, res) => {
+  const chainId = Number(req.query.chainId) || CHAIN_IDS.arbitrum;
+  try {
+    const vaults = await getUsdcVaults(chainId);
+    res.json({
+      ok: true,
+      chainId,
+      vaults: vaults.map((v) => ({
+        address: v.address,
+        name: v.name,
+        symbol: v.symbol,
+        curator: v.creatorAddress ? `${v.creatorAddress.slice(0, 6)}…${v.creatorAddress.slice(-4)}` : "Unknown",
+        curatorAddress: v.creatorAddress ?? null,
+        apyPct: (v.state.apy * 100).toFixed(3),
+        netApyPct: (v.state.netApy * 100).toFixed(3),
+        feePct: (v.state.fee * 100).toFixed(2),
+        tvlUsdM: (v.state.totalAssetsUsd / 1_000_000).toFixed(2),
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, message: err instanceof Error ? err.message : "morpho vaults fetch failed" });
+  }
+});
+
+/**
+ * GET /api/morpho/benchmark?chainId=42161
+ * 경쟁 벤치마크 요약 — 대시보드 "vs 경쟁사" 카드용
+ *
+ * 응답: { ok, fetchedAt, bestMarketApy, topVaults }
+ */
+app.get("/api/morpho/benchmark", async (req, res) => {
+  const chainId = Number(req.query.chainId) || CHAIN_IDS.arbitrum;
+  try {
+    const benchmark = await getMorphoBenchmark(chainId);
+    res.json({ ok: true, ...benchmark });
+  } catch (err) {
+    res.status(500).json({ ok: false, message: err instanceof Error ? err.message : "morpho benchmark fetch failed" });
+  }
+});
+
+/**
+ * GET /api/morpho/position/:address?chainId=42161
+ * 특정 지갑의 Morpho 전체 포지션 조회 (온보딩 개인화용)
+ * 인증 불필요 — 지갑 주소는 공개 온체인 데이터
+ *
+ * 응답: { ok, address, chainId, totalUsd, marketPositions, vaultPositions }
+ */
+app.get("/api/morpho/position/:address", async (req, res) => {
+  const address = req.params.address?.trim();
+  const chainId = Number(req.query.chainId) || CHAIN_IDS.arbitrum;
+
+  if (!address || !/^0x[0-9a-fA-F]{40}$/.test(address)) {
+    res.status(400).json({ ok: false, message: "valid EVM address required (0x...)" });
+    return;
+  }
+
+  try {
+    const position = await getUserPosition(address, chainId);
+    if (!position) {
+      res.json({ ok: true, address, chainId, totalUsd: 0, marketPositions: [], vaultPositions: [] });
+      return;
+    }
+
+    const totalMarketUsd = position.marketPositions.reduce(
+      (acc, p) => acc + (p.state.supplyAssetsUsd ?? 0), 0
+    );
+    const totalVaultUsd = position.vaultPositions.reduce(
+      (acc, p) => acc + (p.assetsUsd ?? 0), 0
+    );
+
+    res.json({
+      ok: true,
+      address,
+      chainId,
+      totalUsd: totalMarketUsd + totalVaultUsd,
+      marketPositions: position.marketPositions.map((p) => ({
+        marketKey: p.market.uniqueKey.slice(0, 10) + "...",
+        asset: p.market.loanAsset.symbol,
+        supplyUsd: p.state.supplyAssetsUsd,
+        borrowUsd: p.state.borrowAssetsUsd,
+      })),
+      vaultPositions: position.vaultPositions.map((p) => ({
+        vaultAddress: p.vault.address,
+        vaultName: p.vault.name,
+        symbol: p.vault.symbol,
+        assetsUsd: p.assetsUsd,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, message: err instanceof Error ? err.message : "morpho position fetch failed" });
+  }
 });
 
 app.get("/api/runtime/info", (_req, res) => {
