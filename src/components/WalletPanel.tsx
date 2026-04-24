@@ -720,11 +720,20 @@ export function WalletPanel({
       return;
     }
     try {
+      let session: AuthSession | null = getSession();
+      if (chain === "Solana") {
+        session = await loginWithWallet(addr);
+        onSessionChange?.(session);
+        setAppUsername(session.username);
+      }
       const wallet = await linkAccountWallet(addr, chain, "phantom");
       setLinkedWallets((prev) => [wallet, ...prev.filter((item) => item.walletAddress !== wallet.walletAddress)]);
       setWalletCreateOpen(false);
       setAccountMenuOpen(true);
       setAccountMenuTab("home");
+      if (session) {
+        onSessionChange?.(session);
+      }
     } catch (error) {
       setConnectError(error instanceof Error ? error.message : "지갑 연결 저장 실패");
     } finally {
@@ -1041,7 +1050,7 @@ export function WalletPanel({
             {connectError ? <p className="wallet-error">{connectError}</p> : null}
             <div className="button-row">
               <button type="button" onClick={() => void onLinkCurrentWallet()} disabled={isConnecting}>
-                {isConnecting ? "연결 중..." : "현재 지갑 연결"}
+                {isConnecting ? "연결 중..." : "현재 지갑 연결 및 로그인"}
               </button>
               <button type="button" className="ghost-btn" onClick={() => window.open("https://phantom.app/download", "_blank", "noopener,noreferrer")}>
                 신규 지갑 만들기
