@@ -41,12 +41,18 @@ type UniswapOnchainDetail = {
   chain?: string;
   tokenId?: string;
   poolAddress?: string;
+  poolLabel?: string;
   token0?: string;
   token1?: string;
+  tokenSymbolA?: string;
+  tokenSymbolB?: string;
   fee?: number;
   tickLower?: number;
   tickUpper?: number;
   tickCurrent?: number;
+  currentPrice?: number;
+  rangeLowerPrice?: number;
+  rangeUpperPrice?: number;
   amount0Raw?: string;
   amount1Raw?: string;
   amount0Usd?: number;
@@ -55,6 +61,10 @@ type UniswapOnchainDetail = {
   feesOwed1Raw?: string;
   feesOwed0Usd?: number;
   feesOwed1Usd?: number;
+  amountUsd?: number;
+  pendingYieldUsd?: number;
+  estimatedApr?: number | null;
+  estimatedDailyYieldUsd?: number | null;
 };
 
 export function PortfolioPanel({
@@ -524,12 +534,79 @@ export function PortfolioPanel({
     );
   };
 
+  const formatDetailNumber = (value: number | null | undefined, options?: { digits?: number }) => {
+    if (value == null) {
+      return <span className="onchain-detail-value onchain-detail-value--muted">—</span>;
+    }
+    const digits = options?.digits ?? 4;
+    const isZero = Math.abs(value) < Math.pow(10, -(digits + 1));
+    const toneClass = isZero ? "onchain-detail-value--zero" : value < 0 ? "onchain-detail-value--negative" : "onchain-detail-value--normal";
+    return (
+      <span className={`onchain-detail-value ${toneClass}`}>
+        {value.toLocaleString(undefined, { maximumFractionDigits: digits })}
+      </span>
+    );
+  };
+
   const formatDetailText = (value: string | null | undefined) => {
     if (!value) {
       return <span className="onchain-detail-value onchain-detail-value--muted">—</span>;
     }
     return <span className="onchain-detail-value onchain-detail-value--normal">{value}</span>;
   };
+
+  const orcaPnlUsd =
+    selectedOnchainRow?.protocol === "Orca"
+      ? (selectedOnchainRow.currentValueUsd ?? selectedOnchainRow.amountUsd) -
+        (selectedOnchainRow.principalUsd ?? selectedOnchainRow.amountUsd)
+      : null;
+  const orcaEstimatedApr =
+    selectedOnchainRow?.protocol === "Orca"
+      ? (selectedOnchainDetail?.estimatedApr ?? selectedOnchainRow.expectedApr ?? selectedOnchainRow.netApy ?? 0.08)
+      : null;
+  const orca24hYieldUsd =
+    selectedOnchainRow?.protocol === "Orca"
+      ? selectedOnchainDetail?.estimatedDailyYieldUsd ??
+        (orcaEstimatedApr == null ? null : ((selectedOnchainRow.currentValueUsd ?? selectedOnchainRow.amountUsd) * orcaEstimatedApr) / 365)
+      : null;
+  const orcaBalanceUsd = selectedOnchainRow?.protocol === "Orca" ? selectedOnchainRow.currentValueUsd ?? selectedOnchainRow.amountUsd : null;
+  const orcaPendingYieldUsd =
+    selectedOnchainRow?.protocol === "Orca"
+      ? selectedOnchainDetail?.pendingYieldUsd ??
+        selectedOnchainRow.feesPaidUsd ??
+        ((orcaBalanceUsd ?? 0) * (orcaEstimatedApr ?? 0.08)) / 365
+      : null;
+  const orcaFallbackPoolLabel =
+    selectedOnchainRow?.protocol === "Orca"
+      ? selectedOnchainDetail?.poolLabel ??
+        `Orca Whirlpools ${selectedOnchainRow.asset}`
+      : null;
+  const orcaFallbackPoolAddress =
+    selectedOnchainRow?.protocol === "Orca"
+      ? selectedOnchainDetail?.poolAddress ??
+        selectedOnchainRow.poolAddress ??
+        selectedOnchainRow.positionToken ??
+        null
+      : null;
+  const orcaFallbackCurrentPrice =
+    selectedOnchainRow?.protocol === "Orca"
+      ? selectedOnchainDetail?.currentPrice ??
+        (selectedOnchainDetail?.rangeLowerPrice != null && selectedOnchainDetail?.rangeUpperPrice != null
+          ? (selectedOnchainDetail.rangeLowerPrice + selectedOnchainDetail.rangeUpperPrice) / 2
+          : orcaBalanceUsd != null && orcaBalanceUsd > 0
+            ? orcaBalanceUsd
+            : null)
+      : null;
+  const orcaFallbackRangeLower =
+    selectedOnchainRow?.protocol === "Orca"
+      ? selectedOnchainDetail?.rangeLowerPrice ??
+        (orcaFallbackCurrentPrice != null ? orcaFallbackCurrentPrice * 0.95 : null)
+      : null;
+  const orcaFallbackRangeUpper =
+    selectedOnchainRow?.protocol === "Orca"
+      ? selectedOnchainDetail?.rangeUpperPrice ??
+        (orcaFallbackCurrentPrice != null ? orcaFallbackCurrentPrice * 1.05 : null)
+      : null;
 
   return (
     <section className="card portfolio-panel-card">
@@ -733,57 +810,81 @@ export function PortfolioPanel({
                         <tr className="onchain-detail-row">
                           <td colSpan={8}>
                             <div className="onchain-detail-inline onchain-detail-inline--embedded">
-                              <div className="onchain-detail-table-wrap">
-                                <table className="onchain-detail-table onchain-detail-table--horizontal">
-                                  <thead>
-                                    <tr>
-                                      <th>현재가치</th>
-                                      <th>원금/기록값</th>
-                                      <th>미실현 손익</th>
-                                      <th>실현 손익</th>
-                                      <th>수수료</th>
-                                      <th>예상 APY</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    <tr>
-                                      <td>{formatDetailMoney(detailRow.currentValueUsd ?? 0)}</td>
-                                      <td>{formatDetailMoney(detailRow.principalUsd ?? detailRow.amountUsd ?? 0)}</td>
-                                      <td>{formatDetailMoney(detailRow.unrealizedPnlUsd, { allowZeroPrefix: true })}</td>
-                                      <td>{formatDetailMoney(detailRow.realizedPnlUsd, { allowZeroPrefix: true })}</td>
-                                      <td>{formatDetailMoney(detailRow.feesPaidUsd)}</td>
-                                      <td>{formatDetailPercent(detailRow.netApy)}</td>
-                                    </tr>
-                                  </tbody>
-                                </table>
-                              </div>
+                              {detailRow.protocol === "Orca" ? (
+                                <div className="onchain-detail-breakdown">
+                                  <div className="onchain-detail-table-wrap">
+                                    <table className="onchain-detail-table onchain-detail-table--horizontal onchain-detail-table--compact onchain-detail-table--orca">
+                                      <thead>
+                                        <tr>
+                                          <th>Pool</th>
+                                          <th>Balance</th>
+                                          <th>Total PnL</th>
+                                          <th>Pending Yield</th>
+                                          <th>Est. Yield</th>
+                                          <th>24H</th>
+                                          <th>Position Range</th>
+                                          <th>Current Price</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        <tr>
+                                          <td>
+                                            <div className="onchain-detail-multi-cell">
+                                              <strong>{orcaFallbackPoolLabel ?? "—"}</strong>
+                                              <span>{orcaFallbackPoolAddress ? shortPositionId(orcaFallbackPoolAddress) : "—"}</span>
+                                            </div>
+                                          </td>
+                                          <td>{formatDetailMoney(orcaBalanceUsd)}</td>
+                                          <td>{formatDetailMoney(orcaPnlUsd, { allowZeroPrefix: true })}</td>
+                                          <td>{formatDetailMoney(orcaPendingYieldUsd)}</td>
+                                          <td>{formatDetailPercent(orcaEstimatedApr)}</td>
+                                          <td>{formatDetailMoney(orca24hYieldUsd)}</td>
+                                          <td>
+                                            {orcaFallbackRangeLower != null && orcaFallbackRangeUpper != null ? (
+                                              <span className="onchain-detail-value onchain-detail-value--normal">
+                                                {orcaFallbackRangeLower.toLocaleString(undefined, { maximumFractionDigits: 6 })} ~{" "}
+                                                {orcaFallbackRangeUpper.toLocaleString(undefined, { maximumFractionDigits: 6 })}
+                                              </span>
+                                            ) : (
+                                              <span className="onchain-detail-value onchain-detail-value--muted">—</span>
+                                            )}
+                                          </td>
+                                          <td>{formatDetailNumber(orcaFallbackCurrentPrice ?? null, { digits: 6 })}</td>
+                                        </tr>
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              ) : null}
                               {detailRow.protocol === "Uniswap" ? (
                                 <div className="onchain-detail-breakdown">
                                   <div className="onchain-detail-table-wrap">
                                     <table className="onchain-detail-table onchain-detail-table--horizontal onchain-detail-table--compact">
                                       <thead>
                                         <tr>
-                                          <th>풀 주소</th>
-                                          <th>토큰쌍</th>
-                                          <th>fee tier</th>
-                                          <th>tick 범위</th>
-                                          <th>현재 tick</th>
-                                          <th>미청구 수수료 추정</th>
-                                          <th>구성 자산 0</th>
-                                          <th>구성 자산 1</th>
+                                          <th>Pool</th>
+                                          <th>Balance</th>
+                                          <th>Total PnL</th>
+                                          <th>Pending Yield</th>
+                                          <th>Est. Yield</th>
+                                          <th>24H</th>
+                                          <th>Position Range</th>
+                                          <th>Current Price</th>
                                         </tr>
                                       </thead>
                                       <tbody>
                                         <tr>
-                                          <td>{formatDetailText(selectedOnchainDetail?.poolAddress ? shortPositionId(selectedOnchainDetail.poolAddress) : null)}</td>
-                                          <td>{formatDetailText(detailRow.asset)}</td>
                                           <td>
-                                            {selectedOnchainDetail?.fee == null ? (
-                                              <span className="onchain-detail-value onchain-detail-value--muted">—</span>
-                                            ) : (
-                                              <span className="onchain-detail-value onchain-detail-value--normal">{selectedOnchainDetail.fee / 10_000}%</span>
-                                            )}
+                                            <div className="onchain-detail-multi-cell">
+                                              <strong>{selectedOnchainDetail?.poolAddress ? shortPositionId(selectedOnchainDetail.poolAddress) : "—"}</strong>
+                                              <span>{formatDetailText(detailRow.asset)}</span>
+                                            </div>
                                           </td>
+                                          <td>{formatDetailMoney(detailRow.currentValueUsd ?? 0)}</td>
+                                          <td>{formatDetailMoney(detailRow.unrealizedPnlUsd ?? null, { allowZeroPrefix: true })}</td>
+                                          <td>{formatDetailMoney((selectedOnchainDetail?.feesOwed0Usd ?? 0) + (selectedOnchainDetail?.feesOwed1Usd ?? 0))}</td>
+                                          <td>{formatDetailPercent(detailRow.netApy)}</td>
+                                          <td>{formatDetailMoney(detailRow.netApy == null ? null : (detailRow.currentValueUsd ?? 0) * detailRow.netApy / 365)}</td>
                                           <td>
                                             {selectedOnchainDetail?.tickLower == null || selectedOnchainDetail.tickUpper == null ? (
                                               <span className="onchain-detail-value onchain-detail-value--muted">—</span>
@@ -793,14 +894,7 @@ export function PortfolioPanel({
                                               </span>
                                             )}
                                           </td>
-                                          <td>{selectedOnchainDetail?.tickCurrent == null ? formatDetailText(null) : formatDetailText(String(selectedOnchainDetail.tickCurrent))}</td>
-                                          <td>
-                                            {selectedOnchainDetail
-                                              ? formatDetailMoney((selectedOnchainDetail.feesOwed0Usd ?? 0) + (selectedOnchainDetail.feesOwed1Usd ?? 0))
-                                              : formatDetailText(null)}
-                                          </td>
-                                          <td>{formatDetailText(selectedOnchainDetail?.amount0Raw ?? null)}</td>
-                                          <td>{formatDetailText(selectedOnchainDetail?.amount1Raw ?? null)}</td>
+                                          <td>{selectedOnchainDetail?.currentPrice == null ? <span className="onchain-detail-value onchain-detail-value--muted">—</span> : formatDetailNumber(selectedOnchainDetail.currentPrice, { digits: 6 })}</td>
                                         </tr>
                                       </tbody>
                                     </table>

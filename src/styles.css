@@ -3985,6 +3985,29 @@ body[data-theme="light"] .protocol-withdraw-confirm-title {
   min-width: 110px;
 }
 
+.onchain-detail-table--orca {
+  min-width: 1120px;
+}
+
+.onchain-detail-multi-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  line-height: 1.15;
+}
+
+.onchain-detail-multi-cell strong {
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.onchain-detail-multi-cell span {
+  color: rgba(158, 183, 205, 0.82);
+  font-size: 0.67rem;
+  font-weight: 600;
+}
+
 .onchain-detail-breakdown {
   margin-top: 12px;
   padding-top: 12px;

@@ -33,6 +33,7 @@ import type { PositionRow } from "./intentStore";
 import { listPositionsByUser, updatePositionAccountingFromSync } from "./intentStore";
 import { getDb } from "./db";
 import { getMarketPriceSnapshot } from "./marketPricing";
+import { getPoolApySeriesFromCsv } from "./marketAprHistory";
 import { listUserWallets } from "./userWallets";
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -77,9 +78,13 @@ export type OnchainVerifyStatus =
 export type OrcaWalletPositionSnapshot = {
   positionMint: string;
   whirlpool: string;
+  poolLabel: string;
   liquidity: string;
   tickLowerIndex: number;
   tickUpperIndex: number;
+  currentPrice: number;
+  rangeLowerPrice: number;
+  rangeUpperPrice: number;
   tokenMintA: string;
   tokenMintB: string;
   tokenSymbolA: string;
@@ -87,6 +92,9 @@ export type OrcaWalletPositionSnapshot = {
   tokenDecimalsA: number;
   tokenDecimalsB: number;
   amountUsd: number;
+  pendingYieldUsd: number;
+  estimatedApr: number | null;
+  estimatedDailyYieldUsd: number | null;
 };
 
 export type PositionVerifyResult = {
@@ -617,7 +625,21 @@ export async function scanOrcaWalletPositions(walletAddress: string): Promise<Or
     includesBundledPositions: false
   });
   const priceSnapshot = await getMarketPriceSnapshot();
-  const merged = new Map<string, { position: { whirlpool: PublicKey; positionMint: PublicKey; liquidity: unknown; tickLowerIndex: number; tickUpperIndex: number }; withExtension?: boolean }>();
+  const merged = new Map<
+    string,
+    {
+      position: {
+        whirlpool: PublicKey;
+        positionMint: PublicKey;
+        liquidity: unknown;
+        tickLowerIndex: number;
+        tickUpperIndex: number;
+        feeOwedA: { toString(): string };
+        feeOwedB: { toString(): string };
+      };
+      withExtension?: boolean;
+    }
+  >();
 
   for (const [address, position] of positionMap.positions.entries()) {
     merged.set(address, { position });
@@ -633,6 +655,7 @@ export async function scanOrcaWalletPositions(walletAddress: string): Promise<Or
       const poolData = pool.getData();
       const tokenAInfo = pool.getTokenAInfo();
       const tokenBInfo = pool.getTokenBInfo();
+      const poolLabel = `Orca Whirlpools ${resolveTokenSymbol(tokenAInfo.mint.toBase58(), tokenAInfo.symbol)}-${resolveTokenSymbol(tokenBInfo.mint.toBase58(), tokenBInfo.symbol)}`;
       const amountUsd = estimateOrcaPositionUsd(
         entry.position.liquidity,
         poolData,
@@ -644,19 +667,40 @@ export async function scanOrcaWalletPositions(walletAddress: string): Promise<Or
         tokenBInfo.decimals,
         priceSnapshot.prices
       );
+      const currentPrice = Number(PriceMath.sqrtPriceX64ToPrice(poolData.sqrtPrice as never, tokenAInfo.decimals, tokenBInfo.decimals).toFixed(6));
+      const rangeLowerPrice = Number(PriceMath.tickIndexToPrice(entry.position.tickLowerIndex, tokenAInfo.decimals, tokenBInfo.decimals).toFixed(6));
+      const rangeUpperPrice = Number(PriceMath.tickIndexToPrice(entry.position.tickUpperIndex, tokenAInfo.decimals, tokenBInfo.decimals).toFixed(6));
+      const pendingYieldUsd = Number(
+        (
+          (Number(entry.position.feeOwedA.toString()) / 10 ** tokenAInfo.decimals) * mintPriceUsd(tokenAInfo.mint.toBase58(), priceSnapshot.prices) +
+          (Number(entry.position.feeOwedB.toString()) / 10 ** tokenBInfo.decimals) * mintPriceUsd(tokenBInfo.mint.toBase58(), priceSnapshot.prices)
+        ).toFixed(2)
+      );
+      const poolApy = getPoolApySeriesFromCsv(14, [poolLabel]);
+      const poolApyKey = poolApy.series[0]?.key ?? "";
+      const latestApy = poolApy.points.at(-1)?.pools?.[poolApyKey] ?? null;
+      const estimatedApr = typeof latestApy === "number" && Number.isFinite(latestApy) ? latestApy : null;
+      const estimatedDailyYieldUsd = estimatedApr == null ? null : Number(((amountUsd * estimatedApr) / 365).toFixed(2));
       snapshots.push({
         positionMint: entry.position.positionMint.toBase58(),
         whirlpool: entry.position.whirlpool.toBase58(),
+        poolLabel,
         liquidity: String(entry.position.liquidity),
         tickLowerIndex: entry.position.tickLowerIndex,
         tickUpperIndex: entry.position.tickUpperIndex,
+        currentPrice,
+        rangeLowerPrice,
+        rangeUpperPrice,
         tokenMintA: tokenAInfo.mint.toBase58(),
         tokenMintB: tokenBInfo.mint.toBase58(),
         tokenSymbolA: resolveTokenSymbol(tokenAInfo.mint.toBase58(), tokenAInfo.symbol),
         tokenSymbolB: resolveTokenSymbol(tokenBInfo.mint.toBase58(), tokenBInfo.symbol),
         tokenDecimalsA: tokenAInfo.decimals,
         tokenDecimalsB: tokenBInfo.decimals,
-        amountUsd
+        amountUsd,
+        pendingYieldUsd,
+        estimatedApr,
+        estimatedDailyYieldUsd
       });
     } catch (error) {
       console.warn(
@@ -1274,15 +1318,33 @@ function buildSyntheticOrcaPositionRow(username: string, snapshot: OrcaWalletPos
     status: "active",
     openedAt: now,
     closedAt: null,
-    onchainDataJson: null,
-    principalUsd: snapshot.amountUsd,
+    onchainDataJson: JSON.stringify({
+      source: "wallet_scan",
+      protocol: "Orca",
+      chain: "Solana",
+      positionMint: snapshot.positionMint,
+      whirlpool: snapshot.whirlpool,
+      poolLabel: snapshot.poolLabel,
+      currentPrice: snapshot.currentPrice,
+      rangeLowerPrice: snapshot.rangeLowerPrice,
+      rangeUpperPrice: snapshot.rangeUpperPrice,
+      amountUsd: snapshot.amountUsd,
+      pendingYieldUsd: snapshot.pendingYieldUsd,
+      estimatedApr: snapshot.estimatedApr,
+      estimatedDailyYieldUsd: snapshot.estimatedDailyYieldUsd,
+      token0: snapshot.tokenMintA,
+      token1: snapshot.tokenMintB,
+      tokenSymbolA: snapshot.tokenSymbolA,
+      tokenSymbolB: snapshot.tokenSymbolB
+    }),
+    principalUsd: null,
     currentValueUsd: snapshot.amountUsd,
-    unrealizedPnlUsd: 0,
+    unrealizedPnlUsd: null,
     realizedPnlUsd: null,
-    feesPaidUsd: null,
-    netApy: null,
+    feesPaidUsd: snapshot.pendingYieldUsd,
+    netApy: snapshot.estimatedApr,
     entryPrice: null,
-    expectedApr: null,
+    expectedApr: snapshot.estimatedApr,
     protocolPositionId: snapshot.positionMint
   };
 }
