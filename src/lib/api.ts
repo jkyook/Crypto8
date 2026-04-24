@@ -312,6 +312,7 @@ export type OnchainPositionPayload = {
   positionRaw: string | null;
   amountUsd: number;
   depositTxHash: string;
+  txHash?: string | null;
   lastSyncedAt: string | null;
   status: "active" | "closed" | "liquidated";
   openedAt: string;

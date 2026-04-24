@@ -28,6 +28,14 @@ import { MarketAprTimeSeriesChart } from "./MarketAprTimeSeriesChart";
 import { OrchestratorBoard } from "./OrchestratorBoard";
 import type { DepositPosition, PoolLiveState } from "../types/portfolio";
 
+function calculateStdDev(values: number[]): number | null {
+  const finite = values.filter((value) => Number.isFinite(value));
+  if (finite.length < 2) return null;
+  const mean = finite.reduce((acc, value) => acc + value, 0) / finite.length;
+  const variance = finite.reduce((acc, value) => acc + (value - mean) ** 2, 0) / finite.length;
+  return Math.sqrt(variance);
+}
+
 export function ProductsPanel({
   positions,
   hasSession,
@@ -146,6 +154,31 @@ export function ProductsPanel({
     if (activeSeries.length === 0) return null;
     return activeSeries.reduce((acc, series) => acc + ((latest.pools[series.key] ?? 0) * (selectedPoolWeights[series.key] ?? 0)), 0);
   }, [marketHistoryPoints, marketHistorySeries, selectedPoolWeights]);
+  const productAnnualVolatilityById = useMemo(() => {
+    const seriesByLabel = new Map(marketHistorySeries.map((series) => [series.poolLabel, series]));
+    const next: Record<string, number | null> = {};
+    for (const product of products) {
+      const weightedSeries = product.protocolMix
+        .map((item) => {
+          const poolLabel = resolvePoolLabel(item.name, item.pool);
+          const series = seriesByLabel.get(poolLabel);
+          return series ? { key: series.key, weight: item.weight } : null;
+        })
+        .filter((value): value is { key: string; weight: number } => value != null);
+      if (weightedSeries.length === 0 || marketHistoryPoints.length < 2) {
+        next[product.id] = null;
+        continue;
+      }
+      const blendedSeries = marketHistoryPoints
+        .map((point) =>
+          weightedSeries.reduce((acc, series) => acc + (point.pools[series.key] ?? 0) * series.weight, 0)
+        )
+        .filter((value) => Number.isFinite(value));
+      const stdDev = calculateStdDev(blendedSeries);
+      next[product.id] = stdDev == null ? null : stdDev * 100;
+    }
+    return next;
+  }, [marketHistoryPoints, marketHistorySeries, products]);
   const selectedMixAprDecimals = useMemo(
     () =>
       selected.protocolMix.map((item, idx) => {
@@ -501,6 +534,7 @@ export function ProductsPanel({
       <div className="kpi-grid product-list-grid">
         {visibleProducts.map((product) => {
           const currentAnnualAprDecimal = resolveCurrentAnnualAprDecimal(product);
+          const annualVolatilityPct = productAnnualVolatilityById[product.id];
           return (
           <div
             key={product.id}
@@ -552,9 +586,14 @@ export function ProductsPanel({
                 <span className="product-current-apr">
                   현재 연수익 {currentAnnualAprDecimal != null ? `${(currentAnnualAprDecimal * 100).toFixed(2)}%` : "조회 중"}
                 </span>
+                <span className="product-current-volatility">
+                  연간 수익 변동성 {annualVolatilityPct != null ? `±${annualVolatilityPct.toFixed(2)}%` : "조회 중"}
+                </span>
               </p>
               <p className="product-inline-metrics">
-                수수료 {(product.estFeeBps / 100).toFixed(2)}% · 만기 {product.lockDays}일 · 프로토콜 {product.protocolMix.length}개
+                수수료 {(product.estFeeBps / 100).toFixed(2)}%
+                {product.lockDays > 0 ? ` · 만기 ${product.lockDays}일` : ""}
+                · 프로토콜 {product.protocolMix.length}개
               </p>
             </button>
             {selectedId === product.id ? (
@@ -844,4 +883,3 @@ export function ProductsPanel({
     </section>
   );
 }
-

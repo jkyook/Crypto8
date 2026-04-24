@@ -15,14 +15,39 @@ type AccountingSummary = {
   totalRealizedPnlUsd: number;
   totalFeesPaidUsd: number;
   weightedNetApy: number | null;
+  latestSyncedAt: string | null;
+  latestTxHash: string | null;
   hasData: boolean;
 };
+
+function shortHash(value: string): string {
+  if (value.length <= 12) {
+    return value;
+  }
+  return `${value.slice(0, 6)}…${value.slice(-4)}`;
+}
+
+function formatSyncTime(value: string | null): string {
+  if (!value) {
+    return "미동기화";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
 
 function computeAccountingSummary(positions: OnchainPositionPayload[]): AccountingSummary {
   const active = positions.filter(p => p.status === "active");
   if (active.length === 0) return {
     totalPrincipalUsd: 0, totalCurrentValueUsd: 0, totalUnrealizedPnlUsd: 0,
-    totalRealizedPnlUsd: 0, totalFeesPaidUsd: 0, weightedNetApy: null, hasData: false
+    totalRealizedPnlUsd: 0, totalFeesPaidUsd: 0, weightedNetApy: null, latestSyncedAt: null, latestTxHash: null, hasData: false
   };
 
   let totalPrincipalUsd = 0;
@@ -32,6 +57,8 @@ function computeAccountingSummary(positions: OnchainPositionPayload[]): Accounti
   let totalFeesPaidUsd = 0;
   let apyWeightSum = 0;
   let apyValueSum = 0;
+  let latestSyncedAt: string | null = null;
+  let latestTxHash: string | null = null;
 
   for (const p of active) {
     const principal = p.principalUsd ?? p.amountUsd;
@@ -45,12 +72,20 @@ function computeAccountingSummary(positions: OnchainPositionPayload[]): Accounti
       apyValueSum += p.netApy * principal;
       apyWeightSum += principal;
     }
+    if (p.lastSyncedAt && (!latestSyncedAt || new Date(p.lastSyncedAt).getTime() > new Date(latestSyncedAt).getTime())) {
+      latestSyncedAt = p.lastSyncedAt;
+      latestTxHash = p.txHash ?? p.depositTxHash;
+    }
   }
 
   // 닫힌 포지션의 실현 손익도 합산
   const closed = positions.filter(p => p.status === "closed");
   for (const p of closed) {
     totalRealizedPnlUsd += p.realizedPnlUsd ?? 0;
+    if (p.lastSyncedAt && (!latestSyncedAt || new Date(p.lastSyncedAt).getTime() > new Date(latestSyncedAt).getTime())) {
+      latestSyncedAt = p.lastSyncedAt;
+      latestTxHash = p.txHash ?? p.depositTxHash;
+    }
   }
 
   return {
@@ -60,6 +95,8 @@ function computeAccountingSummary(positions: OnchainPositionPayload[]): Accounti
     totalRealizedPnlUsd,
     totalFeesPaidUsd,
     weightedNetApy: apyWeightSum > 0 ? apyValueSum / apyWeightSum : null,
+    latestSyncedAt,
+    latestTxHash,
     hasData: true
   };
 }
@@ -161,6 +198,11 @@ export function PortfolioCommandCenter({ positions, onchainPositions = [], onOpe
               </div>
             )}
           </div>
+          <div className="accounting-sync-meta">
+            <span className="kpi-label">최근 동기화</span>
+            <strong>{formatSyncTime(accounting.latestSyncedAt)}</strong>
+            {accounting.latestTxHash ? <code>{shortHash(accounting.latestTxHash)}</code> : <span className="muted-copy">tx 없음</span>}
+          </div>
           {/* 포지션별 PnL 목록 */}
           {onchainPositions.filter(p => p.principalUsd !== null).length > 0 && (
             <div className="position-pnl-list">
@@ -169,6 +211,7 @@ export function PortfolioCommandCenter({ positions, onchainPositions = [], onOpe
                 .filter(p => p.principalUsd !== null)
                 .map(p => {
                   const pnl = p.unrealizedPnlUsd ?? ((p.currentValueUsd ?? p.amountUsd) - (p.principalUsd ?? p.amountUsd));
+                  const txHash = p.txHash ?? p.depositTxHash;
                   return (
                     <div key={p.id} className="position-pnl-row">
                       <span className="position-pnl-id">{p.protocol} · {p.chain} · {p.asset}</span>
@@ -177,6 +220,10 @@ export function PortfolioCommandCenter({ positions, onchainPositions = [], onOpe
                       {p.netApy !== null && (
                         <span className="position-pnl-apy">{(p.netApy * 100).toFixed(2)}% APY</span>
                       )}
+                      <span className="position-pnl-sync">
+                        {formatSyncTime(p.lastSyncedAt)}
+                        {txHash ? ` · ${shortHash(txHash)}` : ""}
+                      </span>
                       <span className={`badge ${p.status === "active" ? "badge-low" : "badge-medium"}`}>{p.status}</span>
                     </div>
                   );

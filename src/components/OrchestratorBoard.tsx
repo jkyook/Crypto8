@@ -68,10 +68,35 @@ type ExecutionStepLogEntry = {
   key: string;
   title: string;
   detail: string;
-  state: "pending" | "approved" | "executing" | "done" | "skipped" | "failed";
+  state: "planned" | "quoted" | "approved" | "submitting" | "submitted" | "confirmed" | "accounted" | "skipped" | "failed";
   txId?: string;
   message?: string;
 };
+
+function executionStateLabel(state: ExecutionStepLogEntry["state"]): string {
+  switch (state) {
+    case "planned":
+      return "예정";
+    case "quoted":
+      return "견적";
+    case "approved":
+      return "승인";
+    case "submitting":
+      return "전송";
+    case "submitted":
+      return "전송됨";
+    case "confirmed":
+      return "확정";
+    case "accounted":
+      return "장부";
+    case "skipped":
+      return "건너뜀";
+    case "failed":
+      return "실패";
+    default:
+      return "상태";
+  }
+}
 
 function buildFallbackDryRunAssets(
   prices: MarketPriceSnapshot["prices"],
@@ -124,7 +149,10 @@ export function OrchestratorBoard({
   }, [initialDepositUsd]);
   const [job, setJob] = useState<Job | null>(null);
   const [isExecutionDone, setIsExecutionDone] = useState(false);
+  const [isExecutionSettled, setIsExecutionSettled] = useState(false);
   const [isExecutionConfirmed, setIsExecutionConfirmed] = useState(false);
+  const [isPlanApproved, setIsPlanApproved] = useState(false);
+  const [isExecutionSubmitting, setIsExecutionSubmitting] = useState(false);
   const [apiMessage, setApiMessage] = useState<string>("");
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
@@ -586,8 +614,22 @@ export function OrchestratorBoard({
   const quoteTitle = lastExecution?.payload?.adapterResults?.some((r) => r.allocationUsd > 0)
     ? "실행 결과 배분"
     : "입금 처리할 항목";
-  const stepIndex = !canFundDeposit ? 0 : quoteRows.length === 0 ? 1 : !job ? 2 : !isExecutionConfirmed ? 3 : !isExecutionDone ? 4 : 5;
-  const stepLabels = ["자산", "스왑", "내역", "리스크", "입금", "완료"] as const;
+  const stepIndex = !canFundDeposit
+    ? 0
+    : quoteRows.length === 0
+      ? 1
+      : !job
+        ? 2
+        : !isExecutionConfirmed
+          ? 3
+          : !isPlanApproved
+            ? 4
+            : !isExecutionDone
+              ? 5
+              : !isExecutionSettled
+                ? 6
+                : 7;
+  const stepLabels = ["자산 확인", "견적 확인", "내역 기록", "리스크 검토", "승인 완료", "전송", "확정", "장부 반영"] as const;
   const autoChecks = [
     { key: "wallet", label: "지갑 연결", ok: hasWallet, detail: hasWallet ? "연결됨" : "연결 필요" },
     {
@@ -654,11 +696,21 @@ export function OrchestratorBoard({
       });
       setJob(created);
       setIsExecutionDone(false);
+      setIsExecutionSettled(false);
       setIsExecutionConfirmed(false);
+      setIsPlanApproved(false);
+      setIsExecutionSubmitting(false);
       setLastExecution(null);
       setCustomAllocationPercents(null);
       setPreCreatedPositionId(undefined);
-      setExecutionStepLog([]);
+      setExecutionStepLog([
+        {
+          key: `job-${created.id}-planned`,
+          title: "내역 기록",
+          detail: `${quoteRows.length}건의 배분안을 기준으로 실행 준비를 시작했습니다.`,
+          state: "planned"
+        }
+      ]);
 
       // quoteRows(사용자가 선택한 배분)로 포지션을 미리 생성 → 서버의 자동배분 덮어쓰기를 방지
       try {
@@ -692,21 +744,77 @@ export function OrchestratorBoard({
     if (!job) return;
     const idemKey = `exec-${job.id}`;
     const effectivePositionId = preCreatedPositionId ?? linkedPositionId;
-    const result = await executeJob(job.id, {
-      idempotencyKey: idemKey,
-      correlationId,
-      positionId: effectivePositionId,
-      requestedMode: executionModeIntent,
-      protocolReadiness,
-      clientExecutionResults: clientExecutionResults?.length ? clientExecutionResults.map((row) => ({ ...row })) : undefined
-    });
-    setIsExecutionDone(true);
-    setLastExecution(result);
-    const rid = result.requestId ? ` · requestId=${result.requestId}` : "";
-    const skippedCount = isLiveExecution ? Math.max(0, protocolReadiness.length - (result.payload?.adapterResults?.length ?? 0)) : 0;
-    const skippedNote = skippedCount > 0 ? ` · skipped ${skippedCount}` : "";
-    setApiMessage(`실행 결과: ${result.message}${rid}${skippedNote}${authNote}`);
-    await onExecutionComplete?.();
+    setIsPlanApproved(true);
+    setIsExecutionSubmitting(true);
+    setExecutionStepLog((prev) => [
+      ...prev,
+      {
+        key: `job-${job.id}-submitting`,
+        title: "전송",
+        detail: "executeJob 요청을 서버에 전달하는 중입니다.",
+        state: "submitting"
+      }
+    ]);
+    try {
+      const result = await executeJob(job.id, {
+        idempotencyKey: idemKey,
+        correlationId,
+        positionId: effectivePositionId,
+        requestedMode: executionModeIntent,
+        protocolReadiness,
+        clientExecutionResults: clientExecutionResults?.length ? clientExecutionResults.map((row) => ({ ...row })) : undefined
+      });
+      setLastExecution(result);
+      setIsExecutionDone(true);
+      const txRef = result.txId ?? result.requestId;
+      const rid = result.requestId ? ` · requestId=${result.requestId}` : "";
+      const skippedCount = isLiveExecution ? Math.max(0, protocolReadiness.length - (result.payload?.adapterResults?.length ?? 0)) : 0;
+      const skippedNote = skippedCount > 0 ? ` · skipped ${skippedCount}` : "";
+      setExecutionStepLog((prev) => [
+        ...prev,
+        {
+          key: `job-${job.id}-submitted`,
+          title: "전송됨",
+          detail: result.message,
+          state: "submitted",
+          txId: txRef ?? undefined,
+          message: `서버 응답 수신${skippedNote}`
+        },
+        {
+          key: `job-${job.id}-confirmed`,
+          title: "확정",
+          detail: "서버 실행 결과가 반영되었습니다.",
+          state: "confirmed",
+          txId: txRef ?? undefined
+        }
+      ]);
+      setApiMessage(`실행 결과: ${result.message}${rid}${skippedNote}${authNote}`);
+      await onExecutionComplete?.();
+      setIsExecutionSettled(true);
+      setExecutionStepLog((prev) => [
+        ...prev,
+        {
+          key: `job-${job.id}-accounted`,
+          title: "장부 반영",
+          detail: "온체인/장부 동기화가 완료되었습니다.",
+          state: "accounted",
+          txId: txRef ?? undefined
+        }
+      ]);
+    } catch (error) {
+      setExecutionStepLog((prev) => [
+        ...prev,
+        {
+          key: `job-${job.id}-failed`,
+          title: "실행 실패",
+          detail: error instanceof Error ? error.message : "실행 실패",
+          state: "failed"
+        }
+      ]);
+      throw error;
+    } finally {
+      setIsExecutionSubmitting(false);
+    }
   };
 
   const onExecute = async () => {
@@ -811,9 +919,18 @@ export function OrchestratorBoard({
       return;
     }
     setIsExecutionConfirmed(true);
+    setExecutionStepLog((prev) => [
+      ...prev,
+      {
+        key: `job-${job.id}-quoted`,
+        title: "견적 확인",
+        detail: "배분안과 실행 내역을 검토했습니다.",
+        state: "quoted"
+      }
+    ]);
     setApiMessage(
       hasWallet
-        ? "리스크 검토 완료. 5번 버튼으로 배분안 승인과 순차 실행을 요청하세요."
+        ? "리스크 검토 완료. 5번에서 승인 완료 후 6번으로 전송하세요."
         : "리스크 검토 완료. dry-run은 지갑 없이 내 실행 기록을 남길 수 있고, REAL-RUN은 준비된 프로토콜만 실제 실행합니다."
     );
   };
@@ -836,6 +953,13 @@ export function OrchestratorBoard({
       const orcaRows = isLiveExecution ? liveExecutableQuoteRows.filter((row) => row.protocol === "Orca") : [];
       const nextLogs: ExecutionStepLogEntry[] = [];
       setExecutionStepLog([]);
+      nextLogs.push({
+        key: `job-${job.id}-planned`,
+        title: "내역 기록",
+        detail: `승인 대상 ${pendingPlan.length}건을 정리했습니다.`,
+        state: "planned"
+      });
+      setExecutionStepLog([...nextLogs]);
       if (isLiveExecution && orcaRows.length > 0) {
         const phantomSolana = (window as { phantom?: { solana?: ISolanaChain } }).phantom?.solana;
         if (!phantomSolana?.publicKey) {
@@ -884,12 +1008,13 @@ export function OrchestratorBoard({
             });
             setExecutionStepLog([...nextLogs]);
           }
+          setIsPlanApproved(true);
           const stepKey = `orca-${index}-${row.action}`;
           nextLogs.push({
             key: stepKey,
             title: `${row.protocol} · ${row.chain} · ${row.action}`,
             detail: `배분 $${row.allocationUsd.toFixed(2)} 실행 중`,
-            state: "executing"
+            state: "submitting"
           });
           setExecutionStepLog([...nextLogs]);
           const results = await executeOrcaPlanWithWallet({
@@ -910,7 +1035,7 @@ export function OrchestratorBoard({
           const executed = results[0];
           nextLogs[nextLogs.length - 1] = {
             ...nextLogs[nextLogs.length - 1],
-            state: executed.status === "submitted" ? "done" : "skipped",
+            state: executed.status === "submitted" ? "submitted" : "skipped",
             txId: executed.txId || undefined,
             message:
               executed.status === "submitted"
@@ -934,7 +1059,7 @@ export function OrchestratorBoard({
                 key: "deposit-evidence",
                 title: "실입금 감지",
                 detail: `잔고 변화: ${evidence.outflowSymbols.join(", ")} 차감 확인 (top: ${evidence.topOutflow.symbol} ${evidence.topOutflow.delta.toFixed(4)})`,
-                state: "done",
+                state: "confirmed",
                 message: "on-chain 잔고 스냅샷 비교"
               });
             } else {
@@ -942,7 +1067,7 @@ export function OrchestratorBoard({
                 key: "deposit-evidence",
                 title: "실입금 감지",
                 detail: "on-chain 잔고 변화가 감지되지 않았습니다. (네트워크 지연/컨펌 대기 중일 수 있습니다)",
-                state: "done",
+                state: "confirmed",
                 message: "잔고 변화 미확인"
               });
             }
@@ -971,6 +1096,7 @@ export function OrchestratorBoard({
           });
           setExecutionStepLog([...nextLogs]);
         }
+        setIsPlanApproved(true);
       }
       setShowPlanConfirm(false);
       setPendingPlan(null);
@@ -984,8 +1110,6 @@ export function OrchestratorBoard({
       setPlanApprovalLoading(false);
     }
   };
-
-  const executionButtonLabel = isLiveExecution ? "4. REAL-RUN 배분안 승인" : "4. 내 입금 실행 (dry-run)";
 
   return (
     <section className="card orchestrator-card">
@@ -1033,6 +1157,9 @@ export function OrchestratorBoard({
                 setSelectedSourceAsset(event.target.value as AccountAssetSymbol);
                 setIsExecutionConfirmed(false);
                 setIsExecutionDone(false);
+                setIsExecutionSettled(false);
+                setIsPlanApproved(false);
+                setIsExecutionSubmitting(false);
               }}
               disabled={!canUseServerJobs || accountAssets.length === 0}
             >
@@ -1191,6 +1318,9 @@ export function OrchestratorBoard({
                 setMainnetLivePreference(nextMode === "live");
                 setIsExecutionConfirmed(false);
                 setIsExecutionDone(false);
+                setIsExecutionSettled(false);
+                setIsPlanApproved(false);
+                setIsExecutionSubmitting(false);
                 setLastExecution(null);
                 setApiMessage(
                   executionModeIntent === "dry-run"
@@ -1268,6 +1398,9 @@ export function OrchestratorBoard({
                 setApplyOrcaMinimumAllocation(next);
                 setOrcaMinimumAllocationPreference(next);
                 setIsExecutionConfirmed(false);
+                setIsExecutionSettled(false);
+                setIsPlanApproved(false);
+                setIsExecutionSubmitting(false);
                 setApiMessage(
                   next
                     ? `Orca 최소 배분 $${ORCA_MIN_LIVE_ALLOCATION_USD.toFixed(2)} 적용`
@@ -1338,15 +1471,7 @@ export function OrchestratorBoard({
               <div key={step.key} className={`execution-summary-subline execution-summary-subline--${step.state}`}>
                 <p className="execution-summary-line">
                   <span className="execution-summary-k">
-                    {step.state === "approved"
-                      ? "승인"
-                      : step.state === "executing"
-                        ? "실행"
-                        : step.state === "done"
-                          ? "완료"
-                          : step.state === "skipped"
-                            ? "건너뜀"
-                            : "실패"}
+                    {executionStateLabel(step.state)}
                   </span>{" "}
                   {step.title}
                 </p>
@@ -1542,24 +1667,33 @@ export function OrchestratorBoard({
           1. 자산 확인 {canFundDeposit ? "완료" : "부족"}
         </button>
         <button className={quoteRows.length > 0 ? "flow-step-btn done" : "flow-step-btn waiting"} disabled>
-          2. 스왑 경로 {quoteRows.length > 0 ? "준비" : "대기"}
+          2. 견적 확인 {quoteRows.length > 0 ? "준비" : "대기"}
         </button>
         <button
           className={job ? "flow-step-btn done" : "flow-step-btn waiting"}
           onClick={onCreateJob}
           disabled={!canCreateJob}
         >
-          3. 내 입금 작업 생성
+          3. 내역 기록
         </button>
         <button className={isExecutionConfirmed ? "flow-step-btn done" : "flow-step-btn waiting"} onClick={onConfirmExecution} disabled={!job}>
           4. 리스크 검토
         </button>
+        <button className={isPlanApproved ? "flow-step-btn done" : "flow-step-btn waiting"} disabled={!job}>
+          5. 승인 완료 {isPlanApproved ? "완료" : showPlanConfirm ? "대기" : "대기"}
+        </button>
         <button
-          className={isExecutionDone ? "flow-step-btn done" : "flow-step-btn waiting"}
+          className={isExecutionSubmitting ? "flow-step-btn done" : isExecutionDone ? "flow-step-btn done" : "flow-step-btn waiting"}
           onClick={onExecute}
           disabled={!canExecute}
         >
-          {executionButtonLabel.replace("4.", "5.")}
+          6. 전송 {isExecutionSubmitting ? "진행" : isExecutionDone ? "완료" : "대기"}
+        </button>
+        <button className={isExecutionDone ? "flow-step-btn done" : "flow-step-btn waiting"} disabled>
+          7. 확정 {isExecutionDone ? "완료" : "대기"}
+        </button>
+        <button className={isExecutionSettled ? "flow-step-btn done" : "flow-step-btn waiting"} disabled>
+          8. 장부 반영 {isExecutionSettled ? "완료" : "대기"}
         </button>
       </div>
 

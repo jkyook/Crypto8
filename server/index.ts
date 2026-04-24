@@ -792,6 +792,17 @@ function stripUsername<T extends { username: string }>(row: T): Omit<T, "usernam
   return rest;
 }
 
+function withTxHash<T extends { depositTxHash: string }>(row: T): T & { txHash: string } {
+  return {
+    ...row,
+    txHash: row.depositTxHash
+  };
+}
+
+function publicPositionPayload<T extends { username: string; depositTxHash: string }>(row: T) {
+  return withTxHash(stripUsername(row));
+}
+
 function buildPublicAaveRow(snapshot: AaveUserReserveData) {
   const now = new Date().toISOString();
   const hasSupply = snapshot.queryStatus === "ok" && snapshot.suppliedUsdc > 0;
@@ -1036,7 +1047,7 @@ app.get("/api/portfolio/positions", requireAuth(["orchestrator", "security", "vi
   const rows = await listDepositPositions(username);
   res.json({
     ok: true,
-    positions: rows.map((row) => stripUsername(row))
+    positions: rows.map((row) => publicPositionPayload(row))
   });
 });
 
@@ -1061,7 +1072,7 @@ app.get("/api/positions", requireAuth(["orchestrator", "security", "viewer"]), a
     }
     res.json({
       ok: true,
-      positions: enriched.map((row) => stripUsername(row))
+      positions: enriched.map((row) => publicPositionPayload(row))
     });
   } catch (error) {
     res.status(500).json({
@@ -1224,7 +1235,7 @@ app.get("/api/public/positions", async (req, res) => {
     } catch (error) {
       console.warn(JSON.stringify({ level: "warn", msg: "onchain_snapshot_record_failed", scope: "public", error: String(error) }));
     }
-    res.json({ ok: true, positions: rows });
+    res.json({ ok: true, positions: rows.map((row) => publicPositionPayload(row)) });
   } catch (error) {
     res.status(500).json({
       ok: false,
@@ -1247,7 +1258,7 @@ app.get("/api/orca/positions", requireAuth(["orchestrator", "security", "viewer"
     } catch (error) {
       console.warn(JSON.stringify({ level: "warn", msg: "onchain_snapshot_record_failed", scope: "orca", error: String(error) }));
     }
-    res.json({ ok: true, positions });
+    res.json({ ok: true, positions: positions.map((row) => publicPositionPayload(row)) });
   } catch (error) {
     res.status(500).json({
       ok: false,
