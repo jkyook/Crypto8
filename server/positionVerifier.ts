@@ -195,6 +195,10 @@ const UNISWAP_NPM_ADDRESS: Record<string, Address> = {
   Base:      "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1",
 };
 
+export function getUniswapNpmAddress(chain: string): Address | null {
+  return UNISWAP_NPM_ADDRESS[chain] ?? null;
+}
+
 /** 체인별 Uniswap v3 Factory 주소 */
 const UNISWAP_FACTORY_ADDRESS: Record<string, Address> = {
   Arbitrum:  "0x1F98431c8aD98523631AE4a59f267346ea31F984",
@@ -285,6 +289,7 @@ const poolSlot0Abi = [
 
 export type UniswapWalletPositionSnapshot = {
   tokenId:   string;
+  poolAddress: string;
   token0:    string;
   token1:    string;
   fee:       number;
@@ -411,6 +416,7 @@ export async function scanUniswapWalletPositions(
 
       snapshots.push({
         tokenId:   tokenId.toString(),
+        poolAddress: poolAddr,
         token0,    token1,
         fee,       tickLower, tickUpper,
         liquidity: liquidity.toString(),
@@ -918,7 +924,7 @@ function buildSyntheticUniswapPositionRow(
     protocol: "Uniswap",
     chain,
     asset: snapshot.symbol,
-    poolAddress: null,
+    poolAddress: snapshot.poolAddress,
     positionToken: snapshot.tokenId,
     positionRaw: snapshot.liquidity,
     amountUsd: snapshot.amountUsd,
@@ -927,7 +933,16 @@ function buildSyntheticUniswapPositionRow(
     status: "active",
     openedAt: now,
     closedAt: null,
-    onchainDataJson: null,
+    onchainDataJson: JSON.stringify({
+      source: "wallet_scan",
+      protocol: "Uniswap",
+      chain,
+      tokenId: snapshot.tokenId,
+      poolAddress: snapshot.poolAddress,
+      token0: snapshot.token0,
+      token1: snapshot.token1,
+      fee: snapshot.fee
+    }),
     principalUsd: snapshot.amountUsd,
     currentValueUsd: snapshot.amountUsd,
     unrealizedPnlUsd: 0,

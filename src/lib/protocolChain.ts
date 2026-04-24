@@ -91,6 +91,15 @@ export function getPoolQueryReason(protocolName: string): string {
   return "해당 프로토콜의 포지션 조회 기준을 현재 정의하지 않았습니다.";
 }
 
+/** Uniswap v3 체인별 NonfungiblePositionManager 주소 */
+export function getUniswapNpmAddress(chain: string): string | null {
+  const lc = chain.toLowerCase();
+  if (lc === "arbitrum") return "0xC36442b4a4522E871399CD717aBDD847Ab11FE88";
+  if (lc === "ethereum") return "0xC36442b4a4522E871399CD717aBDD847Ab11FE88";
+  if (lc === "base") return "0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1";
+  return null;
+}
+
 /** 포지션 ID 축약 표시 (14자 초과 시 앞뒤 6자만). */
 export function shortPositionId(value?: string | null): string {
   if (!value) return "—";

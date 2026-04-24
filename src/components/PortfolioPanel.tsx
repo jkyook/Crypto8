@@ -17,6 +17,7 @@ import {
   isPoolPositionQueryable,
   getPoolDepositReason,
   getPoolQueryReason,
+  getUniswapNpmAddress,
   shortPositionId,
   onchainVerifyLabel,
   onchainVerifyBadgeClass
@@ -580,6 +581,7 @@ export function PortfolioPanel({
                   const verifyStatus = verify?.status;
                   const amountUsd = verify?.onchainAmountUsd ?? position.currentValueUsd ?? position.amountUsd;
                   const positionId = position.protocolPositionId ?? position.positionToken ?? position.poolAddress;
+                  const poolAddress = position.poolAddress ?? (position.protocol === "Uniswap" ? getUniswapNpmAddress(position.chain) ?? undefined : undefined);
                   const syncProductName = buildLedgerSyncProductName(position);
                   const syncKey = `${position.protocol}__${position.chain}__${position.protocolPositionId ?? position.positionToken ?? position.poolAddress ?? position.asset}`;
                   const isLedgerRecorded = positions.some((item) => item.productName === syncProductName);
@@ -600,8 +602,17 @@ export function PortfolioPanel({
                           {onchainVerifyLabel(verifyStatus)}
                         </span>
                       </td>
-                      <td data-label="풀/포지션" className="product-pool-pool-label" title={positionId ?? undefined}>
-                        {shortPositionId(positionId)}
+                      <td data-label="풀/포지션" className="product-pool-pool-label" title={[positionId, poolAddress].filter(Boolean).join(" · ") || undefined}>
+                        {position.protocol === "Uniswap" ? (
+                          <div className="portfolio-uniswap-position-cell">
+                            <span className="portfolio-uniswap-position-primary">{shortPositionId(positionId)}</span>
+                            <span className="portfolio-uniswap-position-secondary">
+                              {poolAddress ? shortPositionId(poolAddress) : "조회 대상 없음"}
+                            </span>
+                          </div>
+                        ) : (
+                          shortPositionId(positionId)
+                        )}
                       </td>
                       <td data-label="장부">
                         {amountUsd && amountUsd > 0 ? (

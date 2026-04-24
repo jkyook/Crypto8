@@ -41,7 +41,7 @@ import type { ProtocolExecutionReadiness } from "./adapters/types";
 import { listLiveAccountAssets } from "./liveAccountAssets";
 import { resolveOrcaPoolCandidatesForAction } from "./orcaPools";
 import { listPositionsByUser } from "./intentStore";
-import { enrichPositionsWithOnchain, listOrcaWalletPositions, scanUniswapWalletPositions } from "./positionVerifier";
+import { enrichPositionsWithOnchain, getUniswapNpmAddress, listOrcaWalletPositions, scanUniswapWalletPositions } from "./positionVerifier";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
@@ -896,6 +896,7 @@ function buildPublicOrcaErrorRow(walletAddress: string, error: unknown) {
 
 function buildPublicUniswapNoPositionRow(chain: string, walletAddress: string) {
   const now = new Date().toISOString();
+  const npmAddress = getUniswapNpmAddress(chain);
   return {
     id: `public_uniswap_empty_${chain}_${walletAddress}`,
     executionId: `public_uniswap_empty_${chain}_${walletAddress}`,
@@ -903,7 +904,7 @@ function buildPublicUniswapNoPositionRow(chain: string, walletAddress: string) {
     protocol: "Uniswap",
     chain,
     asset: "—",
-    poolAddress: null,
+    poolAddress: npmAddress,
     positionToken: null,
     positionRaw: null,
     amountUsd: 0,
@@ -916,6 +917,7 @@ function buildPublicUniswapNoPositionRow(chain: string, walletAddress: string) {
       source: "public-uniswap",
       walletAddress,
       chain,
+      poolAddress: npmAddress,
       queryStatus: "ok",
       queryResult: "empty"
     }),
@@ -1141,7 +1143,7 @@ app.get("/api/public/positions", async (req, res) => {
               protocol:        "Uniswap",
               chain,
               asset:           snap.symbol,
-              poolAddress:     null,
+              poolAddress:     snap.poolAddress,
               positionToken:   snap.tokenId,
               positionRaw:     snap.liquidity,
               amountUsd:       snap.amountUsd,
@@ -1150,7 +1152,7 @@ app.get("/api/public/positions", async (req, res) => {
               status:          "active" as const,
               openedAt:        now,
               closedAt:        null,
-              onchainDataJson: JSON.stringify({ source: "public-uniswap", chain, tokenId: snap.tokenId }),
+              onchainDataJson: JSON.stringify({ source: "public-uniswap", chain, tokenId: snap.tokenId, poolAddress: snap.poolAddress }),
               principalUsd:    snap.amountUsd,
               currentValueUsd: snap.amountUsd,
               unrealizedPnlUsd: 0,
