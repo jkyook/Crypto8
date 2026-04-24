@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AddressType } from "@phantom/browser-sdk";
 import { useAccounts } from "@phantom/react-sdk";
 import {
@@ -25,6 +25,15 @@ import { ChainExposureDonut } from "./common/ChainExposureDonut";
 import { OrchestratorBoard } from "./OrchestratorBoard";
 import { TradeControls } from "./common/TradeControls";
 import type { DepositPosition, PoolCatalogRow, ProtocolDetailRow, ProtocolPoolMatchState } from "../types/portfolio";
+
+type OnchainQueryCache = {
+  rows: OnchainPositionPayload[];
+  matchMap: Record<string, { state: ProtocolPoolMatchState; detail: string }>;
+  catalogMatchMap: Record<string, { state: ProtocolPoolMatchState; detail: string }>;
+  summary: string;
+  hidden: boolean;
+  savedAt: string;
+};
 
 export function PortfolioPanel({
   positions,
@@ -66,6 +75,18 @@ export function PortfolioPanel({
   const [ledgerSyncLoadingKey, setLedgerSyncLoadingKey] = useState("");
   const [ledgerSyncMessage, setLedgerSyncMessage] = useState("");
   const [ledgerSyncError, setLedgerSyncError] = useState("");
+
+  const onchainQueryStorageKey = useMemo(() => {
+    const session = getSession();
+    const usernameKey = session?.username?.trim() || "guest";
+    return [
+      "crypto8",
+      "onchain-query-cache",
+      usernameKey,
+      evmAccount?.address?.toLowerCase() || "no-evm",
+      solanaAccount?.address?.toLowerCase() || "no-sol"
+    ].join(":");
+  }, [evmAccount?.address, solanaAccount?.address]);
 
   // ── 인출 상태 ──────────────────────────────────────────────
   const [withdrawDraft, setWithdrawDraft] = useState<{ row: ProtocolDetailRow; maxUsd: number } | null>(null);
@@ -261,6 +282,63 @@ export function PortfolioPanel({
     return { state: "missing", detail: "실제 조회 포지션 없음" };
   };
 
+  const recomputeQueryState = (combinedRows: OnchainPositionPayload[]) => {
+    const nextMap: Record<string, { state: ProtocolPoolMatchState; detail: string }> = {};
+    for (const row of protocolRows) {
+      nextMap[row.key] = evaluatePoolMatch(row.name, row.chain, row.pool, combinedRows, row.amount);
+    }
+    const nextCatalogMap = catalogPoolRows.reduce<Record<string, { state: ProtocolPoolMatchState; detail: string }>>((acc, row) => {
+      acc[row.key] = evaluatePoolMatch(row.protocol, row.chain, row.pool, combinedRows);
+      return acc;
+    }, {});
+    const counts = Object.values(nextMap).reduce<Record<ProtocolPoolMatchState, number>>(
+      (acc, row) => ({ ...acc, [row.state]: acc[row.state] + 1 }),
+      { matched: 0, drift: 0, missing: 0, unsupported: 0, error: 0, available: 0 }
+    );
+    const summary = `매치 ${counts.matched} · 차이 ${counts.drift} · 미조회 ${counts.missing} · 미지원 ${counts.unsupported} · 오류 ${counts.error}`;
+    return { nextMap, nextCatalogMap, summary };
+  };
+
+  const persistOnchainQueryCache = (
+    payload: Omit<OnchainQueryCache, "savedAt"> & { savedAt?: string }
+  ) => {
+    try {
+      const next: OnchainQueryCache = {
+        ...payload,
+        savedAt: payload.savedAt ?? new Date().toISOString()
+      };
+      window.localStorage.setItem(onchainQueryStorageKey, JSON.stringify(next));
+    } catch {
+      /* 저장 실패는 조용히 무시 */
+    }
+  };
+
+  const loadOnchainQueryCache = () => {
+    try {
+      const raw = window.localStorage.getItem(onchainQueryStorageKey);
+      if (!raw) return null;
+      return JSON.parse(raw) as OnchainQueryCache;
+    } catch {
+      return null;
+    }
+  };
+
+  const applyOnchainQueryRows = (combinedRows: OnchainPositionPayload[], hidden = false) => {
+    const { nextMap, nextCatalogMap, summary } = recomputeQueryState(combinedRows);
+    setOnchainQueriedRows(combinedRows);
+    setOnchainMatchMap(nextMap);
+    setOnchainCatalogMatchMap(nextCatalogMap);
+    setOnchainMatchSummary(summary);
+    setHideOnchainResult(hidden);
+    persistOnchainQueryCache({
+      rows: combinedRows,
+      matchMap: nextMap,
+      catalogMatchMap: nextCatalogMap,
+      summary,
+      hidden
+    });
+  };
+
   const buildLedgerSyncProductName = (row: OnchainPositionPayload): string => {
     const itemKey = shortPositionId(row.protocolPositionId ?? row.positionToken ?? row.poolAddress ?? row.asset);
     return `Onchain Sync · ${row.protocol} · ${row.chain} · ${itemKey}`;
@@ -319,9 +397,6 @@ export function PortfolioPanel({
     setOnchainMatchLoading(true);
     setOnchainMatchError("");
     setOnchainMatchSummary("");
-    setOnchainQueriedRows([]);
-    setOnchainCatalogMatchMap({});
-    setHideOnchainResult(false);
     try {
       const evmWalletAddress = evmAccount?.address;
       const solanaWalletAddress = solanaAccount?.address;
@@ -329,24 +404,7 @@ export function PortfolioPanel({
         throw new Error("연결된 지갑 주소가 없습니다. Solana 또는 EVM 지갑을 연결한 뒤 다시 시도해 주세요.");
       }
       const combinedRows = await listPublicOnchainPositions({}, { evmWalletAddress, solanaWalletAddress });
-      setOnchainQueriedRows(combinedRows);
-      const nextMap: Record<string, { state: ProtocolPoolMatchState; detail: string }> = {};
-      for (const row of protocolRows) {
-        nextMap[row.key] = evaluatePoolMatch(row.name, row.chain, row.pool, combinedRows, row.amount);
-      }
-      const nextCatalogMap = catalogPoolRows.reduce<Record<string, { state: ProtocolPoolMatchState; detail: string }>>((acc, row) => {
-        acc[row.key] = evaluatePoolMatch(row.protocol, row.chain, row.pool, combinedRows);
-        return acc;
-      }, {});
-      const counts = Object.values(nextMap).reduce<Record<ProtocolPoolMatchState, number>>(
-        (acc, row) => ({ ...acc, [row.state]: acc[row.state] + 1 }),
-        { matched: 0, drift: 0, missing: 0, unsupported: 0, error: 0, available: 0 }
-      );
-      setOnchainMatchMap(nextMap);
-      setOnchainCatalogMatchMap(nextCatalogMap);
-      setOnchainMatchSummary(
-        `매치 ${counts.matched} · 차이 ${counts.drift} · 미조회 ${counts.missing} · 미지원 ${counts.unsupported} · 오류 ${counts.error}`
-      );
+      applyOnchainQueryRows(combinedRows, false);
     } catch (error) {
       setOnchainMatchError(error instanceof Error ? error.message : "실제 포지션 조회 실패");
     } finally {
@@ -384,6 +442,17 @@ export function PortfolioPanel({
       setLedgerResetLoading(false);
     }
   };
+
+  useEffect(() => {
+    const cached = loadOnchainQueryCache();
+    if (!cached) return;
+    if (cached.rows.length === 0) return;
+    setOnchainQueriedRows(cached.rows);
+    setOnchainMatchMap(cached.matchMap);
+    setOnchainCatalogMatchMap(cached.catalogMatchMap);
+    setOnchainMatchSummary(cached.summary);
+    setHideOnchainResult(cached.hidden);
+  }, [onchainQueryStorageKey]);
 
   return (
     <section className="card portfolio-panel-card">
@@ -446,92 +515,121 @@ export function PortfolioPanel({
       </div>
       {onchainMatchError ? <p className="exec-verify-error">{onchainMatchError}</p> : null}
       {ledgerResetError ? <p className="exec-verify-error">{ledgerResetError}</p> : null}
-      {onchainQueriedRows.length > 0 && !hideOnchainResult ? (
+      {onchainQueriedRows.length > 0 ? (
         <div className="onchain-query-result-panel">
           <div className="onchain-query-result-head">
             <div>
               <h3>실제 조회 결과</h3>
-              <p className="kpi-label">연결된 지갑에서 조회된 프로토콜 포지션입니다.</p>
+              <p className="kpi-label">
+                {hideOnchainResult
+                  ? "이전 조회 결과가 저장되어 있습니다. 펼치기를 누르면 다시 보여주고, 새로고침으로 다시 조회합니다."
+                  : "연결된 지갑에서 조회된 프로토콜 포지션입니다."}
+              </p>
             </div>
             <div className="onchain-query-result-head-right">
               <span className="protocol-match-badge protocol-match-badge--pending">{onchainQueriedRows.length}건</span>
               <button
                 type="button"
                 className="ghost-btn onchain-result-close-btn"
-                onClick={() => setHideOnchainResult(true)}
-                title="조회 결과 닫기"
+                onClick={() => void verifyProtocolPoolMatches()}
+                disabled={onchainMatchLoading}
+                title="최신 상태로 다시 조회합니다."
               >
-                ✕ 닫기
+                {onchainMatchLoading ? "새로고침 중..." : "새로고침"}
+              </button>
+              <button
+                type="button"
+                className="ghost-btn onchain-result-close-btn"
+                onClick={() => {
+                  setHideOnchainResult((prev) => {
+                    const next = !prev;
+                    persistOnchainQueryCache({
+                      rows: onchainQueriedRows,
+                      matchMap: onchainMatchMap,
+                      catalogMatchMap: onchainCatalogMatchMap,
+                      summary: onchainMatchSummary,
+                      hidden: next
+                    });
+                    return next;
+                  });
+                }}
+                title={hideOnchainResult ? "이전 조회 결과 펼치기" : "조회 결과 접기"}
+              >
+                {hideOnchainResult ? "펼치기" : "접기"}
               </button>
             </div>
           </div>
           {ledgerSyncMessage ? <p className="auth-message auth-message--ok">{ledgerSyncMessage}</p> : null}
           {ledgerSyncError ? <p className="exec-verify-error">{ledgerSyncError}</p> : null}
-          <table className="protocol-detail-table portfolio-onchain-table">
-            <thead>
-              <tr>
-                <th>프로토콜</th>
-                <th>체인</th>
-                <th>자산</th>
-                <th>금액(USD)</th>
-                <th>상태</th>
-                <th>풀/포지션</th>
-                <th>장부</th>
-              </tr>
-            </thead>
-            <tbody>
-              {onchainQueriedRows.map((position) => {
-                const verify = position.verify ?? undefined;
-                const verifyStatus = verify?.status;
-                const amountUsd = verify?.onchainAmountUsd ?? position.currentValueUsd ?? position.amountUsd;
-                const positionId = position.protocolPositionId ?? position.positionToken ?? position.poolAddress;
-                const syncProductName = buildLedgerSyncProductName(position);
-                const syncKey = `${position.protocol}__${position.chain}__${position.protocolPositionId ?? position.positionToken ?? position.poolAddress ?? position.asset}`;
-                const isLedgerRecorded = positions.some((item) => item.productName === syncProductName);
-                const verifiedAtLabel = verify?.verifiedAt
-                  ? new Date(verify.verifiedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-                  : undefined;
-                return (
-                  <tr key={`${position.id}-${position.chain}-${position.protocol}`}>
-                    <td data-label="프로토콜">{position.protocol}</td>
-                    <td data-label="체인">{position.chain}</td>
-                    <td data-label="자산">{position.asset}</td>
-                    <td data-label="금액(USD)">{amountUsd == null ? "—" : `$${amountUsd.toFixed(2)}`}</td>
-                    <td data-label="상태">
-                      <span
-                        className={onchainVerifyBadgeClass(verifyStatus)}
-                        title={[verify?.detail, verifiedAtLabel].filter(Boolean).join(" · ") || undefined}
-                      >
-                        {onchainVerifyLabel(verifyStatus)}
-                      </span>
-                    </td>
-                    <td data-label="풀/포지션" className="product-pool-pool-label" title={positionId ?? undefined}>
-                      {shortPositionId(positionId)}
-                    </td>
-                    <td data-label="장부">
-                      {amountUsd && amountUsd > 0 ? (
-                        isLedgerRecorded ? (
-                          <span className="badge badge-low" title={syncProductName}>기록됨</span>
+          {!hideOnchainResult ? (
+            <table className="protocol-detail-table portfolio-onchain-table">
+              <thead>
+                <tr>
+                  <th>프로토콜</th>
+                  <th>체인</th>
+                  <th>자산</th>
+                  <th>금액(USD)</th>
+                  <th>상태</th>
+                  <th>풀/포지션</th>
+                  <th>장부</th>
+                </tr>
+              </thead>
+              <tbody>
+                {onchainQueriedRows.map((position) => {
+                  const verify = position.verify ?? undefined;
+                  const verifyStatus = verify?.status;
+                  const amountUsd = verify?.onchainAmountUsd ?? position.currentValueUsd ?? position.amountUsd;
+                  const positionId = position.protocolPositionId ?? position.positionToken ?? position.poolAddress;
+                  const syncProductName = buildLedgerSyncProductName(position);
+                  const syncKey = `${position.protocol}__${position.chain}__${position.protocolPositionId ?? position.positionToken ?? position.poolAddress ?? position.asset}`;
+                  const isLedgerRecorded = positions.some((item) => item.productName === syncProductName);
+                  const verifiedAtLabel = verify?.verifiedAt
+                    ? new Date(verify.verifiedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                    : undefined;
+                  return (
+                    <tr key={`${position.id}-${position.chain}-${position.protocol}`}>
+                      <td data-label="프로토콜">{position.protocol}</td>
+                      <td data-label="체인">{position.chain}</td>
+                      <td data-label="자산">{position.asset}</td>
+                      <td data-label="금액(USD)">{amountUsd == null ? "—" : `$${amountUsd.toFixed(2)}`}</td>
+                      <td data-label="상태">
+                        <span
+                          className={onchainVerifyBadgeClass(verifyStatus)}
+                          title={[verify?.detail, verifiedAtLabel].filter(Boolean).join(" · ") || undefined}
+                        >
+                          {onchainVerifyLabel(verifyStatus)}
+                        </span>
+                      </td>
+                      <td data-label="풀/포지션" className="product-pool-pool-label" title={positionId ?? undefined}>
+                        {shortPositionId(positionId)}
+                      </td>
+                      <td data-label="장부">
+                        {amountUsd && amountUsd > 0 ? (
+                          isLedgerRecorded ? (
+                            <span className="badge badge-low" title={syncProductName}>기록됨</span>
+                          ) : canPersistToServer ? (
+                            <button
+                              type="button"
+                              className="ghost-btn"
+                              disabled={ledgerSyncLoadingKey === syncKey}
+                              onClick={() => void syncOnchainRowToLedger(position)}
+                              title="이 조회 결과를 내부 예치 장부에 반영합니다. 승인 후 1건씩 처리됩니다."
+                            >
+                              {ledgerSyncLoadingKey === syncKey ? "반영 중..." : "장부 반영"}
+                            </button>
+                          ) : (
+                            <span className="badge badge-high" title="로그인 후 장부 반영 가능">로그인 필요</span>
+                          )
                         ) : (
-                          <button
-                            type="button"
-                            className="ghost-btn"
-                            disabled={ledgerSyncLoadingKey === syncKey}
-                            onClick={() => void syncOnchainRowToLedger(position)}
-                            title="이 조회 결과를 내부 예치 장부에 반영합니다. 승인 후 1건씩 처리됩니다."
-                          >
-                            {ledgerSyncLoadingKey === syncKey ? "반영 중..." : "장부 반영"}
-                          </button>
-                        )
-                      ) : (
-                        <span className="badge badge-high">-</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                          <span className="badge badge-high">-</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : null}
         </div>
       ) : null}
       <table className="protocol-detail-table">
