@@ -64,6 +64,11 @@ function resolveTokenSymbol(mint: string, sdkSymbol?: string | null): string {
   return SOLANA_MINT_SYMBOL[mint] ?? mint.slice(0, 4) + "…";
 }
 
+function isStableMint(mint: string): boolean {
+  const lower = mint.toLowerCase();
+  return lower === "epjfwdd5aufqssqem2qn1xzybapc8g4weggkzwyt1v" || lower === "es9vmfrzacermjfrf4h2fyd4kcornk11mccce8benwnyb";
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 //  Types
 // ──────────────────────────────────────────────────────────────────────────────
@@ -96,6 +101,9 @@ export type OrcaWalletPositionSnapshot = {
   estimatedApr: number | null;
   estimatedDailyYieldUsd: number | null;
 };
+
+const ORCA_SNAPSHOT_CACHE = new Map<string, { at: number; snapshots: OrcaWalletPositionSnapshot[] }>();
+const ORCA_SNAPSHOT_CACHE_TTL_MS = 60_000;
 
 export type PositionVerifyResult = {
   positionId: string;
@@ -467,6 +475,7 @@ export async function scanUniswapWalletPositions(
       }));
     }
   }
+  ORCA_SNAPSHOT_CACHE.set(cacheKey, { at: Date.now(), snapshots });
   return snapshots;
 }
 
@@ -615,7 +624,13 @@ function estimateOrcaPositionUsd(
   }
 }
 
-export async function scanOrcaWalletPositions(walletAddress: string): Promise<OrcaWalletPositionSnapshot[]> {
+export async function scanOrcaWalletPositions(walletAddress: string, forceRefresh = false): Promise<OrcaWalletPositionSnapshot[]> {
+  const cacheKey = walletAddress.toLowerCase();
+  const cached = ORCA_SNAPSHOT_CACHE.get(cacheKey);
+  if (!forceRefresh && cached && Date.now() - cached.at < ORCA_SNAPSHOT_CACHE_TTL_MS) {
+    return cached.snapshots;
+  }
+
   const { client, owner } = await createOrcaReadClient(walletAddress);
   const positionMap = await getAllPositionAccountsByOwner({
     ctx: client.getContext(),
@@ -624,7 +639,6 @@ export async function scanOrcaWalletPositions(walletAddress: string): Promise<Or
     includesPositionsWithTokenExtensions: true,
     includesBundledPositions: false
   });
-  const priceSnapshot = await getMarketPriceSnapshot();
   const merged = new Map<
     string,
     {
@@ -656,26 +670,35 @@ export async function scanOrcaWalletPositions(walletAddress: string): Promise<Or
       const tokenAInfo = pool.getTokenAInfo();
       const tokenBInfo = pool.getTokenBInfo();
       const poolLabel = `Orca Whirlpools ${resolveTokenSymbol(tokenAInfo.mint.toBase58(), tokenAInfo.symbol)}-${resolveTokenSymbol(tokenBInfo.mint.toBase58(), tokenBInfo.symbol)}`;
-      const amountUsd = estimateOrcaPositionUsd(
-        entry.position.liquidity,
-        poolData,
-        entry.position.tickLowerIndex,
-        entry.position.tickUpperIndex,
-        tokenAInfo.mint.toBase58(),
-        tokenBInfo.mint.toBase58(),
-        tokenAInfo.decimals,
-        tokenBInfo.decimals,
-        priceSnapshot.prices
+      const tokenAmounts = PoolUtil.getTokenAmountsFromLiquidity(
+        entry.position.liquidity as never,
+        poolData.sqrtPrice as never,
+        PriceMath.tickIndexToSqrtPriceX64(entry.position.tickLowerIndex),
+        PriceMath.tickIndexToSqrtPriceX64(entry.position.tickUpperIndex),
+        false
       );
-      const currentPrice = Number(PriceMath.sqrtPriceX64ToPrice(poolData.sqrtPrice as never, tokenAInfo.decimals, tokenBInfo.decimals).toFixed(6));
+      const amountA = new Decimal(tokenAmounts.tokenA.toString()).div(new Decimal(10).pow(tokenAInfo.decimals));
+      const amountB = new Decimal(tokenAmounts.tokenB.toString()).div(new Decimal(10).pow(tokenBInfo.decimals));
+      const currentPriceDecimal = PriceMath.sqrtPriceX64ToPrice(poolData.sqrtPrice as never, tokenAInfo.decimals, tokenBInfo.decimals);
+      const currentPrice = Number(currentPriceDecimal.toFixed(6));
       const rangeLowerPrice = Number(PriceMath.tickIndexToPrice(entry.position.tickLowerIndex, tokenAInfo.decimals, tokenBInfo.decimals).toFixed(6));
       const rangeUpperPrice = Number(PriceMath.tickIndexToPrice(entry.position.tickUpperIndex, tokenAInfo.decimals, tokenBInfo.decimals).toFixed(6));
-      const pendingYieldUsd = Number(
-        (
-          (Number(entry.position.feeOwedA.toString()) / 10 ** tokenAInfo.decimals) * mintPriceUsd(tokenAInfo.mint.toBase58(), priceSnapshot.prices) +
-          (Number(entry.position.feeOwedB.toString()) / 10 ** tokenBInfo.decimals) * mintPriceUsd(tokenBInfo.mint.toBase58(), priceSnapshot.prices)
-        ).toFixed(2)
-      );
+      const tokenAStable = isStableMint(tokenAInfo.mint.toBase58());
+      const tokenBStable = isStableMint(tokenBInfo.mint.toBase58());
+      const amountUsdDecimal = tokenAStable
+        ? amountA.plus(amountB.div(currentPriceDecimal))
+        : tokenBStable
+          ? amountA.mul(currentPriceDecimal).plus(amountB)
+          : amountA.mul(currentPriceDecimal).plus(amountB);
+      const amountUsd = Number(amountUsdDecimal.toFixed(2));
+      const feeOwedA = new Decimal(entry.position.feeOwedA.toString()).div(new Decimal(10).pow(tokenAInfo.decimals));
+      const feeOwedB = new Decimal(entry.position.feeOwedB.toString()).div(new Decimal(10).pow(tokenBInfo.decimals));
+      const pendingYieldUsdDecimal = tokenAStable
+        ? feeOwedA.plus(feeOwedB.div(currentPriceDecimal))
+        : tokenBStable
+          ? feeOwedA.mul(currentPriceDecimal).plus(feeOwedB)
+          : feeOwedA.mul(currentPriceDecimal).plus(feeOwedB);
+      const pendingYieldUsd = Number(pendingYieldUsdDecimal.toFixed(2));
       const poolApy = getPoolApySeriesFromCsv(14, [poolLabel]);
       const poolApyKey = poolApy.series[0]?.key ?? "";
       const latestApy = poolApy.points.at(-1)?.pools?.[poolApyKey] ?? null;

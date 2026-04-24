@@ -560,6 +560,15 @@ export function PortfolioPanel({
       ? (selectedOnchainRow.currentValueUsd ?? selectedOnchainRow.amountUsd) -
         (selectedOnchainRow.principalUsd ?? selectedOnchainRow.amountUsd)
       : null;
+  const orcaCostBasisUsd =
+    selectedOnchainRow?.protocol === "Orca"
+      ? selectedOnchainRow.principalUsd ??
+        ((selectedOnchainRow.currentValueUsd ?? selectedOnchainRow.amountUsd) - (orcaPnlUsd ?? 0))
+      : null;
+  const orcaPnlPct =
+    selectedOnchainRow?.protocol === "Orca" && orcaCostBasisUsd && orcaCostBasisUsd > 0
+      ? (orcaPnlUsd ?? 0) / orcaCostBasisUsd
+      : null;
   const orcaEstimatedApr =
     selectedOnchainRow?.protocol === "Orca"
       ? (selectedOnchainDetail?.estimatedApr ?? selectedOnchainRow.expectedApr ?? selectedOnchainRow.netApy ?? 0.08)
@@ -818,7 +827,9 @@ export function PortfolioPanel({
                                         <tr>
                                           <th>Pool</th>
                                           <th>Balance</th>
+                                          <th>Cost Basis</th>
                                           <th>Total PnL</th>
+                                          <th>PnL %</th>
                                           <th>Pending Yield</th>
                                           <th>Est. Yield</th>
                                           <th>24H</th>
@@ -835,7 +846,9 @@ export function PortfolioPanel({
                                             </div>
                                           </td>
                                           <td>{formatDetailMoney(orcaBalanceUsd)}</td>
+                                          <td>{formatDetailMoney(orcaCostBasisUsd)}</td>
                                           <td>{formatDetailMoney(orcaPnlUsd, { allowZeroPrefix: true })}</td>
+                                          <td>{formatDetailPercent(orcaPnlPct)}</td>
                                           <td>{formatDetailMoney(orcaPendingYieldUsd)}</td>
                                           <td>{formatDetailPercent(orcaEstimatedApr)}</td>
                                           <td>{formatDetailMoney(orca24hYieldUsd)}</td>
