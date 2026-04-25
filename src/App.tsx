@@ -89,10 +89,10 @@ export default function App() {
 
   /**
    * canPersistPortfolio: 서버에 쓰기 작업(입금·인출·Job생성·실행)을 할 수 있는지 여부.
-   * - 지갑 연결(isWalletConnected) + 로그인 세션(session) 둘 다 필요.
-   * - 아이디/비밀번호만으로 로그인한 경우 읽기 조회는 가능하지만 자산 변동은 불가.
+   * - 지갑 로그인(loginType === "wallet"): 서명으로 지갑 소유를 이미 증명했으므로 isWalletConnected 체크 불필요.
+   * - 아이디/비밀번호 로그인: 읽기 조회는 가능하지만 자산 변동은 지갑 별도 연결 필요.
    */
-  const canPersistPortfolio = Boolean(session) && isWalletConnected;
+  const canPersistPortfolio = Boolean(session) && (session?.loginType === "wallet" || isWalletConnected);
   /** hasSession: 세션 존재 여부(로그인 방식 무관) — 읽기 조회용 */
   const hasSession = Boolean(session);
   const portfolioTotalUsd = useMemo(() => positions.reduce((acc, p) => acc + p.amountUsd, 0), [positions]);

@@ -985,7 +985,12 @@ export function PortfolioPanel({
                                 {ledgerSyncLoadingKey === syncKey ? "반영 중..." : "장부 반영"}
                               </button>
                             ) : (
-                              <span className="badge badge-high" title="로그인 후 장부 반영 가능">로그인 필요</span>
+                              <span
+                                className="badge badge-high"
+                                title={hasSession ? "지갑 연결 후 장부 반영 가능" : "로그인 후 장부 반영 가능"}
+                              >
+                                {hasSession ? "지갑 연결 필요" : "로그인 필요"}
+                              </span>
                             )
                           ) : (
                             <span className="badge badge-high">-</span>

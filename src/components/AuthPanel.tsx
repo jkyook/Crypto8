@@ -269,7 +269,9 @@ export function AuthPanel() {
           ) : (
             <div className="auth-wallet-box">
               <p className="auth-wallet-desc">
-                Phantom 지갑을 연결하면 별도 아이디 없이 <em>viewer</em> 계정으로 예치 처리가 가능합니다.
+                Phantom 지갑으로 로그인하면 입금·인출·장부 반영 등 모든 기능을 사용할 수 있습니다.
+                <br />
+                아이디/비밀번호 로그인은 조회 전용이며, 자산 변동 시에는 지갑 연결이 필요합니다.
               </p>
               <button
                 type="button"
